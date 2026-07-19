@@ -404,6 +404,78 @@ export async function fetchWorldBossSnapshot(
 }
 
 /**
+ * Tính ms đến lần window mở lại từ window_start / window_end.
+ * - now < start  → chờ đến start
+ * - now >= end   → chờ đến start + N ngày (cùng giờ mở cửa)
+ * - fallback     → checkIntervalMs
+ */
+export function msUntilWindowReopen(
+  snap: Pick<WorldBossSnapshot, "windowOpen" | "windowStart" | "windowEnd">,
+  fallbackMs = 10 * 60_000
+): { waitMs: number; nextOpenAt: string | null; reason: string } {
+  if (snap.windowOpen === true) {
+    return { waitMs: 0, nextOpenAt: null, reason: "window_already_open" };
+  }
+
+  const now = Date.now();
+  const startMs = snap.windowStart ? new Date(snap.windowStart).getTime() : NaN;
+  const endMs = snap.windowEnd ? new Date(snap.windowEnd).getTime() : NaN;
+  const DAY = 24 * 60 * 60 * 1000;
+  const bufferMs = 3000; // +3s sau giờ mở
+
+  // Chưa tới giờ mở cửa lần này
+  if (Number.isFinite(startMs) && now < startMs) {
+    const waitMs = Math.max(5_000, startMs - now + bufferMs);
+    return {
+      waitMs,
+      nextOpenAt: new Date(startMs).toISOString(),
+      reason: "before_window_start",
+    };
+  }
+
+  // Đã qua window_end → lần mở sau = window_start + k*24h (k đủ lớn)
+  if (Number.isFinite(startMs)) {
+    let nextStart = startMs;
+    // nếu start đã qua (cùng period đã hết), nhảy từng ngày
+    while (nextStart <= now) {
+      nextStart += DAY;
+    }
+    // nếu có end và nextStart vẫn trong khung lạ, vẫn OK — nextStart là lần mở tiếp
+    const waitMs = Math.max(5_000, nextStart - now + bufferMs);
+    return {
+      waitMs,
+      nextOpenAt: new Date(nextStart).toISOString(),
+      reason: Number.isFinite(endMs) && now >= endMs ? "after_window_end_next_day" : "next_window_start",
+    };
+  }
+
+  // Chỉ có end, không có start
+  if (Number.isFinite(endMs) && now < endMs) {
+    // window_open=false nhưng chưa hết end — hiếm; chờ hết end rồi + buffer, hoặc fallback
+    const waitMs = Math.max(5_000, endMs - now + bufferMs);
+    return {
+      waitMs,
+      nextOpenAt: new Date(endMs + bufferMs).toISOString(),
+      reason: "wait_until_end_then_recheck",
+    };
+  }
+
+  return {
+    waitMs: Math.max(5_000, fallbackMs),
+    nextOpenAt: null,
+    reason: "fallback_interval",
+  };
+}
+
+function formatWait(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3600_000) return `${Math.round(ms / 60_000)}p`;
+  const h = Math.floor(ms / 3600_000);
+  const m = Math.round((ms % 3600_000) / 60_000);
+  return m > 0 ? `${h}h${m}p` : `${h}h`;
+}
+
+/**
  * Tự chọn tier từ rpc_wb_channels:
  * - available === true (đủ rank → vd my_tier=kd thì channel kd available)
  * - boss còn sống (status open + hp > 0)
@@ -554,10 +626,9 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
  * Mỗi lần đánh:
  *   1) rpc_wb_snapshot(tier)
  *   2) window_open === true  → rpc_wb_attack → sleep(delay) → lặp
- *   3) window_open === false → dừng attack, chờ check_interval
+ *   3) window_open === false → tính giờ mở lại từ window_start/window_end, ngủ đến đó (không poll)
  *
  * delay mặc định 3000ms, setting 1500 = nhanh.
- * check_interval CHỈ dùng khi window đóng.
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
@@ -591,6 +662,21 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     claimed: false,
     status: "DONE",
     errors: [],
+  };
+
+  /** window_open=false → hẹn đúng giờ mở từ window_start / window_end */
+  const scheduleWhenClosed = (snap: WorldBossSnapshot) => {
+    const { waitMs, nextOpenAt, reason } = msUntilWindowReopen(snap, checkIntervalMs);
+    summary.status = "WAITING_RESPAWN";
+    summary.nextCheckMs = waitMs;
+    summary.nextCheckReason = reason;
+    const when = nextOpenAt
+      ? new Date(nextOpenAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })
+      : "?";
+    onLog?.(
+      "WARN",
+      `WB window đóng · start=${snap.windowStart || "?"} end=${snap.windowEnd || "?"} · mở lại ~${when} (chờ ${formatWait(waitMs)}) · ${reason}`
+    );
   };
 
   try {
@@ -642,21 +728,15 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         continue;
       }
 
-      // window đóng → CHỈ CHECK, không attack
+      // window đóng → không attack; hẹn đúng giờ mở lại (window_start / window_end)
       if (snap.windowOpen !== true) {
-        onLog?.(
-          "WARN",
-          `WB window_open=false · status=${snap.eventStatus || "?"} · MODE=CHECK · ${checkIntervalMs / 60000}p`
-        );
         await tryClaimTier(options, "", tierBag, "window_closed_claim");
         summary.claimed = summary.claimed || tierBag.claimed;
         summary.claimCount += tierBag.claimCount;
         summary.claimStones += tierBag.claimStones;
         tierBag.status = "WAITING_RESPAWN";
-        summary.status = "WAITING_RESPAWN";
-        summary.nextCheckMs = checkIntervalMs;
-        summary.nextCheckReason = "window_open_false";
         summary.tierResults.push(tierBag);
+        scheduleWhenClosed(snap);
         summary.finishedAt = new Date().toISOString();
         return summary;
       }

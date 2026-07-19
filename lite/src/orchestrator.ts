@@ -364,12 +364,14 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "WORLD_BOSS"),
       });
-      // Engine: window mở → next = hitMs; window đóng → next = check_interval
+      // Engine: window mở → hitMs; window đóng → chờ đến window_start (có thể nhiều giờ)
       nextDelayMs = Math.max(200, Number(result.nextCheckMs || hitMs));
       const nextLabel =
-        nextDelayMs >= 60_000
-          ? `${Math.round(nextDelayMs / 60000)}p CHECK`
-          : `${Math.round(nextDelayMs / 1000)}s ATTACK`;
+        nextDelayMs >= 3600_000
+          ? `${(nextDelayMs / 3600_000).toFixed(1)}h mở cửa`
+          : nextDelayMs >= 60_000
+            ? `${Math.round(nextDelayMs / 60000)}p`
+            : `${Math.round(nextDelayMs / 1000)}s ATTACK`;
       if (result.status === "ERROR") {
         status = "error";
         errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
