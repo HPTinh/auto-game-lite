@@ -123,6 +123,15 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /xong|win|loss|hết lượt/i.test(text);
   }
 
+  if (module === "NHAP_MONG") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /free|paid|chờ|câu|run|xong|hết lượt|NM /i.test(text)
+    );
+  }
+
   if (module === "MAZE") {
     return (
       lv === "ERROR" ||

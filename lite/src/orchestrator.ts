@@ -15,6 +15,7 @@ import {
   runMailClaimAll,
   runMazeAuto,
   runOnboardingClaimAuto,
+  runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
   runWorldCupCheckinAuto,
@@ -550,6 +551,35 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           "PVP",
           "INFO",
           `PVP ${result.wins}W/${result.losses}L · hunt ${result.huntCount} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      }
+    } else if (featureId === "nhap_mong") {
+      const result = await runNhapMongAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "NHAP_MONG"),
+      });
+      nextDelayMs = Math.max(30_000, Number(result.nextDelayMs || Number(settings.interval_minutes || 30) * 60_000));
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Nhập Mộng error";
+      } else if (result.status === "WAITING") {
+        sysLog(
+          accountId,
+          "NHAP_MONG",
+          "INFO",
+          `NM chờ · cur ${result.lastCurIdx ?? "?"}/${result.lastLength ?? "?"} · answers ${result.answers} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      } else if (result.status === "NO_RUNS") {
+        sysLog(accountId, "NHAP_MONG", "WARN", `NM hết lượt · free ${result.freeLeft ?? "?"} · next ${Math.round(nextDelayMs / 60000)}p`);
+      } else {
+        sysLog(
+          accountId,
+          "NHAP_MONG",
+          "INFO",
+          `NM ${result.status} · runs ${result.runsFinished}/${result.runsStarted} · answers ${result.answers} · score ${result.lastScore ?? "?"}`
         );
       }
     } else if (featureId === "auto_equip") {

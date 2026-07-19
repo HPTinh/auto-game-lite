@@ -107,13 +107,13 @@
 
   <script>
     const FEATURES = [
-      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp",
+      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","nhap_mong",
       "auto_equip","craft","body_cult","onboarding_claim","world_cup_checkin"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
-      achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", auto_equip:"Equip", craft:"Craft",
-      body_cult:"Luyện thể", onboarding_claim:"Onboard", world_cup_checkin:"WC"
+      achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", nhap_mong:"Nhập Mộng",
+      auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể", onboarding_claim:"Onboard", world_cup_checkin:"WC"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
 
@@ -139,6 +139,15 @@
         {k:"prefer_hunt",l:"Ưu tiên list bem dí",t:"bool"},
         {k:"prefer_weaker",l:"Ưu tiên địch yếu hơn",t:"bool"},
         {k:"max_hunt",l:"Tối đa ID hunt",t:"number",min:1,max:50},
+      ],
+      nhap_mong: [
+        {k:"prefer_choice",l:"Ưu tiên đáp án",t:"select",o:["safe","gamble","first"]},
+        {k:"use_free",l:"Dùng lượt free",t:"bool"},
+        {k:"use_paid",l:"Dùng lượt trả phí (bạc)",t:"bool"},
+        {k:"max_runs_per_cycle",l:"Số run / lần check",t:"number",min:1,max:30},
+        {k:"max_answers_per_cycle",l:"Max câu trả lời / check",t:"number",min:1,max:200},
+        {k:"max_inline_wait_sec",l:"Chờ inline tối đa (giây)",t:"number",min:0,max:600},
+        {k:"interval_minutes",l:"Hẹn lại khi hết lượt (phút)",t:"number",min:5},
       ],
       maze: [
         {k:"tier",l:"Bậc (1-6)",t:"number",min:1,max:6},
@@ -380,6 +389,9 @@
           normal: "Chỉ Normal",
           elite_normal: "Elite → Normal",
           smart: "Smart (nhiệm vụ)",
+          safe: "An toàn (safe)",
+          gamble: "Mạo hiểm (gamble)",
+          first: "Luôn chọn đáp án đầu",
         };
         return `<div class="f"><label>${esc(f.l)}</label><select data-k="${f.k}">${(f.o||[]).map(o=>`<option value="${esc(o)}" ${String(val)===String(o)?"selected":""}>${esc(labels[o]||o)}</option>`).join("")}</select>${f.hint?`<div class="mu" style="font-size:10px;margin-top:2px">${esc(f.hint)}</div>`:""}</div>`;
       }

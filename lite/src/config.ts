@@ -35,6 +35,7 @@ export type FeatureId =
   | "mail"
   | "maze"
   | "pvp"
+  | "nhap_mong"
   | "auto_equip"
   | "craft"
   | "body_cult"
@@ -51,6 +52,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   mail: "Nhận mail",
   maze: "Mê cung",
   pvp: "Auto PVP",
+  nhap_mong: "Nhập Mộng",
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
@@ -91,6 +93,20 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     prefer_weaker: true,
     max_hunt: 15,
     hunt_list: [],
+  },
+  nhap_mong: {
+    /** safe | gamble | first */
+    prefer_choice: "safe",
+    use_free: true,
+    use_paid: false,
+    /** số run mộng / lần check */
+    max_runs_per_cycle: 3,
+    /** số câu trả lời tối đa / lần check */
+    max_answers_per_cycle: 40,
+    /** chờ inline tối đa (giây) nếu wait_left_sec nhỏ */
+    max_inline_wait_sec: 30,
+    /** khi hết lượt free/paid */
+    interval_minutes: 30,
   },
   buff: {
     interval_seconds: 300,
