@@ -197,12 +197,26 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     allow_zero_score: true,
   },
   craft: {
+    /** hiện chỉ hỗ trợ luyện đan (alchemy) — giống bản local */
     mode: "manual",
     category: "alchemy",
     tier: "lk",
     recipe_code: "",
+    selected_output_code: "",
+    selected_recipe_tier: "",
+    recipe_search: "",
     times_per_run: 1,
-    interval_seconds: 60,
+    interval_seconds: 20,
+    pause_on_fail_minutes: 30,
+    /** tự tải rpc_list_recipes(alchemy) nếu recipe_cache rỗng */
+    auto_load_recipes: true,
+    auto_open_containers: true,
+    auto_use_recovery_items: true,
+    stamina_item_code: "",
+    spirit_item_code: "",
+    /** cache danh sách recipe luyện đan — server/UI tự điền */
+    recipe_cache: [],
+    recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
   onboarding_claim: {},

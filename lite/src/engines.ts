@@ -16,7 +16,13 @@ export { runBreakthroughAuto } from "../../lib/breakthroughEngine";
 export { runMailClaimAll } from "../../lib/mailEngine";
 export { runMazeAuto } from "../../lib/mazeEngine";
 export { runAutoEquipCheck } from "../../lib/autoEquipEngine";
-export { runCraftAuto } from "../../lib/craftEngine";
+export {
+  runCraftAuto,
+  listCraftRecipes,
+  filterCraftRecipes,
+  getCraftTierLabel,
+  getCraftCategoryLabel,
+} from "../../lib/craftEngine";
 export { runPvpAuto } from "../../lib/pvpEngine";
 export { runNhapMongAuto } from "../../lib/nhapMongEngine";
 export { runKhoiLoiAuto } from "../../lib/khoiLoiEngine";

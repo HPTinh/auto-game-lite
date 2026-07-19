@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { config, FEATURE_LABELS, defaultFeatureSettings, type FeatureId } from "./config";
 import { store } from "./store";
-import { loginAccount, refreshAccountInfo } from "./auth";
+import { loginAccount, refreshAccountInfo, ensureRuntime } from "./auth";
 import {
   getRuntimeStats,
   resumeWantedAccounts,
@@ -12,6 +12,7 @@ import {
   stopAccount,
   stopAll,
 } from "./orchestrator";
+import { listCraftRecipes, filterCraftRecipes } from "./engines";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -231,6 +232,70 @@ app.patch("/api/accounts/:id/features", (req, res) => {
   }
   const acc = store.get(id);
   res.json({ ok: true, account: acc ? store.toPublic(acc) : null });
+});
+
+/**
+ * Tải danh sách recipe luyện đan (alchemy only) — rpc_list_recipes.
+ * Lưu vào feature craft.settings.recipe_cache.
+ */
+app.post("/api/accounts/:id/craft/recipes", async (req, res) => {
+  const id = req.params.id;
+  const acc = store.get(id);
+  if (!acc) return res.status(404).json({ ok: false, error: "Account not found" });
+
+  try {
+    const runtime = await ensureRuntime(id);
+    if (!runtime?.accessToken) {
+      return res.status(400).json({ ok: false, error: "Chưa login — bấm Check account trước" });
+    }
+
+    // Bản local hiện chỉ craft alchemy (luyện đan)
+    const category = "alchemy";
+    const recipes = await listCraftRecipes({
+      characterId: runtime.characterId,
+      accessToken: runtime.accessToken,
+      category,
+    });
+    const cacheAt = new Date().toISOString();
+    const settings = acc.features?.craft?.settings || {};
+    store.setFeature(id, "craft", {
+      settings: {
+        ...settings,
+        category,
+        recipe_cache: recipes,
+        recipe_cache_at: cacheAt,
+      },
+    });
+
+    const tier = String(req.body?.tier || settings.tier || "all");
+    const search = String(req.body?.search || settings.recipe_search || "");
+    const filtered = filterCraftRecipes(recipes, tier, search);
+
+    const counts = recipes.reduce((accum: Record<string, number>, recipe: any) => {
+      const key = String(recipe.tierCode || "unknown");
+      accum[key] = (accum[key] || 0) + 1;
+      return accum;
+    }, {});
+
+    const latest = store.get(id);
+    return res.json({
+      ok: true,
+      category,
+      total: recipes.length,
+      filtered: filtered.length,
+      counts,
+      cacheAt,
+      recipes: filtered,
+      allRecipes: recipes,
+      account: latest ? store.toPublic(latest) : null,
+    });
+  } catch (e: any) {
+    return res.status(400).json({
+      ok: false,
+      error: e?.message || "Tải recipe fail",
+      data: e?.data,
+    });
+  }
 });
 
 app.post("/api/start-all", async (_req, res) => {

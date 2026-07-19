@@ -16,7 +16,8 @@ Bản **tinh gọn** của Auto Best:
 - **Claim EXP**, **Thành tựu**, **Mail**
 - **World Boss**, **Đột phá**
 - **PVP** (quota ngày), **Mê cung**, **Nhập Mộng**, **Khôi Lỗi**, **Kì ngộ** (reset 12h VN)
-- Tuỳ chọn: Auto equip, Craft, Luyện thể, Onboarding, WC checkin
+- **Craft luyện đan** (alchemy): tải list `rpc_list_recipes`, chọn recipe, auto craft
+- Tuỳ chọn: Auto equip, Luyện thể, Onboarding, WC checkin
 
 UI chỉ để: thêm account, tick feature, Start/Stop, xem log.
 

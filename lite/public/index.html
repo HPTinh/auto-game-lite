@@ -47,6 +47,7 @@
     .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50;padding:12px}
     .mask.show{display:flex}
     .modal{width:min(420px,100%);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:85vh;overflow:auto}
+    .modal.wide{width:min(560px,100%)}
     .modal h2{margin:0 0 10px;font-size:14px}
     .f{margin-bottom:8px}
     .f label{display:block;font-size:11px;color:var(--mu);margin-bottom:3px}
@@ -55,6 +56,14 @@
     .f.chk label{margin:0;color:var(--tx);font-size:12px}
     .f.chk input{width:auto}
     .modal .row{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .rlist{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#0b0d12}
+    .ritem{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;padding:8px;cursor:pointer}
+    .ritem:hover{background:#1a2230}
+    .ritem.on{background:#1a2a18;border-left:2px solid #3dd68c}
+    .ritem .rc{font-family:ui-monospace,Consolas,monospace;color:#f5a524;font-size:11px}
+    .ritem .meta{font-size:10px;color:var(--mu);margin-top:2px}
+    .tag{display:inline-block;padding:0 5px;border-radius:3px;background:#1a2030;color:#c8d0e0;font-size:10px;margin-right:3px}
     .empty{padding:16px;color:var(--mu);border:1px dashed var(--line);border-radius:8px;text-align:center}
   </style>
 </head>
@@ -200,11 +209,16 @@
         {k:"interval_seconds",l:"Chu kỳ (s)",t:"number",min:30},
         {k:"auto_equip",l:"Tự mặc",t:"bool"},
       ],
+      // craft dùng UI riêng (luyện đan + list recipe) — FIELDS chỉ fallback
       craft: [
         {k:"recipe_code",l:"Recipe code",t:"text"},
-        {k:"tier",l:"Tier",t:"select",o:["lk","tc","kd","na","ht","lh"]},
-        {k:"times_per_run",l:"Lần/vòng",t:"number",min:1},
+        {k:"tier",l:"Tier",t:"select",o:["all","lk","tc","kd","na","ht","lh"]},
+        {k:"times_per_run",l:"Lần/vòng",t:"number",min:1,max:50},
         {k:"interval_seconds",l:"Chu kỳ (s)",t:"number",min:5},
+        {k:"pause_on_fail_minutes",l:"Nghỉ khi lỗi (phút)",t:"number",min:1},
+        {k:"auto_load_recipes",l:"Tự tải list nếu rỗng",t:"bool"},
+        {k:"auto_open_containers",l:"Thiếu NL → mở rương",t:"bool"},
+        {k:"auto_use_recovery_items",l:"Thiếu STA/thần hồn → dùng đan",t:"bool"},
       ],
       body_cult: [
         {k:"body_cult_element",l:"Hệ",t:"select",o:["metal","wood","water","fire","earth"]},
@@ -373,17 +387,244 @@
       return Number.isFinite(n)?n.toLocaleString("en-US"):String(x);
     }
 
+    const CRAFT_TIER_OPTS = [
+      {v:"all",l:"Tất cả tier"},
+      {v:"lk",l:"lk · Luyện Khí"},
+      {v:"tc",l:"tc · Trúc Cơ"},
+      {v:"kd",l:"kd · Kim Đan"},
+      {v:"na",l:"na · Nguyên Anh"},
+      {v:"ht",l:"ht · Hoá Thần"},
+      {v:"lh",l:"lh · Luyện Hư"},
+    ];
+
+    function craftRecipeTier(r) {
+      return String(r?.tierCode || r?.meta?.realm_code || r?.meta?.tier || "unknown").toLowerCase();
+    }
+
+    function filterCraftLocal(cache, tier, search) {
+      const t = String(tier || "all").toLowerCase();
+      const q = String(search || "").trim().toLowerCase();
+      return (Array.isArray(cache) ? cache : []).filter(r => {
+        if (t !== "all" && craftRecipeTier(r) !== t) return false;
+        if (!q) return true;
+        const hay = [r.recipe_code, r.output_code, r.kindLabel, r.output_rarity, r.requirementText, r.displayName]
+          .map(x => String(x || "").toLowerCase()).join(" ");
+        return hay.includes(q);
+      });
+    }
+
+    function craftRecipeListHtml(draft) {
+      const cache = Array.isArray(draft.recipe_cache) ? draft.recipe_cache : [];
+      const list = filterCraftLocal(cache, draft.tier || "all", draft.recipe_search || "");
+      const selected = String(draft.recipe_code || "");
+      if (!cache.length) {
+        return `<div class="mu" style="padding:10px;font-size:11px">Chưa có list. Bấm <b>Tải list luyện đan</b> (rpc_list_recipes alchemy).</div>`;
+      }
+      if (!list.length) {
+        return `<div class="mu" style="padding:10px;font-size:11px">Không khớp bộ lọc tier/từ khoá (${cache.length} recipe đã tải).</div>`;
+      }
+      return list.slice(0, 150).map(r => {
+        const code = String(r.recipe_code || "");
+        const on = code === selected ? "on" : "";
+        const req = r.requirementText || (r.requirements
+          ? Object.entries(r.requirements).map(([k,v]) => `${k}x${v}`).join(", ")
+          : "?");
+        return `<button type="button" class="ritem ${on}" data-pick-recipe="${esc(code)}" data-pick-out="${esc(r.output_code||"")}" data-pick-tier="${esc(craftRecipeTier(r))}">
+          <div class="rc">${esc(code)}</div>
+          <div class="meta">
+            <span class="tag">${esc(craftRecipeTier(r))}</span>
+            <span class="tag">${esc(r.kindLabel || "?")}</span>
+            <span class="tag">rate ${esc(r.success_rate ?? "?")}%</span>
+            · <span style="color:#3dd68c">${esc(r.output_code || "?")}</span> x${esc(r.output_qty || 1)}
+          </div>
+          <div class="meta" style="margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">NL: ${esc(req)}</div>
+        </button>`;
+      }).join("");
+    }
+
+    function craftModalHtml(draft) {
+      const cache = Array.isArray(draft.recipe_cache) ? draft.recipe_cache : [];
+      const list = filterCraftLocal(cache, draft.tier || "all", draft.recipe_search || "");
+      const counts = cache.reduce((a, r) => {
+        const k = craftRecipeTier(r);
+        a[k] = (a[k] || 0) + 1;
+        return a;
+      }, {});
+      const countText = Object.entries(counts).map(([k,v]) => `${k}:${v}`).join(" · ") || "chưa tải";
+      const bool = (k, defTrue) => {
+        const v = draft[k];
+        const on = v === undefined || v === null || v === "" ? defTrue : (v === true || v === "true" || v === 1 || v === "1");
+        return on;
+      };
+      return `
+        <div class="mu" style="font-size:11px;margin-bottom:8px">
+          Chỉ <b>Luyện đan (alchemy · hệ Mộc)</b> — giống bản local. Tải list thật qua <code>rpc_list_recipes</code>, chọn recipe rồi Lưu.
+        </div>
+        <div class="f">
+          <label>Mục craft</label>
+          <input type="text" value="alchemy · Luyện đan" disabled />
+        </div>
+        <div class="grid2">
+          <div class="f">
+            <label>Lọc tier</label>
+            <select data-k="tier" id="craftTier">
+              ${CRAFT_TIER_OPTS.map(o => `<option value="${o.v}" ${String(draft.tier||"lk")===o.v?"selected":""}>${o.l}</option>`).join("")}
+            </select>
+          </div>
+          <div class="f">
+            <label>Tìm nhanh</label>
+            <input data-k="recipe_search" id="craftSearch" type="text" value="${esc(draft.recipe_search||"")}" placeholder="mp, sta, tu_vi, linh_thu..." />
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+          <div class="mu" style="font-size:11px">
+            Tải <b style="color:#f5a524">${cache.length}</b> · hiển thị <b style="color:#f5a524">${list.length}</b>
+            ${draft.recipe_cache_at ? ` · ${esc(String(draft.recipe_cache_at).slice(0,19).replace("T"," "))}` : ""}
+            <div style="font-size:10px">${esc(countText)}</div>
+          </div>
+          <button type="button" class="p" id="btnLoadRecipes" style="white-space:nowrap">Tải list luyện đan</button>
+        </div>
+        <div class="rlist" id="craftRecipeList">${craftRecipeListHtml(draft)}</div>
+        <div class="grid2" style="margin-top:8px">
+          <div class="f">
+            <label>Recipe đã chọn</label>
+            <input data-k="recipe_code" id="craftRecipeCode" type="text" value="${esc(draft.recipe_code||"")}" placeholder="r_pill_lk_sta" />
+          </div>
+          <div class="f">
+            <label>Lần craft / vòng</label>
+            <input data-k="times_per_run" type="number" min="1" max="50" value="${esc(draft.times_per_run ?? 1)}" />
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="f">
+            <label>Chu kỳ (giây)</label>
+            <input data-k="interval_seconds" type="number" min="5" value="${esc(draft.interval_seconds ?? 20)}" />
+          </div>
+          <div class="f">
+            <label>Lỗi thật → nghỉ (phút)</label>
+            <input data-k="pause_on_fail_minutes" type="number" min="1" value="${esc(draft.pause_on_fail_minutes ?? 30)}" />
+          </div>
+        </div>
+        <div class="f chk"><input type="checkbox" data-k="auto_load_recipes" ${bool("auto_load_recipes", true)?"checked":""}/><label>Tự tải list nếu cache rỗng khi Start</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_open_containers" ${bool("auto_open_containers", true)?"checked":""}/><label>Thiếu nguyên liệu → mở rương</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_use_recovery_items" ${bool("auto_use_recovery_items", true)?"checked":""}/><label>Thiếu STA / thần hồn → dùng đan hồi</label></div>
+        <input type="hidden" data-k="category" value="alchemy" />
+        <input type="hidden" data-k="selected_output_code" id="craftOut" value="${esc(draft.selected_output_code||"")}" />
+        <input type="hidden" data-k="selected_recipe_tier" id="craftSelTier" value="${esc(draft.selected_recipe_tier||"")}" />
+      `;
+    }
+
+    function bindCraftModalEvents() {
+      const body = $("modalBody");
+      if (!body || !modal || modal.featureId !== "craft") return;
+
+      const refreshList = () => {
+        // sync draft from inputs first
+        modal.draft = { ...modal.draft, ...readDraftFromModal() };
+        const listEl = $("craftRecipeList");
+        if (listEl) listEl.innerHTML = craftRecipeListHtml(modal.draft);
+        bindPickButtons();
+      };
+
+      const bindPickButtons = () => {
+        body.querySelectorAll("[data-pick-recipe]").forEach(btn => {
+          btn.onclick = () => {
+            const code = btn.getAttribute("data-pick-recipe") || "";
+            const out = btn.getAttribute("data-pick-out") || "";
+            const tier = btn.getAttribute("data-pick-tier") || "";
+            modal.draft.recipe_code = code;
+            modal.draft.selected_output_code = out;
+            modal.draft.selected_recipe_tier = tier;
+            const codeInp = $("craftRecipeCode");
+            const outInp = $("craftOut");
+            const tierInp = $("craftSelTier");
+            if (codeInp) codeInp.value = code;
+            if (outInp) outInp.value = out;
+            if (tierInp) tierInp.value = tier;
+            refreshList();
+            msg(`Đã chọn ${code}`, true);
+          };
+        });
+      };
+
+      const tierEl = $("craftTier");
+      const searchEl = $("craftSearch");
+      if (tierEl) tierEl.onchange = refreshList;
+      if (searchEl) searchEl.oninput = refreshList;
+
+      const loadBtn = $("btnLoadRecipes");
+      if (loadBtn) {
+        loadBtn.onclick = async () => {
+          if (busy) return;
+          busy = true;
+          loadBtn.disabled = true;
+          loadBtn.textContent = "Đang tải...";
+          try {
+            const draft = readDraftFromModal();
+            const res = await api(`/api/accounts/${modal.accId}/craft/recipes`, {
+              method: "POST",
+              body: JSON.stringify({ tier: draft.tier || "all", search: draft.recipe_search || "" }),
+            });
+            const recipes = res.allRecipes || res.recipes || [];
+            modal.draft = {
+              ...modal.draft,
+              ...draft,
+              category: "alchemy",
+              recipe_cache: recipes,
+              recipe_cache_at: res.cacheAt || new Date().toISOString(),
+            };
+            // update local accounts
+            const acc = accounts.find(a => a.id === modal.accId);
+            if (acc) {
+              if (!acc.features.craft) acc.features.craft = { enabled:false, status:"OFF", settings:{} };
+              acc.features.craft.settings = {
+                ...acc.features.craft.settings,
+                category: "alchemy",
+                recipe_cache: recipes,
+                recipe_cache_at: modal.draft.recipe_cache_at,
+              };
+            }
+            // re-render craft body keeping draft
+            $("modalBody").innerHTML = craftModalHtml(modal.draft);
+            bindCraftModalEvents();
+            msg(`Đã tải ${recipes.length} recipe luyện đan`, true);
+          } catch (e) {
+            msg(e.message || "Tải recipe fail", false);
+          } finally {
+            busy = false;
+            const b = $("btnLoadRecipes");
+            if (b) { b.disabled = false; b.textContent = "Tải list luyện đan"; }
+          }
+        };
+      }
+
+      bindPickButtons();
+    }
+
     function openModal(accId, featureId) {
       const acc = accounts.find(a => a.id === accId);
       if (!acc) return;
       const cur = { ...(acc.features?.[featureId]?.settings || {}) };
+      // craft: luôn alchemy
+      if (featureId === "craft") {
+        cur.category = "alchemy";
+        if (!Array.isArray(cur.recipe_cache)) cur.recipe_cache = [];
+      }
       modal = { accId, featureId, draft: cur };
       $("modalTitle").textContent = `Setting · ${LABELS[featureId]||featureId}`;
-      const fields = FIELDS[featureId] || [];
-      if (!fields.length) {
-        $("modalBody").innerHTML = '<div class="mu">Không có setting.</div>';
+      const modalEl = $("modal");
+      if (featureId === "craft") {
+        modalEl.classList.add("wide");
+        $("modalBody").innerHTML = craftModalHtml(cur);
+        bindCraftModalEvents();
       } else {
-        $("modalBody").innerHTML = fields.map(f => fieldHtml(f, cur[f.k])).join("");
+        modalEl.classList.remove("wide");
+        const fields = FIELDS[featureId] || [];
+        if (!fields.length) {
+          $("modalBody").innerHTML = '<div class="mu">Không có setting.</div>';
+        } else {
+          $("modalBody").innerHTML = fields.map(f => fieldHtml(f, cur[f.k])).join("");
+        }
       }
       $("mask").classList.add("show");
     }
@@ -419,6 +660,7 @@
     function closeModal() {
       modal = null;
       $("mask").classList.remove("show");
+      $("modal")?.classList.remove("wide");
       render();
     }
 
@@ -440,6 +682,13 @@
       busy = true;
       try {
         const settings = readDraftFromModal();
+        // giữ cache recipe (không có input data-k) + ép alchemy cho craft
+        if (modal.featureId === "craft") {
+          settings.category = "alchemy";
+          if (Array.isArray(modal.draft?.recipe_cache)) settings.recipe_cache = modal.draft.recipe_cache;
+          if (modal.draft?.recipe_cache_at) settings.recipe_cache_at = modal.draft.recipe_cache_at;
+          if (!settings.recipe_code && modal.draft?.recipe_code) settings.recipe_code = modal.draft.recipe_code;
+        }
         const { accId, featureId } = modal;
         await api(`/api/accounts/${accId}/features`, {
           method: "PATCH",
@@ -451,7 +700,7 @@
           if (!acc.features[featureId]) acc.features[featureId] = { enabled:false, status:"OFF", settings:{} };
           acc.features[featureId].settings = { ...acc.features[featureId].settings, ...settings };
         }
-        msg(`Đã lưu setting ${LABELS[featureId]||featureId}`, true);
+        msg(`Đã lưu setting ${LABELS[featureId]||featureId}${featureId==="craft" && settings.recipe_code ? " · "+settings.recipe_code : ""}`, true);
         closeModal();
         await pullAndCacheBackup();
         await load(true);

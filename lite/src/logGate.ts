@@ -154,7 +154,16 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     );
   }
 
-  if (module === "CRAFT" || module === "AUTO_EQUIP") {
+  if (module === "CRAFT") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /craft|recipe|luyện đan|alchemy|tải|ok |fail|pause|rương|thiếu/i.test(text)
+    );
+  }
+
+  if (module === "AUTO_EQUIP") {
     return lv !== "INFO" || /bắt đầu|xong|hoàn tất|thành công|fail|lỗi/i.test(text);
   }
 
