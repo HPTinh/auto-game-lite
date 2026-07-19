@@ -161,8 +161,21 @@
 
   <script>
     const qs = new URLSearchParams(location.search);
-    const API_KEY = qs.get("key") || localStorage.getItem("lite_api_key") || "";
+    let API_KEY = qs.get("key") || localStorage.getItem("lite_api_key") || "";
     if (qs.get("key")) localStorage.setItem("lite_api_key", qs.get("key"));
+
+    // Nếu chưa có key: hỏi 1 lần (khi server bật LITE_API_KEY)
+    async function ensureApiKey() {
+      try {
+        const r = await fetch("/api/status", { headers: API_KEY ? { "x-api-key": API_KEY } : {} });
+        if (r.status !== 401) return;
+        const k = prompt("Nhập LITE_API_KEY (env trên Render):");
+        if (k) {
+          API_KEY = k.trim();
+          localStorage.setItem("lite_api_key", API_KEY);
+        }
+      } catch (_) { /* ignore */ }
+    }
 
     const FEATURE_DEFAULT = [
       "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail",
@@ -324,7 +337,7 @@
     };
 
     renderNewFeatures();
-    refresh();
+    ensureApiKey().then(refresh);
     setInterval(refresh, 5000);
   </script>
 </body>

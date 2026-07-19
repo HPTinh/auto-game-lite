@@ -9,7 +9,8 @@ services:
     runtime: node
     plan: free
     region: singapore
-    buildCommand: cd lite && npm install
+    # Root Directory để TRỐNG trên dashboard (repo root = auto-game-lite)
+    buildCommand: cd lite && npm install --include=dev
     startCommand: cd lite && npm start
     healthCheckPath: /health
     envVars:

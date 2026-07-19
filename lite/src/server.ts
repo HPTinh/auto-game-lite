@@ -1,4 +1,5 @@
 import express, { type Request, type Response, type NextFunction } from "express";
+import fs from "fs";
 import path from "path";
 import { config, FEATURE_LABELS, defaultFeatureSettings, type FeatureId } from "./config";
 import { store } from "./store";
@@ -13,9 +14,26 @@ import {
 } from "./orchestrator";
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "256kb" }));
 
-// ---- keep-alive / health (không cần API key để cron ping được) ----
+/** Tìm thư mục public (tsx/__dirname vs cwd khác nhau trên Render) */
+function resolvePublicDir(): string {
+  const candidates = [
+    path.join(__dirname, "..", "public"),
+    path.join(process.cwd(), "public"),
+    path.join(process.cwd(), "lite", "public"),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, "index.html"))) return dir;
+  }
+  return candidates[0];
+}
+
+const publicDir = resolvePublicDir();
+const indexHtml = path.join(publicDir, "index.html");
+
+// ---- keep-alive / health (public, không cần API key) ----
 const startedAt = Date.now();
 let lastPingAt = 0;
 let pingCount = 0;
@@ -28,6 +46,9 @@ app.get("/health", (_req, res) => {
     startedAt: new Date(startedAt).toISOString(),
     lastPingAt: lastPingAt ? new Date(lastPingAt).toISOString() : null,
     pingCount,
+    publicDir,
+    indexHtmlExists: fs.existsSync(indexHtml),
+    cwd: process.cwd(),
     stats: getRuntimeStats(),
   });
 });
@@ -35,7 +56,7 @@ app.get("/health", (_req, res) => {
 app.get("/ping", (_req, res) => {
   lastPingAt = Date.now();
   pingCount += 1;
-  res.status(200).send("pong");
+  res.status(200).type("text").send("pong");
 });
 
 app.head("/ping", (_req, res) => {
@@ -44,7 +65,7 @@ app.head("/ping", (_req, res) => {
   res.status(200).end();
 });
 
-// ---- auth middleware cho API + UI (optional nếu không set key) ----
+// ---- auth middleware chỉ cho /api ----
 function requireKey(req: Request, res: Response, next: NextFunction) {
   if (!config.apiKey) return next();
   const key =
@@ -52,7 +73,10 @@ function requireKey(req: Request, res: Response, next: NextFunction) {
     String(req.query.key || "") ||
     String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   if (key !== config.apiKey) {
-    return res.status(401).json({ ok: false, error: "Unauthorized. Gửi x-api-key hoặc ?key=" });
+    return res.status(401).json({
+      ok: false,
+      error: "Unauthorized. Gửi header x-api-key hoặc ?key=LITE_API_KEY",
+    });
   }
   return next();
 }
@@ -124,7 +148,6 @@ app.post("/api/accounts/:id/stop", (req, res) => {
 app.patch("/api/accounts/:id/features", (req, res) => {
   const id = req.params.id;
   const body = req.body || {};
-  // body: { farm: { enabled: true, settings: {...} }, ... }
   for (const [featureId, patch] of Object.entries(body)) {
     if (typeof patch !== "object" || !patch) continue;
     store.setFeature(id, featureId as FeatureId, patch as any);
@@ -143,14 +166,38 @@ app.post("/api/stop-all", (_req, res) => {
   res.json({ ok: true, accounts: store.listPublic() });
 });
 
-// UI: inject API key từ query vào localStorage helper page
-app.get("/", requireKey, (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+// UI luôn mở được (không khóa bằng key). API vẫn cần key nếu set LITE_API_KEY.
+app.get("/", (_req, res) => {
+  if (!fs.existsSync(indexHtml)) {
+    return res
+      .status(500)
+      .type("html")
+      .send(
+        `<h1>Auto Game LITE</h1><p>Không tìm thấy index.html</p><pre>cwd=${process.cwd()}\npublicDir=${publicDir}</pre><p><a href="/health">/health</a> · <a href="/ping">/ping</a></p>`
+      );
+  }
+  return res.sendFile(indexHtml);
 });
 
-app.use(express.static(path.join(__dirname, "..", "public")));
+app.use(express.static(publicDir));
 
-// self-ping để giảm sleep (Render free vẫn NÊN dùng cron ngoài)
+// Trang lỗi rõ ràng thay vì Not Found trống
+app.use((req, res) => {
+  res.status(404).type("html").send(`<!DOCTYPE html>
+<html lang="vi"><head><meta charset="utf-8"/><title>404</title>
+<style>body{font-family:sans-serif;background:#111;color:#eee;padding:24px}</style></head>
+<body>
+  <h1>404 — Không có route này</h1>
+  <p>Path: <code>${req.path}</code></p>
+  <ul>
+    <li><a href="/" style="color:#8cf">UI chính /</a></li>
+    <li><a href="/health" style="color:#8cf">/health</a></li>
+    <li><a href="/ping" style="color:#8cf">/ping</a></li>
+  </ul>
+  <p>Nếu mở domain gốc vẫn 404 của Render (không phải trang này) → service chưa chạy / deploy fail. Xem Logs trên Render.</p>
+</body></html>`);
+});
+
 function startSelfPing() {
   if (!config.selfPingMinutes || config.selfPingMinutes <= 0) return;
   const base = config.publicUrl || `http://127.0.0.1:${config.port}`;
@@ -167,16 +214,17 @@ function startSelfPing() {
 
 store.load();
 
-app.listen(config.port, () => {
+const host = "0.0.0.0";
+app.listen(config.port, host, () => {
   console.log(`\n=== Auto Game LITE ===`);
-  console.log(`Port: ${config.port}`);
-  console.log(`API key: ${config.apiKey ? "ON" : "OFF (dev only)"}`);
+  console.log(`Listen: ${host}:${config.port}`);
+  console.log(`cwd: ${process.cwd()}`);
+  console.log(`public: ${publicDir} (index=${fs.existsSync(indexHtml)})`);
+  console.log(`API key: ${config.apiKey ? "ON" : "OFF"}`);
   console.log(`Accounts: ${store.list().length}`);
-  console.log(`Health: /health  |  Ping: /ping`);
-  console.log(`UI: /${config.apiKey ? "?key=YOUR_KEY" : ""}`);
+  console.log(`Health: /health  |  Ping: /ping  |  UI: /`);
   console.log(`======================\n`);
   startSelfPing();
-  // Delay nhẹ để health check Render pass trước, rồi resume treo
   setTimeout(() => {
     void resumeWantedAccounts();
   }, 2500);
