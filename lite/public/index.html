@@ -880,28 +880,24 @@
     $("stopAll").onclick = async () => { try { await api("/api/stop-all",{method:"POST",body:"{}"}); msg("Stop all",true); await load(true);} catch(e){msg(e.message,false);} };
     $("refresh").onclick = () => load(true);
 
-    // Double-click "AUTO LITE" → nhập pass 2 (LITE_BACKUP_KEY trên Render)
+    // Double-click "AUTO LITE" → nhập pass 2 (không lộ mục đích trên UI)
     document.querySelector("h1")?.addEventListener("dblclick", async () => {
       if (backupUnlocked) {
-        const close = confirm("Export/Import đang mở. Bấm OK để khóa lại (ẩn nút)?");
-        if (close) {
+        if (confirm("OK?")) {
           lockBackupUi();
-          msg("Đã ẩn Export / Import", true);
+          msg("", true);
         }
         return;
       }
-      const k = prompt("Nhập pass backup (LITE_BACKUP_KEY trên Render)\nChỉ bạn biết — người dùng pass 0000 không thấy 2 nút này.");
+      const k = prompt("Nhập pass");
       if (k === null) return;
-      if (!String(k).trim()) {
-        msg("Chưa nhập pass", false);
-        return;
-      }
+      if (!String(k).trim()) return;
       try {
         await unlockBackupWithPass(k);
-        msg("OK — Export / Import đã hiện (chỉ tab này)", true);
-      } catch (e) {
+        msg("", true);
+      } catch {
         lockBackupUi();
-        msg(e.message || "Sai pass backup", false);
+        msg("Sai", false);
       }
     });
 
