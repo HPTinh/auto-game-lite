@@ -76,8 +76,8 @@
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="g" id="startAll">Start all</button>
       <button class="r" id="stopAll">Stop all</button>
-      <button id="btnExport" title="Tải file backup account+setting">Export</button>
-      <button id="btnImport" title="Nạp file backup">Import</button>
+      <button id="btnExport" title="Tải file backup account+setting" style="display:none">Export</button>
+      <button id="btnImport" title="Nạp file backup" style="display:none">Import</button>
       <button id="refresh">↻</button>
       <input type="file" id="importFile" accept="application/json,.json" hidden />
     </div>
@@ -231,6 +231,33 @@
     let API_KEY = new URLSearchParams(location.search).get("key") || localStorage.getItem("lite_api_key") || "";
     if (new URLSearchParams(location.search).get("key")) localStorage.setItem("lite_api_key", API_KEY);
 
+    /**
+     * Ẩn Export/Import khi dùng pass web thường (0000).
+     * Hiện khi:
+     *  - LITE_API_KEY khác 0000, hoặc
+     *  - đã double-click tiêu đề và nhập mã hiện nút (UI-only, API vẫn 0000).
+     * Chỉ style.display — không làm nặng, không ảnh hưởng bot/server.
+     */
+    const PUBLIC_WEB_KEY = "0000";
+    const BACKUP_UI_KEY = "lite_backup_ui_unlock";
+    let backupUiUnlock = localStorage.getItem(BACKUP_UI_KEY) || "";
+    function canShowBackupButtons() {
+      const apiKey = String(API_KEY || "").trim();
+      const unlock = String(backupUiUnlock || "").trim();
+      // Pass web khác 0000 → hiện
+      if (apiKey && apiKey !== PUBLIC_WEB_KEY) return true;
+      // Hoặc đã nhập mã hiện nút (khác rỗng và khác 0000)
+      if (unlock && unlock !== PUBLIC_WEB_KEY) return true;
+      return false;
+    }
+    function updateBackupButtonsVisibility() {
+      const show = canShowBackupButtons();
+      const exp = $("btnExport");
+      const imp = $("btnImport");
+      if (exp) exp.style.display = show ? "" : "none";
+      if (imp) imp.style.display = show ? "" : "none";
+    }
+
     const BACKUP_KEY = "auto_lite_accounts_backup_v1";
     let accounts = [];
     let modal = null; // {accId, featureId, draft}
@@ -302,7 +329,12 @@
       const data = await res.json().catch(()=>({}));
       if (res.status === 401 && !opts._retried) {
         const k = prompt("LITE_API_KEY:");
-        if (k) { API_KEY=k.trim(); localStorage.setItem("lite_api_key", API_KEY); return api(path, {...opts, _retried:true}); }
+        if (k) {
+          API_KEY = k.trim();
+          localStorage.setItem("lite_api_key", API_KEY);
+          updateBackupButtonsVisibility();
+          return api(path, {...opts, _retried:true});
+        }
       }
       if (!res.ok) throw new Error(data.error || res.statusText || "API error");
       return data;
@@ -796,6 +828,31 @@
     $("startAll").onclick = async () => { try { await api("/api/start-all",{method:"POST",body:"{}"}); msg("Start all",true); await load(true);} catch(e){msg(e.message,false);} };
     $("stopAll").onclick = async () => { try { await api("/api/stop-all",{method:"POST",body:"{}"}); msg("Stop all",true); await load(true);} catch(e){msg(e.message,false);} };
     $("refresh").onclick = () => load(true);
+
+    // Double-click "AUTO LITE" → nhập mã hiện/ẩn Export/Import (không đổi pass API 0000)
+    document.querySelector("h1")?.addEventListener("dblclick", () => {
+      const k = prompt(
+        "Mã hiện Export/Import\n• Để trống hoặc 0000 = ẩn\n• Nhập bất kỳ mã khác = hiện nút (API vẫn dùng pass web)",
+        backupUiUnlock || ""
+      );
+      if (k === null) return;
+      backupUiUnlock = String(k).trim();
+      if (backupUiUnlock && backupUiUnlock !== PUBLIC_WEB_KEY) {
+        localStorage.setItem(BACKUP_UI_KEY, backupUiUnlock);
+      } else {
+        backupUiUnlock = "";
+        localStorage.removeItem(BACKUP_UI_KEY);
+      }
+      updateBackupButtonsVisibility();
+      msg(
+        canShowBackupButtons()
+          ? "Đã hiện Export / Import"
+          : "Đã ẩn Export / Import (pass thường)",
+        true
+      );
+    });
+
+    updateBackupButtonsVisibility();
     $("modalCancel").onclick = closeModal;
     $("modalSave").onclick = saveModal;
     $("mask").addEventListener("click", (e) => { if (e.target === $("mask")) closeModal(); });
