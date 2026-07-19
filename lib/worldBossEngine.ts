@@ -404,10 +404,42 @@ export async function fetchWorldBossSnapshot(
 }
 
 /**
- * Tính ms đến lần window mở lại từ window_start / window_end.
- * - now < start  → chờ đến start
- * - now >= end   → chờ đến start + N ngày (cùng giờ mở cửa)
- * - fallback     → checkIntervalMs
+ * Boss World hồi sinh mỗi **giờ chẵn** (VN): 1h, 2h, 3h, 4h...
+ * Chết 5h30 → 6h00 ra lại; chết 5h59 → vẫn 6h00.
+ *
+ * window_open=false → chờ đến đầu giờ tiếp theo (Asia/Ho_Chi_Minh).
+ * window_start / window_end chỉ để log; lịch hồi = giờ chẵn.
+ */
+export function msUntilNextFullHourVn(nowMs = Date.now(), bufferMs = 2000): {
+  waitMs: number;
+  nextOpenAt: string;
+  reason: string;
+} {
+  // VN = UTC+7
+  const VN = 7 * 60 * 60 * 1000;
+  const vn = new Date(nowMs + VN);
+  const y = vn.getUTCFullYear();
+  const m = vn.getUTCMonth();
+  const d = vn.getUTCDate();
+  const h = vn.getUTCHours();
+  // Đầu giờ kế tiếp theo đồng hồ VN
+  let nextHourVnAsUtc = Date.UTC(y, m, d, h + 1, 0, 0, 0);
+  // Nếu còn < 2s đến đầu giờ (vừa sang giờ), nhảy thêm 1 giờ tránh wake quá sớm
+  let waitMs = nextHourVnAsUtc - VN - nowMs + bufferMs;
+  if (waitMs < 3000) {
+    nextHourVnAsUtc += 60 * 60 * 1000;
+    waitMs = nextHourVnAsUtc - VN - nowMs + bufferMs;
+  }
+  const nextOpenAt = new Date(nextHourVnAsUtc - VN).toISOString();
+  return {
+    waitMs: Math.max(5_000, waitMs),
+    nextOpenAt,
+    reason: "next_full_hour_vn",
+  };
+}
+
+/**
+ * Khi window đóng: ưu tiên giờ chẵn VN; fallback checkIntervalMs.
  */
 export function msUntilWindowReopen(
   snap: Pick<WorldBossSnapshot, "windowOpen" | "windowStart" | "windowEnd">,
@@ -417,53 +449,12 @@ export function msUntilWindowReopen(
     return { waitMs: 0, nextOpenAt: null, reason: "window_already_open" };
   }
 
-  const now = Date.now();
-  const startMs = snap.windowStart ? new Date(snap.windowStart).getTime() : NaN;
-  const endMs = snap.windowEnd ? new Date(snap.windowEnd).getTime() : NaN;
-  const DAY = 24 * 60 * 60 * 1000;
-  const bufferMs = 3000; // +3s sau giờ mở
-
-  // Chưa tới giờ mở cửa lần này
-  if (Number.isFinite(startMs) && now < startMs) {
-    const waitMs = Math.max(5_000, startMs - now + bufferMs);
-    return {
-      waitMs,
-      nextOpenAt: new Date(startMs).toISOString(),
-      reason: "before_window_start",
-    };
-  }
-
-  // Đã qua window_end → lần mở sau = window_start + k*24h (k đủ lớn)
-  if (Number.isFinite(startMs)) {
-    let nextStart = startMs;
-    // nếu start đã qua (cùng period đã hết), nhảy từng ngày
-    while (nextStart <= now) {
-      nextStart += DAY;
-    }
-    // nếu có end và nextStart vẫn trong khung lạ, vẫn OK — nextStart là lần mở tiếp
-    const waitMs = Math.max(5_000, nextStart - now + bufferMs);
-    return {
-      waitMs,
-      nextOpenAt: new Date(nextStart).toISOString(),
-      reason: Number.isFinite(endMs) && now >= endMs ? "after_window_end_next_day" : "next_window_start",
-    };
-  }
-
-  // Chỉ có end, không có start
-  if (Number.isFinite(endMs) && now < endMs) {
-    // window_open=false nhưng chưa hết end — hiếm; chờ hết end rồi + buffer, hoặc fallback
-    const waitMs = Math.max(5_000, endMs - now + bufferMs);
-    return {
-      waitMs,
-      nextOpenAt: new Date(endMs + bufferMs).toISOString(),
-      reason: "wait_until_end_then_recheck",
-    };
-  }
-
+  // Logic game: mỗi giờ chẵn boss ra lại
+  const hour = msUntilNextFullHourVn(Date.now(), 2000);
   return {
-    waitMs: Math.max(5_000, fallbackMs),
-    nextOpenAt: null,
-    reason: "fallback_interval",
+    waitMs: hour.waitMs,
+    nextOpenAt: hour.nextOpenAt,
+    reason: hour.reason,
   };
 }
 
@@ -664,7 +655,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     errors: [],
   };
 
-  /** window_open=false → hẹn đúng giờ mở từ window_start / window_end */
+  /** window_open=false → chờ giờ chẵn kế tiếp (VN): 5h30 chết → 6h00 hồi */
   const scheduleWhenClosed = (snap: WorldBossSnapshot) => {
     const { waitMs, nextOpenAt, reason } = msUntilWindowReopen(snap, checkIntervalMs);
     summary.status = "WAITING_RESPAWN";
@@ -675,7 +666,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       : "?";
     onLog?.(
       "WARN",
-      `WB window đóng · start=${snap.windowStart || "?"} end=${snap.windowEnd || "?"} · mở lại ~${when} (chờ ${formatWait(waitMs)}) · ${reason}`
+      `WB window đóng · start=${snap.windowStart || "?"} end=${snap.windowEnd || "?"} · hồi giờ chẵn ~${when} (chờ ${formatWait(waitMs)}) · không poll`
     );
   };
 
