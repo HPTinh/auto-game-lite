@@ -214,7 +214,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     allow_zero_score: true,
   },
   craft: {
-    /** hiện chỉ hỗ trợ luyện đan (alchemy) — giống bản local */
+    /**
+     * category API:
+     * - alchemy = Luyện đan
+     * - forging = Luyện khí (không dùng "forge")
+     */
     mode: "manual",
     category: "alchemy",
     tier: "lk",
@@ -225,13 +229,13 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     times_per_run: 1,
     interval_seconds: 20,
     pause_on_fail_minutes: 30,
-    /** tự tải rpc_list_recipes(alchemy) nếu recipe_cache rỗng */
+    /** tự tải rpc_list_recipes(category) nếu recipe_cache rỗng */
     auto_load_recipes: true,
     auto_open_containers: true,
     auto_use_recovery_items: true,
     stamina_item_code: "",
     spirit_item_code: "",
-    /** cache danh sách recipe luyện đan — server/UI tự điền */
+    /** cache danh sách recipe theo category — server/UI tự điền */
     recipe_cache: [],
     recipe_cache_at: "",
   },

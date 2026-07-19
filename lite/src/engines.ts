@@ -22,6 +22,8 @@ export {
   filterCraftRecipes,
   getCraftTierLabel,
   getCraftCategoryLabel,
+  normalizeCraftCategory,
+  CRAFT_SUPPORTED_CATEGORIES,
 } from "../../lib/craftEngine";
 export { runPvpAuto } from "../../lib/pvpEngine";
 export { runNhapMongAuto } from "../../lib/nhapMongEngine";

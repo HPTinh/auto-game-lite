@@ -71,9 +71,33 @@ const TIER_LABELS: Record<string, string> = {
 
 const CATEGORY_LABELS: Record<string, string> = {
   alchemy: "Luyện đan (hệ Mộc)",
+  /** API thật dùng forging (không phải forge) — xem craft.txt */
+  forging: "Luyện khí",
   forge: "Luyện khí",
   array: "Trận pháp",
   talisman: "Phù lục",
+};
+
+/** Category được hỗ trợ list + craft hiện tại */
+export const CRAFT_SUPPORTED_CATEGORIES = ["alchemy", "forging"] as const;
+export type CraftSupportedCategory = (typeof CRAFT_SUPPORTED_CATEGORIES)[number];
+
+/**
+ * Chuẩn hoá category gửi RPC:
+ * - forge / luyen_khi / luyện khí → forging
+ * - alchemy / luyen_dan → alchemy
+ */
+export const normalizeCraftCategory = (category: any): CraftSupportedCategory => {
+  const raw = String(category || "alchemy").toLowerCase().trim();
+  if (raw === "forging" || raw === "forge" || raw === "luyen_khi" || raw === "luyện khí" || raw === "luyen khi") {
+    return "forging";
+  }
+  if (raw === "alchemy" || raw === "luyen_dan" || raw === "luyện đan" || raw === "luyen dan") {
+    return "alchemy";
+  }
+  // fallback: nếu lạ thì alchemy
+  if ((CRAFT_SUPPORTED_CATEGORIES as readonly string[]).includes(raw)) return raw as CraftSupportedCategory;
+  return "alchemy";
 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -85,7 +109,10 @@ const clampNumber = (value: any, min: number, max: number, fallback: number) => 
 };
 
 export const getCraftTierLabel = (tier: any) => TIER_LABELS[String(tier || "unknown").toLowerCase()] || String(tier || "?");
-export const getCraftCategoryLabel = (category: any) => CATEGORY_LABELS[String(category || "alchemy")] || String(category || "alchemy");
+export const getCraftCategoryLabel = (category: any) => {
+  const norm = normalizeCraftCategory(category);
+  return CATEGORY_LABELS[norm] || CATEGORY_LABELS[String(category || "alchemy")] || String(category || "alchemy");
+};
 
 const rpc = async (accessToken: string, name: string, payload: Record<string, any>) => {
   const res = await fetch(`${BASE_URL}/rest/v1/rpc/${name}`, {
@@ -144,7 +171,13 @@ const inferTierFromCode = (recipeCode: string, settingsTier: any): CraftTierCode
 const inferKindLabel = (recipe: any) => {
   const code = String(recipe?.recipe_code || recipe?.output_code || "").toLowerCase();
   const meta = recipe?.meta || {};
-  if (meta.dao_khi || code.includes("dao_khi") || code.includes("dao_tinh")) return "Đạo khí";
+  // Forging / luyện khí
+  if (meta.dao_khi || code.includes("dao_khi") || code.includes("dao_quang") || code.includes("dao_tinh")) return "Đạo khí";
+  if (code.includes("eq_weapon") || code.includes("_weapon_")) return "Vũ khí";
+  if (code.includes("eq_armor") || code.includes("_armor_")) return "Giáp";
+  if (code.includes("eq_boots") || code.includes("_boots_")) return "Giày";
+  if (code.includes("eq_accessory") || code.includes("_accessory_")) return "Phụ kiện";
+  // Alchemy / luyện đan
   if (meta.kind === "tu_vi" || code.includes("tu_vi")) return "Đan tu vi";
   if (code.includes("linh_thu")) return "Linh thú đan";
   if (code.includes("_realm")) return "Đan đột phá";
@@ -207,10 +240,18 @@ export const listCraftRecipes = async ({
   accessToken: string;
   category?: string;
 }) => {
-  // Server hiện chỉ cần p_category theo Network; characterId giữ lại để sau này nếu RPC đổi schema vẫn dễ mở rộng.
-  const data = await rpc(accessToken, "rpc_list_recipes", { p_category: category });
+  // API: p_category = alchemy | forging (luyện khí — craft.txt)
+  const pCategory = normalizeCraftCategory(category);
+  // characterId giữ lại nếu RPC sau này cần
+  void characterId;
+  const data = await rpc(accessToken, "rpc_list_recipes", { p_category: pCategory });
   const rows = Array.isArray(data) ? data : Array.isArray(data?.recipes) ? data.recipes : Array.isArray(data?.items) ? data.items : [];
-  return rows.map(normalizeCraftRecipe);
+  return rows.map((row) => {
+    const normalized = normalizeCraftRecipe(row);
+    // gắn category chuẩn nếu row thiếu
+    if (!normalized.category) normalized.category = pCategory;
+    return normalized;
+  });
 };
 
 const reasonOf = (data: any) => String(data?.reason || data?.message || data?.error || data?.code || data?.details || "").toLowerCase();
@@ -371,7 +412,7 @@ export const runCraftAuto = async ({
   onLog?: (level: "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR", message: string, meta?: Record<string, any>) => void;
   shouldStop?: () => boolean;
 }): Promise<CraftRunSummary> => {
-  const category = String(settings.category || settings.craft_category || "alchemy");
+  const category = normalizeCraftCategory(settings.category || settings.craft_category || "alchemy");
   const recipeCode = String(settings.recipe_code || settings.selected_recipe_code || "").trim();
   const tierCode = inferTierFromCode(recipeCode, settings.tier || settings.realm_code || settings.selected_recipe_tier);
   const times = clampNumber(settings.times_per_run ?? settings.p_times ?? 1, 1, 50, 1);

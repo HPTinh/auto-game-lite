@@ -12,7 +12,7 @@ import {
   stopAccount,
   stopAll,
 } from "./orchestrator";
-import { listCraftRecipes, filterCraftRecipes } from "./engines";
+import { listCraftRecipes, filterCraftRecipes, normalizeCraftCategory } from "./engines";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -286,7 +286,8 @@ app.patch("/api/accounts/:id/features", (req, res) => {
 });
 
 /**
- * Tải danh sách recipe luyện đan (alchemy only) — rpc_list_recipes.
+ * Tải danh sách recipe — rpc_list_recipes.
+ * body.category: alchemy | forging (luyện khí)
  * Lưu vào feature craft.settings.recipe_cache.
  */
 app.post("/api/accounts/:id/craft/recipes", async (req, res) => {
@@ -300,21 +301,27 @@ app.post("/api/accounts/:id/craft/recipes", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Chưa login — bấm Check account trước" });
     }
 
-    // Bản local hiện chỉ craft alchemy (luyện đan)
-    const category = "alchemy";
+    const settings = acc.features?.craft?.settings || {};
+    const category = normalizeCraftCategory(
+      req.body?.category || settings.category || "alchemy"
+    );
     const recipes = await listCraftRecipes({
       characterId: runtime.characterId,
       accessToken: runtime.accessToken,
       category,
     });
     const cacheAt = new Date().toISOString();
-    const settings = acc.features?.craft?.settings || {};
     store.setFeature(id, "craft", {
       settings: {
         ...settings,
         category,
         recipe_cache: recipes,
         recipe_cache_at: cacheAt,
+        // đổi category → clear recipe cũ nếu khác cache trước
+        recipe_code:
+          settings.category && normalizeCraftCategory(settings.category) !== category
+            ? ""
+            : settings.recipe_code || "",
       },
     });
 

@@ -12,6 +12,7 @@ import {
   runClaimExpAuto,
   runCraftAuto,
   listCraftRecipes,
+  normalizeCraftCategory,
   runFarmAuto,
   runMailClaimAll,
   runMazeAuto,
@@ -832,24 +833,26 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
     } else if (featureId === "craft") {
-      // Chỉ luyện đan (alchemy) — giống bản local hiện tại
+      // alchemy = luyện đan · forging = luyện khí (API p_category, không dùng "forge")
+      const category = normalizeCraftCategory(settings.category || "alchemy");
       let craftSettings = {
         ...settings,
-        category: "alchemy",
+        category,
         mode: settings.mode || "manual",
       };
+      const catLabel = category === "forging" ? "luyện khí" : "luyện đan";
 
-      // Tự tải danh sách recipe alchemy nếu cache rỗng
+      // Tự tải danh sách recipe theo category nếu cache rỗng
       if (
         craftSettings.auto_load_recipes !== false &&
         (!Array.isArray(craftSettings.recipe_cache) || craftSettings.recipe_cache.length === 0)
       ) {
         try {
-          sysLog(accountId, "CRAFT", "INFO", "Craft: đang tải danh sách recipe luyện đan (alchemy)...");
+          sysLog(accountId, "CRAFT", "INFO", `Craft: đang tải list ${catLabel} (${category})...`);
           const recipes = await listCraftRecipes({
             characterId: runtime.characterId,
             accessToken: runtime.accessToken,
-            category: "alchemy",
+            category,
           });
           const cacheAt = new Date().toISOString();
           craftSettings = {
@@ -860,12 +863,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           store.setFeature(accountId, "craft", {
             settings: {
               ...settings,
-              category: "alchemy",
+              category,
               recipe_cache: recipes,
               recipe_cache_at: cacheAt,
             },
           });
-          sysLog(accountId, "CRAFT", "SUCCESS", `Craft: đã tải ${recipes.length} recipe luyện đan`);
+          sysLog(accountId, "CRAFT", "SUCCESS", `Craft: đã tải ${recipes.length} recipe ${catLabel}`);
         } catch (e: any) {
           sysLog(accountId, "CRAFT", "WARN", `Craft: tải recipe fail — ${e?.message || e}`);
         }
@@ -873,9 +876,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
 
       if (!String(craftSettings.recipe_code || "").trim()) {
         status = "error";
-        errMsg = "Chưa chọn recipe_code luyện đan";
+        errMsg = `Chưa chọn recipe_code (${catLabel})`;
         nextDelayMs = Math.max(60_000, Number(craftSettings.interval_seconds || 20) * 1000);
-        sysLog(accountId, "CRAFT", "WARN", "Craft: chưa chọn recipe — mở ⚙ Craft → Tải list → chọn recipe");
+        sysLog(accountId, "CRAFT", "WARN", `Craft: chưa chọn recipe — ⚙ Craft → chọn ${catLabel} → Tải list → pick`);
       } else {
         const result = await runCraftAuto({
           characterId: runtime.characterId,
@@ -902,7 +905,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
             accountId,
             "CRAFT",
             result?.successCount > 0 ? "SUCCESS" : result?.status === "PAUSED" || result?.status === "SKIPPED" ? "WARN" : "INFO",
-            `Craft ${result?.status} · ${result?.recipeCode || "?"} · ok ${result?.successCount || 0}/fail ${result?.failCount || 0} · ${rewardText} · next ${Math.round(nextDelayMs / 1000)}s`
+            `Craft ${result?.status} · ${category} · ${result?.recipeCode || "?"} · ok ${result?.successCount || 0}/fail ${result?.failCount || 0} · ${rewardText} · next ${Math.round(nextDelayMs / 1000)}s`
           );
         }
       }
