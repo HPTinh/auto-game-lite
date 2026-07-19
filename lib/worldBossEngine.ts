@@ -678,7 +678,9 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         tierBag.lastAttack = attack;
         tierBag.attackCount += 1;
         summary.attackCount += 1;
-        lastCdMs = attackCooldownMs(attack, defaultCdMs);
+        // Setting delay (3000/1500); API cd chỉ tăng thêm nếu game yêu cầu chậm hơn
+        const apiCd = attackCooldownMs(attack, hitDelayMs);
+        lastCdMs = useFixedDelay ? hitDelayMs : Math.max(hitDelayMs, apiCd);
 
         const dmg = Number(attack?.damage);
         const hpAfter = Number(attack?.hp_after);
@@ -686,7 +688,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         if (i === 1 || i === maxAttacks || i % 10 === 0) {
           onLog?.(
             "INFO",
-            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · cd ${Math.round(lastCdMs / 1000)}s`
+            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · delay ${lastCdMs}ms`
           );
         }
 
