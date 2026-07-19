@@ -64,10 +64,13 @@
       <h1>AUTO LITE</h1>
       <span class="pill" id="stats">...</span>
     </div>
-    <div style="display:flex;gap:6px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="g" id="startAll">Start all</button>
       <button class="r" id="stopAll">Stop all</button>
+      <button id="btnExport" title="Tải file backup account+setting">Export</button>
+      <button id="btnImport" title="Nạp file backup">Import</button>
       <button id="refresh">↻</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden />
     </div>
   </header>
 
@@ -82,6 +85,10 @@
         <input id="password" type="password" placeholder="password" autocomplete="current-password" />
       </div>
       <button class="p" id="btnAdd">Thêm + Check</button>
+    </div>
+    <div class="mu" style="font-size:11px;margin:-4px 0 8px">
+      Account + setting tự backup trình duyệt. Trùng email = cập nhật password, <b>không mất setting</b>.
+      Sau redeploy Render: mở lại web 1 lần để tự khôi phục.
     </div>
     <div class="msg" id="msg"></div>
     <div id="list"></div>
@@ -185,9 +192,66 @@
     let API_KEY = new URLSearchParams(location.search).get("key") || localStorage.getItem("lite_api_key") || "";
     if (new URLSearchParams(location.search).get("key")) localStorage.setItem("lite_api_key", API_KEY);
 
+    const BACKUP_KEY = "auto_lite_accounts_backup_v1";
     let accounts = [];
     let modal = null; // {accId, featureId, draft}
     let busy = false;
+    let didAutoRestore = false;
+
+    function saveLocalBackup(data) {
+      try {
+        if (!data?.accounts?.length) return;
+        localStorage.setItem(BACKUP_KEY, JSON.stringify({
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          accounts: data.accounts,
+        }));
+      } catch (_) {}
+    }
+
+    function readLocalBackup() {
+      try {
+        const raw = localStorage.getItem(BACKUP_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+
+    async function pullAndCacheBackup() {
+      try {
+        const data = await api("/api/backup");
+        if (data?.accounts?.length) saveLocalBackup(data);
+        return data;
+      } catch {
+        return null;
+      }
+    }
+
+    async function autoRestoreIfEmpty() {
+      if (didAutoRestore) return false;
+      didAutoRestore = true;
+      const local = readLocalBackup();
+      if (!local?.accounts?.length) return false;
+      try {
+        const cur = await api("/api/accounts");
+        if ((cur.accounts || []).length > 0) {
+          // server còn data — chỉ cache lại
+          await pullAndCacheBackup();
+          return false;
+        }
+        const r = await api("/api/backup/restore", {
+          method: "POST",
+          body: JSON.stringify(local),
+        });
+        msg(`Đã khôi phục ${r.imported || 0} account từ backup trình duyệt (settings giữ nguyên)`, true);
+        return true;
+      } catch (e) {
+        msg(e.message || "Auto-restore fail", false);
+        return false;
+      }
+    }
 
     const $ = (id) => document.getElementById(id);
     const msg = (t, ok) => { const el=$("msg"); el.textContent=t||""; el.className="msg "+(ok?"o":"e"); };
@@ -355,7 +419,7 @@
         }
         msg(`Đã lưu setting ${LABELS[featureId]||featureId}`, true);
         closeModal();
-        // reload server để chắc chắn
+        await pullAndCacheBackup();
         await load(true);
       } catch (e) {
         msg(e.message, false);
@@ -366,7 +430,6 @@
 
     async function load(forceRender) {
       if (modal && !forceRender) {
-        // vẫn cập nhật stats + logs trong memory
         try {
           const [st, acc] = await Promise.all([api("/api/status"), api("/api/accounts")]);
           const s = st.stats||{};
@@ -380,6 +443,16 @@
         const s = st.stats||{};
         $("stats").textContent = `${s.runningAccounts||0}/${s.totalAccounts||0} · ${s.memoryMB||"?"}MB · ${s.uptimeSec||0}s`;
         accounts = acc.accounts || [];
+        if (!accounts.length) {
+          const restored = await autoRestoreIfEmpty();
+          if (restored) {
+            const acc2 = await api("/api/accounts");
+            accounts = acc2.accounts || [];
+          }
+        } else {
+          // cache backup (async, không chặn UI)
+          pullAndCacheBackup();
+        }
         if (!modal) render();
       } catch (e) {
         msg(e.message, false);
@@ -392,13 +465,48 @@
         const email = $("email").value.trim();
         const password = $("password").value;
         const enabled = [...DEFAULT_ON];
-        await api("/api/accounts", { method:"POST", body: JSON.stringify({ email, password, enabled, checkNow:true }) });
+        const r = await api("/api/accounts", { method:"POST", body: JSON.stringify({ email, password, enabled, checkNow:true }) });
         $("password").value = "";
-        msg("OK — account sẵn sàng", true);
+        msg(r.account ? "OK — account đã lưu (trùng email thì chỉ update password, giữ setting)" : "OK", true);
+        await pullAndCacheBackup();
         await load(true);
       } catch (e) {
         msg(e.message, false);
+        await pullAndCacheBackup();
         await load(true);
+      }
+    };
+
+    $("btnExport").onclick = async () => {
+      try {
+        const data = await api("/api/backup");
+        saveLocalBackup(data);
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `auto-lite-backup-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        msg(`Export ${data.accounts?.length||0} account (+ cache trình duyệt)`, true);
+      } catch (e) {
+        msg(e.message, false);
+      }
+    };
+
+    $("btnImport").onclick = () => $("importFile").click();
+    $("importFile").onchange = async (ev) => {
+      const file = ev.target.files?.[0];
+      ev.target.value = "";
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify(json) });
+        saveLocalBackup(json);
+        msg(r.message || "Import OK", true);
+        await load(true);
+      } catch (e) {
+        msg(e.message || "Import fail", false);
       }
     };
 
@@ -463,6 +571,7 @@
           acc.features[fid].status = enabled ? "PENDING" : "OFF";
         }
         msg(`${LABELS[fid]}: ${enabled?"ON":"OFF"}`, true);
+        pullAndCacheBackup();
       } catch (err) {
         t.checked = !enabled;
         t.closest(".chip")?.classList.toggle("on", !enabled);

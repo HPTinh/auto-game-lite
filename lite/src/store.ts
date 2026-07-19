@@ -230,6 +230,108 @@ class Store {
     return acc;
   }
 
+  /** Backup đầy đủ (có password + features/settings) — dùng restore sau redeploy */
+  exportBackup(): StoreData {
+    return {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      accounts: this.list().map((a) => ({
+        ...a,
+        accessToken: undefined, // token hết hạn nhanh — không cần backup
+        running: false,
+        activeTask: undefined,
+        errorMessage: undefined,
+        logs: [],
+        state: "IDLE" as const,
+      })),
+    };
+  }
+
+  /**
+   * Restore/merge backup theo email.
+   * - Trùng email: giữ id hiện tại, cập nhật password + features/settings (không mất setting).
+   * - Email mới: thêm account.
+   */
+  importBackup(raw: any, opts?: { replace?: boolean }): { imported: number; updated: number; added: number } {
+    const list: any[] = Array.isArray(raw?.accounts) ? raw.accounts : Array.isArray(raw) ? raw : [];
+    let updated = 0;
+    let added = 0;
+
+    if (opts?.replace) {
+      this.accounts.clear();
+    }
+
+    for (const row of list) {
+      const email = String(row?.email || "")
+        .trim()
+        .toLowerCase();
+      const password = String(row?.password || "");
+      if (!email || !password) continue;
+
+      const existing = this.list().find((a) => a.email === email);
+      const defaults = defaultFeatures([]);
+      const incomingFeatures = row.features && typeof row.features === "object" ? row.features : {};
+
+      // merge features: defaults ← existing ← backup
+      const mergedFeatures: Account["features"] = { ...defaults };
+      for (const fid of Object.keys(defaults) as FeatureId[]) {
+        const fromBackup = incomingFeatures[fid];
+        const fromExist = existing?.features?.[fid];
+        mergedFeatures[fid] = {
+          enabled: Boolean(fromBackup?.enabled ?? fromExist?.enabled ?? false),
+          status: "OFF",
+          settings: {
+            ...defaults[fid]!.settings,
+            ...(fromExist?.settings || {}),
+            ...(fromBackup?.settings || {}),
+          },
+          lastRunAt: fromBackup?.lastRunAt || fromExist?.lastRunAt,
+        };
+      }
+
+      if (existing) {
+        existing.password = password;
+        existing.features = mergedFeatures;
+        existing.characterId = row.characterId || existing.characterId;
+        existing.characterName = row.characterName || existing.characterName;
+        existing.level = row.level ?? existing.level;
+        existing.wantRunning = Boolean(row.wantRunning ?? existing.wantRunning);
+        existing.running = false;
+        existing.state = "IDLE";
+        existing.updatedAt = new Date().toISOString();
+        // clear expired token so next check re-login
+        if (row.forceRelogin !== false) existing.accessToken = undefined;
+        updated += 1;
+      } else {
+        const now = new Date().toISOString();
+        const id = String(row.id || uid());
+        const acc: Account = {
+          id: this.accounts.has(id) ? uid() : id,
+          email,
+          password,
+          characterId: row.characterId,
+          characterName: row.characterName,
+          level: row.level,
+          features: mergedFeatures,
+          logs: [],
+          running: false,
+          wantRunning: Boolean(row.wantRunning),
+          state: "IDLE",
+          gold: Number(row.gold) || 0,
+          spiritStones: Number(row.spiritStones) || 0,
+          createdAt: row.createdAt || now,
+          updatedAt: now,
+        };
+        this.accounts.set(acc.id, acc);
+        added += 1;
+      }
+    }
+
+    this.persist(true);
+    this.notify();
+    return { imported: updated + added, updated, added };
+  }
+
   /**
    * Ghi log in-memory. Không ghi disk mỗi dòng (tránh spam I/O Render).
    * Dedupe dòng trùng liên tiếp: gộp thành message (×N).

@@ -99,6 +99,32 @@ app.get("/api/accounts", (_req, res) => {
   res.json({ ok: true, accounts: store.listPublic() });
 });
 
+/** Backup đầy đủ (password + settings) — browser localStorage / file */
+app.get("/api/backup", (_req, res) => {
+  const data = store.exportBackup();
+  res.json({
+    ok: true,
+    ...data,
+    note: "Giữ file này để restore sau redeploy. Có password — đừng share.",
+  });
+});
+
+/** Restore merge theo email — không mất setting nếu trùng account */
+app.post("/api/backup/restore", (req, res) => {
+  try {
+    const replace = req.body?.replace === true;
+    const result = store.importBackup(req.body, { replace });
+    res.json({
+      ok: true,
+      ...result,
+      accounts: store.listPublic(),
+      message: `Restore OK · cập nhật ${result.updated} · thêm ${result.added}`,
+    });
+  } catch (e: any) {
+    res.status(400).json({ ok: false, error: e?.message || "Restore fail" });
+  }
+});
+
 app.post("/api/accounts", async (req, res) => {
   const email = String(req.body?.email || "").trim();
   const password = String(req.body?.password || "");
@@ -110,7 +136,7 @@ app.post("/api/accounts", async (req, res) => {
     return res.status(400).json({ ok: false, error: "Thiếu email/password" });
   }
 
-  // Trùng email: cập nhật password + giữ account cũ
+  // Trùng email: chỉ cập nhật password — GIỮ NGUYÊN features/settings
   const existing = store.list().find((a) => a.email === email.trim().toLowerCase());
   let acc = existing;
   if (acc) {
@@ -264,6 +290,17 @@ function startSelfPing() {
 }
 
 store.load();
+
+// Optional: restore từ env ACCOUNTS_BACKUP_JSON nếu disk trống (sau redeploy)
+try {
+  if (store.list().length === 0 && process.env.ACCOUNTS_BACKUP_JSON) {
+    const raw = JSON.parse(process.env.ACCOUNTS_BACKUP_JSON);
+    const r = store.importBackup(raw, { replace: true });
+    console.log(`[backup] ACCOUNTS_BACKUP_JSON: +${r.added} ~${r.updated}`);
+  }
+} catch (e: any) {
+  console.warn("[backup] ACCOUNTS_BACKUP_JSON invalid:", e?.message || e);
+}
 
 const host = "0.0.0.0";
 app.listen(config.port, host, () => {
