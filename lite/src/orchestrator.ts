@@ -19,6 +19,7 @@ import {
   runKhoiLoiAuto,
   runKiNgoAuto,
   msUntilNextVietnamNoon,
+  runVipDailyAuto,
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
@@ -776,6 +777,51 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           "INFO",
           `Kì ngộ ${result.status} · ${used}/${limit ?? "?"} · ok ${result.successCount} · next ${Math.round(nextDelayMs / 1000)}s`
         );
+      }
+    } else if (featureId === "vip_daily") {
+      // VIP daily: claimed_today false → claim; true → chờ 00:00 VN
+      const result = await runVipDailyAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        msUntilNextMidnight: msUntilNextVnMidnight(),
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "VIP_DAILY"),
+      });
+
+      store.setFeature(accountId, "vip_daily", {
+        settings: {
+          ...settings,
+          ...result.persist,
+          claimed_today: result.persist.claimed_today,
+          daily_date: result.persist.daily_date,
+        },
+      });
+
+      nextDelayMs = Math.max(60_000, Number(result.nextDelayMs || msUntilNextVnMidnight()));
+
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "VIP daily error";
+        sysLog(accountId, "VIP_DAILY", "ERROR", errMsg);
+      } else if (result.status === "CLAIMED") {
+        const hrs = Math.ceil(nextDelayMs / 3600_000);
+        sysLog(
+          accountId,
+          "VIP_DAILY",
+          "SUCCESS",
+          `VIP claim OK · ${result.reason || ""} · đã claim hôm nay · chờ ~${hrs}h đến 00:00 VN`
+        );
+      } else if (result.status === "ALREADY") {
+        const hrs = Math.ceil(nextDelayMs / 3600_000);
+        sysLog(
+          accountId,
+          "VIP_DAILY",
+          "INFO",
+          `VIP hôm nay đã claim rồi (${result.today || result.persist.daily_date}) · chờ ~${hrs}h đến 00:00 VN`
+        );
+      } else {
+        sysLog(accountId, "VIP_DAILY", "INFO", `VIP ${result.status} · ${result.reason || ""}`);
       }
     } else if (featureId === "auto_equip") {
       await runAutoEquipCheck({

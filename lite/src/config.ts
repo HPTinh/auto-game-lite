@@ -44,6 +44,7 @@ export type FeatureId =
   | "nhap_mong"
   | "khoi_loi"
   | "ki_ngo"
+  | "vip_daily"
   | "auto_equip"
   | "craft"
   | "body_cult"
@@ -63,6 +64,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   nhap_mong: "Nhập Mộng",
   khoi_loi: "Khôi Lỗi",
   ki_ngo: "Kì ngộ",
+  vip_daily: "VIP daily",
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
@@ -143,6 +145,15 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     daily_limit: 0,
     completed_today: false,
     last_run_at: "",
+  },
+  vip_daily: {
+    /** tự claim rpc_vip_auto_claim_artifacts sau daily (nếu có) */
+    auto_claim_artifacts: true,
+    // tiến độ ngày — tool tự lưu (reset 00:00 VN)
+    claimed_today: false,
+    daily_date: "",
+    last_claim_at: "",
+    vip_level: 0,
   },
   buff: {
     interval_seconds: 300,

@@ -116,13 +116,13 @@
 
   <script>
     const FEATURES = [
-      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","nhap_mong","khoi_loi","ki_ngo",
+      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","nhap_mong","khoi_loi","ki_ngo","vip_daily",
       "auto_equip","craft","body_cult","onboarding_claim","world_cup_checkin"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
       achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", nhap_mong:"Nhập Mộng", khoi_loi:"Khôi Lỗi",
-      ki_ngo:"Kì ngộ",
+      ki_ngo:"Kì ngộ", vip_daily:"VIP daily",
       auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể", onboarding_claim:"Onboard", world_cup_checkin:"WC"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
@@ -172,6 +172,13 @@
         {k:"daily_count",l:"Đã chạy (tự đếm)",t:"number",min:0},
         {k:"daily_limit",l:"Giới hạn ngày (tự)",t:"number",min:0},
         {k:"completed_today",l:"Đủ ngày — chờ 12h VN",t:"bool"},
+      ],
+      vip_daily: [
+        {k:"auto_claim_artifacts",l:"Tự claim VIP artifacts",t:"bool"},
+        {k:"claimed_today",l:"Hôm nay đã claim (tự)",t:"bool"},
+        {k:"daily_date",l:"Ngày claim (YYYY-MM-DD, tự)",t:"text"},
+        {k:"last_claim_at",l:"Lần claim gần nhất (tự)",t:"text"},
+        {k:"vip_level",l:"VIP level (tự)",t:"number",min:0},
       ],
       maze: [
         {k:"tier",l:"Bậc (1-6)",t:"number",min:1,max:6},

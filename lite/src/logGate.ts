@@ -145,6 +145,15 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     );
   }
 
+  if (module === "VIP_DAILY") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /vip|claim|đã claim|00:00|hôm nay/i.test(text)
+    );
+  }
+
   if (module === "MAZE") {
     return (
       lv === "ERROR" ||

@@ -27,3 +27,4 @@ export { runPvpAuto } from "../../lib/pvpEngine";
 export { runNhapMongAuto } from "../../lib/nhapMongEngine";
 export { runKhoiLoiAuto } from "../../lib/khoiLoiEngine";
 export { runKiNgoAuto, msUntilNextVietnamNoon } from "../../lib/kiNgoEngine";
+export { runVipDailyAuto, msUntilNextVnMidnight as msUntilNextVnMidnightVip } from "../../lib/vipDailyEngine";
