@@ -306,24 +306,27 @@ async function fetchChannels(characterId: string, accessToken: string) {
 }
 
 /**
- * Chọn tier đánh:
- * - auto: channel available=true + boss sống (thường đúng rank my_tier)
- * - manual: trong list tiers user chọn, chỉ đánh nếu available (hoặc bỏ qua check available nếu force)
+ * Tự chọn tier từ rpc_wb_channels:
+ * - available === true (đủ rank → vd my_tier=kd thì channel kd available)
+ * - boss còn sống (status open + hp > 0)
+ * Ưu tiên my_tier trước, rồi tier available khác.
+ * Không cần nhập thủ công.
  */
 function pickTiersToFight(
   channels: WorldBossChannelInfo[],
   myTier: string | undefined,
   options: WorldBossAutoOptions
 ): { fight: string[]; skipped: { tier: string; reason: string }[] } {
-  const auto = options.autoSelectTiers !== false;
   const manual = normalizeTiers(options.tiers);
+  // Chỉ khi user tắt auto VÀ nhập tiers thủ công mới filter; mặc định luôn auto theo channel
+  const forceManual = options.autoSelectTiers === false && manual.length > 0;
   const byTier = new Map(channels.map(c => [c.tier, c]));
   const skipped: { tier: string; reason: string }[] = [];
   const fight: string[] = [];
 
-  const candidates = auto
-    ? channels.map(c => c.tier)
-    : (manual.length ? manual : (myTier ? [myTier] : channels.map(c => c.tier)));
+  const candidates = forceManual
+    ? manual
+    : channels.map(c => c.tier);
 
   const unique = Array.from(new Set(candidates));
 
@@ -344,12 +347,37 @@ function pickTiersToFight(
     fight.push(tier);
   }
 
-  // auto: ưu tiên my_tier trước, rồi các tier available khác (nếu có)
-  if (auto && myTier && fight.includes(myTier)) {
+  // Ưu tiên my_tier (rank hiện tại) — game set available=true đúng tier mình đánh được
+  if (myTier && fight.includes(myTier)) {
     fight.sort((a, b) => (a === myTier ? -1 : b === myTier ? 1 : a.localeCompare(b)));
+  } else {
+    // sort theo độ khó tăng: lk < tc < kd < na < ht < lh
+    const order = ["lk", "tc", "kd", "na", "ht", "lh"];
+    fight.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   }
 
   return { fight, skipped };
+}
+
+/** Cooldown giữa 2 đòn từ response attack (mặc định game: 3s) */
+function attackCooldownMs(attack: any, fallbackMs: number): number {
+  const cd = Number(attack?.cooldown_sec ?? attack?.atk_speed_sec ?? attack?.cooldown ?? attack?.atk_speed);
+  if (Number.isFinite(cd) && cd > 0) return Math.max(200, Math.round(cd * 1000));
+  // atk_speed_sec ưu tiên nếu có cả hai
+  const speed = Number(attack?.atk_speed_sec);
+  const cool = Number(attack?.cooldown_sec);
+  if (Number.isFinite(speed) && Number.isFinite(cool)) {
+    return Math.max(200, Math.round(Math.max(speed, cool) * 1000));
+  }
+  return Math.max(200, fallbackMs || 3000);
+}
+
+function isBossKilledByAttack(attack: any): boolean {
+  if (!attack) return false;
+  if (attack.killed === true || attack.boss_dead === true || attack.dead === true) return true;
+  const hpAfter = Number(attack.hp_after);
+  if (Number.isFinite(hpAfter) && hpAfter <= 0) return true;
+  return isClaimRewardLike(attack);
 }
 
 async function checkPendingRewards(options: WorldBossAutoOptions) {
@@ -429,7 +457,9 @@ async function runTier(
   checkIntervalMs: number
 ): Promise<WorldBossTierResult> {
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 30, 1, 999, 30);
-  const attackDelayMs = Math.max(0, Number(options.attackDelayMs || 1500));
+  // 0 = dùng cooldown_sec từ API (mặc định game 3s); >0 = ép delay ms
+  const fixedDelayMs = Number(options.attackDelayMs);
+  const defaultCdMs = Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? fixedDelayMs : 3000;
   const onLog = options.onLog;
 
   const tierResult: WorldBossTierResult = {
@@ -463,15 +493,27 @@ async function runTier(
 
   await tryClaimTier(options, tier, tierResult, "pre_check_pending_reward");
 
+  let lastCdMs = defaultCdMs;
+  let lastHp = channel?.hp_current;
+
   for (let i = 1; i <= maxAttacks; i++) {
     try {
       const attack = await rpc("rpc_wb_attack", { p_character_id: options.characterId, p_tier: tier }, options.accessToken);
       tierResult.lastAttack = attack;
       tierResult.attackCount += 1;
 
-      // log thưa: mỗi 5 đòn hoặc đòn cuối
+      // Cooldown game: cooldown_sec / atk_speed_sec (thường = 3)
+      lastCdMs = attackCooldownMs(attack, defaultCdMs);
+      const dmg = Number(attack?.damage);
+      const hpAfter = Number(attack?.hp_after);
+      if (Number.isFinite(hpAfter)) lastHp = hpAfter;
+
+      // log thưa: đòn 1, mỗi 5 đòn, đòn cuối — kèm dmg/hp/cd
       if (i === 1 || i === maxAttacks || i % 5 === 0) {
-        onLog?.("INFO", `Boss ${tier}: đánh ${i}/${maxAttacks}`);
+        onLog?.(
+          "INFO",
+          `Boss ${tier}: đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · cd ${Math.round(lastCdMs / 1000)}s`
+        );
       }
 
       const wait = extractNextCheckMs(attack, undefined);
@@ -480,11 +522,13 @@ async function runTier(
         tierResult.nextCheckReason = "attack_response_wait";
       }
 
-      if (isClaimRewardLike(attack) || attack?.can_claim === true || attack?.claimable === true || attack?.boss_dead === true || attack?.dead === true) {
-        await tryClaimTier(options, tier, tierResult, "attack_result_claimable");
+      // killed / hp_after <= 0 từ API attack
+      if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
+        onLog?.("SUCCESS", `Boss ${tier}: đã giết (killed=${attack?.killed}) · claim quà`);
+        await tryClaimTier(options, tier, tierResult, "attack_killed");
         tierResult.status = "WAITING_RESPAWN";
         tierResult.nextCheckMs = Math.max(tierResult.nextCheckMs || 0, checkIntervalMs);
-        tierResult.nextCheckReason = tierResult.nextCheckReason || "boss_dead_after_attack";
+        tierResult.nextCheckReason = "boss_killed";
         break;
       }
 
@@ -494,7 +538,8 @@ async function runTier(
         break;
       }
 
-      if (attackDelayMs > 0 && i < maxAttacks) await sleep(attackDelayMs);
+      // Chờ cooldown game trước đòn tiếp (mặc định 3s)
+      if (i < maxAttacks) await sleep(lastCdMs);
     } catch (error: any) {
       tierResult.lastAttack = error?.data;
 
@@ -574,11 +619,12 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     summary.myTier = myTier;
     summary.channels = channels;
 
-    const alive = channels.filter(c => c.available !== false && isWorldBossAlive(c)).map(c => c.tier);
-    const dead = channels.filter(c => c.available !== false && !isWorldBossAlive(c)).map(c => `${c.tier}(${c.status})`);
+    const alive = channels.filter(c => c.available === true && isWorldBossAlive(c)).map(c => c.tier);
+    const dead = channels.filter(c => c.available === true && !isWorldBossAlive(c)).map(c => `${c.tier}(${c.status})`);
+    const locked = channels.filter(c => c.available === false).map(c => c.tier);
     onLog?.(
       "INFO",
-      `WB rank=${myTier || "?"} · sống: ${alive.join(",") || "—"} · chết/chờ: ${dead.join(",") || "—"} · max ${maxAttacks} đòn · check ${checkIntervalMs / 60000}p`
+      `WB my_tier=${myTier || "?"} · đánh được & sống: [${alive.join(",") || "—"}] · chết: [${dead.join(",") || "—"}] · khóa rank: [${locked.join(",") || "—"}] · cd≈3s/đòn · max ${maxAttacks} · check ${checkIntervalMs / 60000}p`
     );
 
     const { fight, skipped } = pickTiersToFight(channels, myTier, options);

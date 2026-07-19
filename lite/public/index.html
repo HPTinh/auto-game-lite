@@ -168,11 +168,9 @@
       ],
       claim_exp: [{k:"interval_minutes",l:"Chu kỳ (phút)",t:"number",min:1}],
       world_boss: [
-        {k:"auto_select_tiers",l:"Tự chọn tier theo rank",t:"bool"},
-        {k:"tiers",l:"Tier thủ công (tắt auto)",t:"text"},
         {k:"check_interval_minutes",l:"Check sống/chết (phút, min 1)",t:"number",min:1,max:1440},
         {k:"max_attacks_per_check",l:"Max đòn / lần (1-999)",t:"number",min:1,max:999},
-        {k:"attack_delay_ms",l:"Delay giữa đòn (ms)",t:"number",min:0},
+        {k:"attack_delay_ms",l:"Delay đòn ms (0=API cd ~3s)",t:"number",min:0},
         {k:"auto_claim",l:"Tự nhận quà",t:"bool"},
       ],
       breakthrough: [

@@ -117,15 +117,18 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   },
   claim_exp: { interval_minutes: 15 },
   world_boss: {
-    /** true = tự chọn tier theo rank (rpc_wb_channels.my_tier + available) */
+    /** luôn auto theo rpc_wb_channels (available + boss sống) — không cần nhập tier */
     auto_select_tiers: true,
-    /** chỉ dùng khi auto_select_tiers=false — vd "lk,tc" */
     tiers: "",
     /** chu kỳ check boss sống/chết — phút, min 1, mặc định 10 */
     check_interval_minutes: 10,
     /** số đòn tối đa mỗi lần check — 1..999, mặc định 30 */
     max_attacks_per_check: 30,
-    attack_delay_ms: 1500,
+    /**
+     * Delay giữa đòn (ms). 0 = dùng cooldown_sec từ API (game mặc định 3s).
+     * Chỉ set >0 nếu muốn ép chậm hơn.
+     */
+    attack_delay_ms: 0,
     auto_claim: true,
   },
   breakthrough: {
