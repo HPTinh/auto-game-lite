@@ -99,17 +99,49 @@ app.get("/api/accounts", (_req, res) => {
   res.json({ ok: true, accounts: store.listPublic() });
 });
 
-app.post("/api/accounts", (req, res) => {
+app.post("/api/accounts", async (req, res) => {
   const email = String(req.body?.email || "").trim();
   const password = String(req.body?.password || "");
   const enabled: FeatureId[] | undefined = Array.isArray(req.body?.enabled)
     ? req.body.enabled
     : undefined;
+  const checkNow = req.body?.checkNow !== false; // mặc định login kiểm tra ngay
   if (!email || !password) {
     return res.status(400).json({ ok: false, error: "Thiếu email/password" });
   }
-  const acc = store.addAccount(email, password, enabled);
-  return res.json({ ok: true, account: store.toPublic(acc) });
+
+  // Trùng email: cập nhật password + giữ account cũ
+  const existing = store.list().find((a) => a.email === email.trim().toLowerCase());
+  let acc = existing;
+  if (acc) {
+    store.setPassword(acc.id, password);
+    store.addLog(acc.id, "SYS", "INFO", "Account đã tồn tại — đã cập nhật password trên server.");
+  } else {
+    acc = store.addAccount(email, password, enabled);
+  }
+
+  if (checkNow) {
+    try {
+      await loginAccount(acc.id, true);
+      await refreshAccountInfo(acc.id);
+    } catch (e: any) {
+      const latest = store.get(acc.id);
+      return res.status(400).json({
+        ok: false,
+        error: e?.message || "Login fail — password đã lưu server, bấm Kiểm tra lại sau",
+        account: latest ? store.toPublic(latest) : null,
+        saved: true,
+      });
+    }
+  }
+
+  const latest = store.get(acc.id);
+  return res.json({
+    ok: true,
+    saved: true,
+    message: "Đã lưu email/password trên server (data/accounts.json)",
+    account: latest ? store.toPublic(latest) : null,
+  });
 });
 
 app.delete("/api/accounts/:id", (req, res) => {
@@ -118,12 +150,35 @@ app.delete("/api/accounts/:id", (req, res) => {
   res.json({ ok: true });
 });
 
+/** Cập nhật password (lưu server) */
+app.patch("/api/accounts/:id", (req, res) => {
+  const password = String(req.body?.password || "");
+  if (!password) return res.status(400).json({ ok: false, error: "Thiếu password" });
+  const acc = store.setPassword(req.params.id, password);
+  if (!acc) return res.status(404).json({ ok: false, error: "Not found" });
+  res.json({
+    ok: true,
+    saved: true,
+    message: "Password đã lưu trên server",
+    account: store.toPublic(acc),
+  });
+});
+
 app.post("/api/accounts/:id/check", async (req, res) => {
   try {
+    // Cho phép gửi password mới khi check
+    const password = String(req.body?.password || "");
+    if (password) store.setPassword(req.params.id, password);
+
     await loginAccount(req.params.id, true);
     await refreshAccountInfo(req.params.id);
     const acc = store.get(req.params.id);
-    res.json({ ok: true, account: acc ? store.toPublic(acc) : null });
+    res.json({
+      ok: true,
+      saved: true,
+      message: "Login OK — token/character đã cập nhật trên server",
+      account: acc ? store.toPublic(acc) : null,
+    });
   } catch (e: any) {
     res.status(400).json({ ok: false, error: e?.message || "Check fail" });
   }

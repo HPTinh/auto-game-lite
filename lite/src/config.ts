@@ -107,13 +107,16 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   maze: {
     tier: 1,
     run_count: 1,
+    max_passes: 5,
     auto_boss: true,
     auto_claim_final: true,
+    boss_hp_reserve: 5,
+    repeat_interval_minutes: 60,
+    stop_after_batch: false,
     skip_monster: true,
     skip_trap: true,
     skip_fire: true,
     skip_merchant: true,
-    max_passes: 5,
   },
   auto_equip: {
     interval_seconds: 600,

@@ -189,13 +189,32 @@ class Store {
       status: "OFF" as const,
       settings: { ...defaults[featureId] },
     };
+    const nextEnabled = patch.enabled !== undefined ? Boolean(patch.enabled) : current.enabled;
+    let nextStatus = patch.status !== undefined ? patch.status : current.status;
+    if (patch.enabled === false) nextStatus = "OFF";
+    else if (patch.enabled === true && (current.status === "OFF" || !current.status)) nextStatus = "PENDING";
+
     acc.features[featureId] = {
       ...current,
       ...patch,
-      settings: { ...current.settings, ...(patch.settings || {}) },
+      enabled: nextEnabled,
+      status: nextStatus,
+      settings: { ...defaults[featureId], ...current.settings, ...(patch.settings || {}) },
     };
     acc.updatedAt = new Date().toISOString();
-    this.persist();
+    // Feature toggle/settings: ghi disk ngay để không bị mất khi refresh UI
+    this.persist(true);
+    this.notify();
+    return acc;
+  }
+
+  setPassword(id: string, password: string) {
+    const acc = this.accounts.get(id);
+    if (!acc) return null;
+    acc.password = password;
+    acc.updatedAt = new Date().toISOString();
+    this.persist(true);
+    this.addLog(id, "AUTH", "INFO", "Đã cập nhật password trên server.");
     this.notify();
     return acc;
   }

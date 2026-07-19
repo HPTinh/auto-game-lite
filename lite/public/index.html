@@ -6,58 +6,30 @@
   <title>Auto Game LITE</title>
   <style>
     :root {
-      --bg: #0f1115;
-      --panel: #171a21;
-      --border: #2a3140;
-      --text: #e6e8ee;
-      --muted: #8b93a7;
-      --ok: #3dd68c;
-      --warn: #f5a524;
-      --err: #f31260;
-      --info: #66b3ff;
-      --btn: #2b3344;
-      --accent: #5b8cff;
+      --bg: #0f1115; --panel: #171a21; --border: #2a3140; --text: #e6e8ee;
+      --muted: #8b93a7; --ok: #3dd68c; --warn: #f5a524; --err: #f31260;
+      --info: #66b3ff; --btn: #2b3344; --accent: #5b8cff;
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      background: var(--bg);
-      color: var(--text);
-      font-size: 13px;
-      line-height: 1.45;
+      margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.45;
     }
     header {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      background: #12151c;
-      position: sticky;
-      top: 0;
-      z-index: 10;
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid var(--border); background: #12151c;
+      position: sticky; top: 0; z-index: 10;
     }
     h1 { font-size: 15px; margin: 0; letter-spacing: 0.04em; }
     .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .muted { color: var(--muted); }
     .pill {
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 2px 10px;
-      color: var(--muted);
-      background: var(--panel);
+      border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+      color: var(--muted); background: var(--panel);
     }
-    button, .btn {
-      background: var(--btn);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 10px;
-      cursor: pointer;
-      font: inherit;
+    button {
+      background: var(--btn); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit;
     }
     button:hover { border-color: var(--accent); }
     button.primary { background: #1e3a6e; border-color: #3b6fd4; }
@@ -66,49 +38,40 @@
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     main { padding: 14px 16px 40px; display: grid; gap: 14px; }
     .panel {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px;
     }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    @media (max-width: 900px) {
+      .grid2, .grid3 { grid-template-columns: 1fr; }
+    }
     label { display: block; color: var(--muted); margin-bottom: 4px; font-size: 11px; }
     input, select, textarea {
-      width: 100%;
-      background: #0d0f14;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 7px 8px;
-      font: inherit;
+      width: 100%; background: #0d0f14; color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; font: inherit;
     }
-    table { width: 100%; border-collapse: collapse; }
-    th, td {
-      border-bottom: 1px solid var(--border);
-      padding: 8px 6px;
-      text-align: left;
-      vertical-align: top;
-    }
-    th { color: var(--muted); font-weight: 600; font-size: 11px; }
     .state-RUNNING, .state-LOGGING_IN { color: var(--ok); }
     .state-ERROR { color: var(--err); }
     .state-STOPPED, .state-IDLE { color: var(--muted); }
     .state-READY, .state-WAITING { color: var(--info); }
-    .features {
-      display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 6px;
-    }
+    .features { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 6px; }
     .features label.chk {
-      display: inline-flex; gap: 4px; align-items: center;
-      color: var(--text); margin: 0; font-size: 12px;
-      border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;
-      background: #12161f;
+      display: inline-flex; gap: 4px; align-items: center; color: var(--text);
+      margin: 0; font-size: 12px; border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 6px; background: #12161f; cursor: pointer; user-select: none;
     }
+    .features label.chk.on { border-color: #2f8f5b; background: #0f2419; }
     .features input { width: auto; }
+    .settings-box {
+      margin-top: 10px; padding: 10px; border: 1px dashed var(--border);
+      border-radius: 6px; background: #12161f;
+    }
+    .settings-box h3 { margin: 0 0 8px; font-size: 12px; color: var(--info); }
+    .field { margin-bottom: 8px; }
     .logs {
-      max-height: 220px; overflow: auto;
-      background: #0b0d12; border: 1px solid var(--border);
-      border-radius: 6px; padding: 8px; font-size: 11px;
+      max-height: 220px; overflow: auto; background: #0b0d12;
+      border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 11px;
     }
     .log-ERROR { color: var(--err); }
     .log-WARN { color: var(--warn); }
@@ -116,8 +79,12 @@
     .log-INFO { color: var(--info); }
     .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .errbox { color: var(--err); margin-top: 8px; white-space: pre-wrap; }
+    .okbox { color: var(--ok); margin-top: 8px; }
     .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
     details summary { cursor: pointer; color: var(--muted); }
+    .save-flash { color: var(--ok); font-size: 11px; margin-left: 6px; }
+    .pwd-row { display: flex; gap: 6px; align-items: end; }
+    .pwd-row input { flex: 1; }
   </style>
 </head>
 <body>
@@ -135,25 +102,29 @@
 
   <main>
     <div class="panel">
-      <div class="grid2">
+      <strong>Thêm / đăng nhập account (lưu server)</strong>
+      <div class="grid2" style="margin-top:8px">
         <div>
-          <label>Email</label>
+          <label>Email game</label>
           <input id="email" placeholder="account@email.com" autocomplete="username" />
         </div>
         <div>
-          <label>Password</label>
+          <label>Password game</label>
           <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" />
         </div>
       </div>
       <div class="features" id="newFeatures" style="margin-top:10px"></div>
       <div class="actions">
-        <button class="primary" id="btnAdd">+ Thêm account</button>
+        <button class="primary" id="btnAdd">Lưu + Kiểm tra login</button>
+        <button id="btnAddOnly">Chỉ lưu (không login)</button>
       </div>
       <div class="hint">
-        Treo 24/7 trên Render free: tạo cron ngoài (cron-job.org) ping <code>/ping</code> mỗi 10–12 phút.
-        Mở UI kèm <code>?key=LITE_API_KEY</code> nếu đã bật bảo mật.
+        Email/password được <b>lưu trên server</b> (<code>data/accounts.json</code>), dùng để treo 24/7 và tự login lại khi JWT hết hạn.
+        Bấm <b>Lưu + Kiểm tra login</b> để xác thực API game ngay. Tick feature lưu theo account.
+        <br/>⚠ Render free: file data có thể mất khi <b>redeploy</b> — lúc đó thêm lại account.
       </div>
       <div class="errbox" id="globalErr"></div>
+      <div class="okbox" id="globalOk"></div>
     </div>
 
     <div id="accounts"></div>
@@ -163,19 +134,6 @@
     const qs = new URLSearchParams(location.search);
     let API_KEY = qs.get("key") || localStorage.getItem("lite_api_key") || "";
     if (qs.get("key")) localStorage.setItem("lite_api_key", qs.get("key"));
-
-    // Nếu chưa có key: hỏi 1 lần (khi server bật LITE_API_KEY)
-    async function ensureApiKey() {
-      try {
-        const r = await fetch("/api/status", { headers: API_KEY ? { "x-api-key": API_KEY } : {} });
-        if (r.status !== 401) return;
-        const k = prompt("Nhập LITE_API_KEY (env trên Render):");
-        if (k) {
-          API_KEY = k.trim();
-          localStorage.setItem("lite_api_key", API_KEY);
-        }
-      } catch (_) { /* ignore */ }
-    }
 
     const FEATURE_DEFAULT = [
       "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail",
@@ -189,12 +147,114 @@
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
 
+    /** featureId -> [{key,label,type,options?,min?,max?,hint?}] */
+    const SETTING_FIELDS = {
+      farm: [
+        { key: "mode", label: "Mode", type: "select", options: ["boss","smart","elite","all","normal"] },
+        { key: "farm_realm_tier_override", label: "Cảnh giới map", type: "select", options: ["auto","lk","tc","kd","na","ht","lh"] },
+        { key: "from_channel", label: "Kênh từ", type: "number", min: 1, max: 99 },
+        { key: "to_channel", label: "Kênh đến", type: "number", min: 1, max: 99 },
+        { key: "attack_delay_ms", label: "Delay đánh (ms)", type: "number", min: 500 },
+        { key: "boss_priority_mode", label: "Ưu tiên Boss", type: "bool" },
+        { key: "boss_priority_fast", label: "Boss nhanh (bỏ normal)", type: "bool" },
+        { key: "smart_rebirth_farm", label: "Farm thông minh trùng sinh", type: "bool" },
+        { key: "auto_use_mp_potion", label: "Tự uống MP", type: "bool" },
+        { key: "mp_potion_item_code", label: "Mã bình MP", type: "text" },
+        { key: "summary_log_interval_seconds", label: "Log tóm tắt (giây)", type: "number", min: 60 },
+      ],
+      maze: [
+        { key: "tier", label: "Bậc mê cung (1-6)", type: "number", min: 1, max: 6 },
+        { key: "run_count", label: "Số lần chạy / batch", type: "number", min: 1, max: 20 },
+        { key: "max_passes", label: "Max passes", type: "number", min: 1, max: 20 },
+        { key: "boss_hp_reserve", label: "HP reserve boss", type: "number", min: 0 },
+        { key: "repeat_interval_minutes", label: "Lặp lại sau (phút)", type: "number", min: 1 },
+        { key: "auto_boss", label: "Tự đánh boss", type: "bool" },
+        { key: "auto_claim_final", label: "Tự nhận quà cuối", type: "bool" },
+        { key: "stop_after_batch", label: "Dừng sau 1 batch", type: "bool" },
+      ],
+      buff: [
+        { key: "interval_seconds", label: "Chu kỳ (giây)", type: "number", min: 30 },
+        { key: "enable_formation_buff", label: "Buff trận pháp", type: "bool" },
+        { key: "formation_item_code", label: "Mã trận pháp", type: "text" },
+        { key: "enable_talisman_buff", label: "Buff phù", type: "bool" },
+        { key: "talisman_item_code", label: "Mã phù", type: "text" },
+      ],
+      claim_exp: [
+        { key: "interval_minutes", label: "Chu kỳ (phút)", type: "number", min: 1 },
+      ],
+      world_boss: [
+        { key: "tiers", label: "Tier (vd lk,tc,kd)", type: "text" },
+        { key: "check_interval_minutes", label: "Check mỗi (phút)", type: "number", min: 1 },
+        { key: "max_attacks_per_check", label: "Max đòn / check", type: "number", min: 1 },
+        { key: "attack_delay_ms", label: "Delay đánh (ms)", type: "number", min: 200 },
+        { key: "auto_claim", label: "Tự nhận quà", type: "bool" },
+      ],
+      breakthrough: [
+        { key: "interval_seconds", label: "Chu kỳ check (giây)", type: "number", min: 10 },
+        { key: "pill_item_codes", label: "Mã đan (mỗi dòng 1 mã)", type: "textarea" },
+        { key: "auto_buy_pill", label: "Tự mua đan", type: "bool" },
+        { key: "shop_code", label: "Shop code", type: "text" },
+        { key: "buy_qty", label: "Số lượng mua", type: "number", min: 1 },
+        { key: "full_exp_threshold_percent", label: "% EXP tối thiểu", type: "number", min: 1, max: 100 },
+      ],
+      achievement: [
+        { key: "interval_minutes", label: "Chu kỳ (phút)", type: "number", min: 1 },
+      ],
+      mail: [
+        { key: "claim_mail", label: "Claim mail", type: "bool" },
+      ],
+      auto_equip: [
+        { key: "interval_seconds", label: "Chu kỳ (giây)", type: "number", min: 30 },
+        { key: "weight_preset", label: "Preset", type: "text" },
+        { key: "auto_equip", label: "Tự mặc", type: "bool" },
+      ],
+      craft: [
+        { key: "recipe_code", label: "Recipe code", type: "text" },
+        { key: "tier", label: "Tier", type: "select", options: ["lk","tc","kd","na","ht","lh"] },
+        { key: "category", label: "Category", type: "text" },
+        { key: "times_per_run", label: "Lần / vòng", type: "number", min: 1 },
+        { key: "interval_seconds", label: "Chu kỳ (giây)", type: "number", min: 5 },
+      ],
+      body_cult: [
+        { key: "body_cult_element", label: "Hệ", type: "select", options: ["metal","wood","water","fire","earth"] },
+        { key: "body_cult_session_type", label: "Session", type: "select", options: ["long","short"] },
+        { key: "auto_start", label: "Auto start", type: "bool" },
+      ],
+      onboarding_claim: [],
+      world_cup_checkin: [
+        { key: "reset_at_vn_midnight", label: "Reset nửa đêm VN", type: "bool" },
+      ],
+    };
+
+    // UI state: không bị refresh 5s ghi đè khi đang chỉnh
+    let accountsCache = [];
+    const openSettings = new Set(); // `${accId}::${featureId}`
+    const openLogs = new Set(); // accId
+    let dirty = false;
+    let saveBusy = false;
+
+    async function ensureApiKey() {
+      try {
+        const r = await fetch("/api/status", { headers: API_KEY ? { "x-api-key": API_KEY } : {} });
+        if (r.status !== 401) return;
+        const k = prompt("Nhập LITE_API_KEY (env trên Render):");
+        if (k) {
+          API_KEY = k.trim();
+          localStorage.setItem("lite_api_key", API_KEY);
+        }
+      } catch (_) {}
+    }
+
     async function api(path, opts = {}) {
       const headers = Object.assign({ "content-type": "application/json" }, opts.headers || {});
       if (API_KEY) headers["x-api-key"] = API_KEY;
       const res = await fetch(path, { ...opts, headers });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || res.statusText || "API error");
+      if (!res.ok) {
+        const err = new Error(data.error || res.statusText || "API error");
+        err.data = data;
+        throw err;
+      }
       return data;
     }
 
@@ -203,44 +263,111 @@
       return v;
     }
 
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+      }[c]));
+    }
+
     function renderNewFeatures() {
-      const box = document.getElementById("newFeatures");
-      box.innerHTML = FEATURE_DEFAULT.map(id => `
-        <label class="chk">
+      document.getElementById("newFeatures").innerHTML = FEATURE_DEFAULT.map(id => `
+        <label class="chk ${DEFAULT_ON.has(id) ? "on" : ""}">
           <input type="checkbox" data-nf="${id}" ${DEFAULT_ON.has(id) ? "checked" : ""} />
           ${FEATURE_LABELS[id] || id}
         </label>
       `).join("");
+      document.getElementById("newFeatures").onchange = (e) => {
+        const t = e.target;
+        if (t && t.matches("input[data-nf]")) {
+          t.closest("label")?.classList.toggle("on", t.checked);
+        }
+      };
     }
 
-    function featureChecks(acc) {
+    function settingInputHtml(accId, featureId, field, value) {
+      const name = `s_${accId}_${featureId}_${field.key}`;
+      const id = name;
+      if (field.type === "bool") {
+        const on = value === true || value === "true" || value === 1 || value === "1";
+        return `<div class="field"><label class="chk" style="display:inline-flex"><input type="checkbox" data-set="${field.key}" data-acc="${accId}" data-feat="${featureId}" ${on ? "checked" : ""}/> ${esc(field.label)}</label></div>`;
+      }
+      if (field.type === "select") {
+        const opts = (field.options || []).map(o =>
+          `<option value="${esc(o)}" ${String(value) === String(o) ? "selected" : ""}>${esc(o)}</option>`
+        ).join("");
+        return `<div class="field"><label>${esc(field.label)}</label><select data-set="${field.key}" data-acc="${accId}" data-feat="${featureId}">${opts}</select></div>`;
+      }
+      if (field.type === "textarea") {
+        return `<div class="field"><label>${esc(field.label)}</label><textarea rows="2" data-set="${field.key}" data-acc="${accId}" data-feat="${featureId}">${esc(value ?? "")}</textarea></div>`;
+      }
+      const min = field.min != null ? `min="${field.min}"` : "";
+      const max = field.max != null ? `max="${field.max}"` : "";
+      const t = field.type === "number" ? "number" : "text";
+      return `<div class="field"><label>${esc(field.label)}</label><input type="${t}" ${min} ${max} data-set="${field.key}" data-acc="${accId}" data-feat="${featureId}" value="${esc(value ?? "")}"/></div>`;
+    }
+
+    function settingsPanel(acc, featureId) {
+      const fields = SETTING_FIELDS[featureId] || [];
+      if (!fields.length) return `<div class="muted">Feature này không có setting thêm.</div>`;
+      const s = acc.features?.[featureId]?.settings || {};
+      return `
+        <div class="grid3">
+          ${fields.map(f => settingInputHtml(acc.id, featureId, f, s[f.key])).join("")}
+        </div>
+        <div class="actions">
+          <button class="primary" data-act="saveset" data-id="${acc.id}" data-feat="${featureId}">Lưu setting ${FEATURE_LABELS[featureId] || featureId}</button>
+          <span class="save-flash" data-flash="${acc.id}::${featureId}"></span>
+        </div>
+      `;
+    }
+
+    function featureBlock(acc) {
       return FEATURE_DEFAULT.map(id => {
-        const on = acc.features?.[id]?.enabled;
-        const st = acc.features?.[id]?.status || "OFF";
-        return `<label class="chk"><input type="checkbox" data-f="${id}" data-acc="${acc.id}" ${on ? "checked" : ""}/> ${FEATURE_LABELS[id] || id} <span class="muted">[${st}]</span></label>`;
+        const feat = acc.features?.[id];
+        const on = Boolean(feat?.enabled);
+        const st = feat?.status || "OFF";
+        const key = `${acc.id}::${id}`;
+        const open = openSettings.has(key);
+        return `
+          <div class="feat-row" style="margin-top:6px">
+            <label class="chk ${on ? "on" : ""}">
+              <input type="checkbox" data-f="${id}" data-acc="${acc.id}" ${on ? "checked" : ""}/>
+              ${FEATURE_LABELS[id] || id}
+              <span class="muted">[${st}]</span>
+            </label>
+            <button type="button" data-act="toggleset" data-id="${acc.id}" data-feat="${id}" style="margin-left:4px;padding:2px 6px;font-size:11px">
+              ${open ? "▲ Ẩn setting" : "▼ Setting"}
+            </button>
+            ${open ? `<div class="settings-box" data-settings="${key}"><h3>Setting · ${FEATURE_LABELS[id] || id}</h3>${settingsPanel(acc, id)}</div>` : ""}
+          </div>
+        `;
       }).join("");
     }
 
     function logHtml(logs) {
       if (!logs?.length) return '<div class="muted">Chưa có log</div>';
-      return logs.slice(0, 40).map(l => {
+      return logs.slice(0, 50).map(l => {
         const t = (l.time || "").slice(11, 19);
-        return `<div class="log-${l.level}">[${t}] [${l.module}] ${l.message}</div>`;
+        return `<div class="log-${l.level}">[${t}] [${esc(l.module)}] ${esc(l.message)}</div>`;
       }).join("");
     }
 
     function renderAccounts(accounts) {
+      accountsCache = accounts;
       const root = document.getElementById("accounts");
       if (!accounts.length) {
-        root.innerHTML = '<div class="panel muted">Chưa có account. Thêm email/password phía trên.</div>';
+        root.innerHTML = '<div class="panel muted">Chưa có account. Thêm email/password phía trên → Lưu + Kiểm tra login.</div>';
         return;
       }
-      root.innerHTML = accounts.map(acc => `
+      root.innerHTML = accounts.map(acc => {
+        const logsOpen = openLogs.has(acc.id);
+        return `
         <div class="panel" data-id="${acc.id}">
           <div class="row" style="justify-content:space-between">
             <div>
-              <strong>${acc.characterName || acc.email}</strong>
-              <span class="muted"> · ${acc.email}</span>
+              <strong>${esc(acc.characterName || acc.email)}</strong>
+              <span class="muted"> · ${esc(acc.email)}</span>
+              <span class="pill" style="margin-left:6px">${acc.hasPassword ? "password: đã lưu server" : "thiếu password"}</span>
               <div class="muted" style="margin-top:2px">
                 ID: ${fmt(acc.characterId)} · Lv ${fmt(acc.level)} · Rank ${fmt(acc.rankLabel)} · Score ${fmt(acc.totalScore)}
                 · VIP ${fmt(acc.vipLevel)} · LS ${fmt(acc.spiritStones)} · Công ${fmt(acc.gold)}
@@ -249,96 +376,237 @@
             </div>
             <div style="text-align:right">
               <div class="state-${acc.state}">${acc.running ? "● " : "○ "}${acc.state}</div>
-              <div class="muted">${acc.activeTask || ""}</div>
-              ${acc.errorMessage ? `<div class="errbox">${acc.errorMessage}</div>` : ""}
+              <div class="muted">${esc(acc.activeTask || "")}</div>
+              ${acc.errorMessage ? `<div class="errbox">${esc(acc.errorMessage)}</div>` : ""}
             </div>
           </div>
-          <div class="features">${featureChecks(acc)}</div>
+
+          <div style="margin-top:10px">
+            <div class="muted" style="margin-bottom:4px">Tính năng (tick = bật, tự lưu server ngay)</div>
+            ${featureBlock(acc)}
+          </div>
+
           <div class="actions">
-            <button class="primary" data-act="check" data-id="${acc.id}">Kiểm tra</button>
+            <button class="primary" data-act="check" data-id="${acc.id}">Kiểm tra login</button>
             <button class="ok" data-act="start" data-id="${acc.id}" ${acc.running ? "disabled" : ""}>Start treo</button>
             <button class="danger" data-act="stop" data-id="${acc.id}" ${!acc.running ? "disabled" : ""}>Stop</button>
-            <button data-act="savef" data-id="${acc.id}">Lưu features</button>
             <button class="danger" data-act="del" data-id="${acc.id}">Xóa</button>
           </div>
-          <details style="margin-top:8px" open>
+
+          <div class="pwd-row" style="margin-top:10px">
+            <div style="flex:1">
+              <label>Đổi / ghi đè password (lưu server)</label>
+              <input type="password" data-pwd="${acc.id}" placeholder="password mới nếu cần đổi" />
+            </div>
+            <button data-act="savepwd" data-id="${acc.id}">Lưu password</button>
+          </div>
+
+          <details style="margin-top:8px" data-logs="${acc.id}" ${logsOpen ? "open" : ""}>
             <summary>Logs</summary>
             <div class="logs">${logHtml(acc.logs)}</div>
           </details>
-        </div>
-      `).join("");
+        </div>`;
+      }).join("");
     }
 
-    async function refresh() {
+    async function refresh(force = false) {
+      if (!force && (dirty || saveBusy || document.activeElement?.matches?.("input,select,textarea"))) {
+        // vẫn cập nhật stats, không re-render form
+        try {
+          const st = await api("/api/status");
+          const s = st.stats || {};
+          document.getElementById("statsPill").textContent =
+            `acc ${s.runningAccounts || 0}/${s.totalAccounts || 0} · mem ${s.memoryMB || "?"}MB · up ${s.uptimeSec || 0}s · ping ${st.pingCount || 0}`;
+        } catch (_) {}
+        return;
+      }
       try {
         document.getElementById("globalErr").textContent = "";
-        const [st, acc] = await Promise.all([
-          api("/api/status"),
-          api("/api/accounts"),
-        ]);
+        const [st, acc] = await Promise.all([api("/api/status"), api("/api/accounts")]);
         const s = st.stats || {};
         document.getElementById("statsPill").textContent =
           `acc ${s.runningAccounts || 0}/${s.totalAccounts || 0} · mem ${s.memoryMB || "?"}MB · up ${s.uptimeSec || 0}s · ping ${st.pingCount || 0}`;
         renderAccounts(acc.accounts || []);
+        dirty = false;
       } catch (e) {
         document.getElementById("globalErr").textContent = e.message || String(e);
       }
     }
 
-    document.getElementById("btnAdd").onclick = async () => {
+    async function addAccount(checkNow) {
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      const enabled = [...document.querySelectorAll("[data-nf]")].filter(el => el.checked).map(el => el.dataset.nf);
+      document.getElementById("globalErr").textContent = "";
+      document.getElementById("globalOk").textContent = "";
       try {
-        const email = document.getElementById("email").value.trim();
-        const password = document.getElementById("password").value;
-        const enabled = [...document.querySelectorAll("[data-nf]")].filter(el => el.checked).map(el => el.dataset.nf);
-        await api("/api/accounts", { method: "POST", body: JSON.stringify({ email, password, enabled }) });
+        const data = await api("/api/accounts", {
+          method: "POST",
+          body: JSON.stringify({ email, password, enabled, checkNow }),
+        });
         document.getElementById("password").value = "";
-        await refresh();
+        document.getElementById("globalOk").textContent =
+          data.message || (checkNow ? "Đã lưu server + login OK" : "Đã lưu email/password trên server");
+        await refresh(true);
       } catch (e) {
-        document.getElementById("globalErr").textContent = e.message;
+        // password có thể đã lưu dù login fail
+        if (e.data?.saved) {
+          document.getElementById("globalOk").textContent = "Đã lưu password trên server.";
+          document.getElementById("globalErr").textContent = e.message;
+          await refresh(true);
+        } else {
+          document.getElementById("globalErr").textContent = e.message;
+        }
       }
-    };
+    }
 
-    document.getElementById("btnRefresh").onclick = refresh;
+    document.getElementById("btnAdd").onclick = () => addAccount(true);
+    document.getElementById("btnAddOnly").onclick = () => addAccount(false);
+    document.getElementById("btnRefresh").onclick = () => refresh(true);
     document.getElementById("btnStartAll").onclick = async () => {
-      try { await api("/api/start-all", { method: "POST", body: "{}" }); await refresh(); }
+      try { await api("/api/start-all", { method: "POST", body: "{}" }); await refresh(true); }
       catch (e) { document.getElementById("globalErr").textContent = e.message; }
     };
     document.getElementById("btnStopAll").onclick = async () => {
-      try { await api("/api/stop-all", { method: "POST", body: "{}" }); await refresh(); }
+      try { await api("/api/stop-all", { method: "POST", body: "{}" }); await refresh(true); }
       catch (e) { document.getElementById("globalErr").textContent = e.message; }
     };
 
-    document.getElementById("accounts").onclick = async (ev) => {
+    // Toggle feature: lưu server NGAY — không bị refresh tick lại
+    document.getElementById("accounts").addEventListener("change", async (ev) => {
+      const t = ev.target;
+      if (!(t instanceof HTMLInputElement)) return;
+      if (!t.matches("input[data-f]")) return;
+
+      const accId = t.dataset.acc;
+      const featureId = t.dataset.f;
+      const enabled = t.checked;
+      t.closest("label")?.classList.toggle("on", enabled);
+      saveBusy = true;
+      dirty = true;
+      try {
+        document.getElementById("globalErr").textContent = "";
+        await api(`/api/accounts/${accId}/features`, {
+          method: "PATCH",
+          body: JSON.stringify({ [featureId]: { enabled } }),
+        });
+        document.getElementById("globalOk").textContent =
+          `${FEATURE_LABELS[featureId] || featureId}: ${enabled ? "BẬT" : "TẮT"} (đã lưu server)`;
+        // cập nhật cache local
+        const acc = accountsCache.find(a => a.id === accId);
+        if (acc?.features?.[featureId]) {
+          acc.features[featureId].enabled = enabled;
+          acc.features[featureId].status = enabled ? "PENDING" : "OFF";
+        }
+      } catch (e) {
+        t.checked = !enabled;
+        t.closest("label")?.classList.toggle("on", !enabled);
+        document.getElementById("globalErr").textContent = e.message;
+      } finally {
+        saveBusy = false;
+        dirty = false;
+      }
+    });
+
+    document.getElementById("accounts").addEventListener("toggle", (ev) => {
+      const d = ev.target;
+      if (d?.matches?.("details[data-logs]")) {
+        const id = d.getAttribute("data-logs");
+        if (d.open) openLogs.add(id); else openLogs.delete(id);
+      }
+    }, true);
+
+    document.getElementById("accounts").addEventListener("click", async (ev) => {
       const btn = ev.target.closest("button[data-act]");
       if (!btn) return;
       const id = btn.dataset.id;
       const act = btn.dataset.act;
+      const feat = btn.dataset.feat;
+      document.getElementById("globalErr").textContent = "";
+      document.getElementById("globalOk").textContent = "";
+
       try {
-        document.getElementById("globalErr").textContent = "";
-        if (act === "check") await api(`/api/accounts/${id}/check`, { method: "POST", body: "{}" });
-        if (act === "start") await api(`/api/accounts/${id}/start`, { method: "POST", body: "{}" });
-        if (act === "stop") await api(`/api/accounts/${id}/stop`, { method: "POST", body: "{}" });
-        if (act === "del") {
-          if (!confirm("Xóa account này?")) return;
-          await api(`/api/accounts/${id}`, { method: "DELETE" });
+        if (act === "toggleset") {
+          const key = `${id}::${feat}`;
+          if (openSettings.has(key)) openSettings.delete(key);
+          else openSettings.add(key);
+          renderAccounts(accountsCache);
+          return;
         }
-        if (act === "savef") {
-          const panel = btn.closest(".panel");
-          const body = {};
-          panel.querySelectorAll("input[data-f]").forEach(el => {
-            body[el.dataset.f] = { enabled: el.checked };
+
+        if (act === "saveset") {
+          dirty = true;
+          saveBusy = true;
+          const box = btn.closest(".settings-box");
+          const settings = {};
+          box.querySelectorAll("[data-set]").forEach(el => {
+            const key = el.dataset.set;
+            if (el.type === "checkbox") settings[key] = el.checked;
+            else if (el.type === "number") settings[key] = el.value === "" ? null : Number(el.value);
+            else settings[key] = el.value;
           });
-          await api(`/api/accounts/${id}/features`, { method: "PATCH", body: JSON.stringify(body) });
+          await api(`/api/accounts/${id}/features`, {
+            method: "PATCH",
+            body: JSON.stringify({ [feat]: { settings } }),
+          });
+          const flash = box.querySelector(`[data-flash="${id}::${feat}"]`);
+          if (flash) flash.textContent = "✓ Đã lưu";
+          document.getElementById("globalOk").textContent = `Đã lưu setting ${FEATURE_LABELS[feat] || feat} lên server`;
+          const acc = accountsCache.find(a => a.id === id);
+          if (acc?.features?.[feat]) {
+            acc.features[feat].settings = { ...(acc.features[feat].settings || {}), ...settings };
+          }
+          saveBusy = false;
+          dirty = false;
+          return;
         }
-        await refresh();
+
+        if (act === "check") {
+          const pwd = document.querySelector(`input[data-pwd="${id}"]`)?.value || "";
+          await api(`/api/accounts/${id}/check`, {
+            method: "POST",
+            body: JSON.stringify(pwd ? { password: pwd } : {}),
+          });
+          document.getElementById("globalOk").textContent = "Login OK — đã lưu token/info trên server";
+          await refresh(true);
+          return;
+        }
+
+        if (act === "savepwd") {
+          const pwd = document.querySelector(`input[data-pwd="${id}"]`)?.value || "";
+          if (!pwd) throw new Error("Nhập password trước khi lưu");
+          await api(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ password: pwd }) });
+          document.querySelector(`input[data-pwd="${id}"]`).value = "";
+          document.getElementById("globalOk").textContent = "Password đã lưu trên server";
+          await refresh(true);
+          return;
+        }
+
+        if (act === "start") {
+          await api(`/api/accounts/${id}/start`, { method: "POST", body: "{}" });
+          await refresh(true);
+          return;
+        }
+        if (act === "stop") {
+          await api(`/api/accounts/${id}/stop`, { method: "POST", body: "{}" });
+          await refresh(true);
+          return;
+        }
+        if (act === "del") {
+          if (!confirm("Xóa account này khỏi server?")) return;
+          await api(`/api/accounts/${id}`, { method: "DELETE" });
+          await refresh(true);
+        }
       } catch (e) {
         document.getElementById("globalErr").textContent = e.message;
+        saveBusy = false;
+        dirty = false;
       }
-    };
+    });
 
     renderNewFeatures();
-    ensureApiKey().then(refresh);
-    setInterval(refresh, 5000);
+    ensureApiKey().then(() => refresh(true));
+    setInterval(() => refresh(false), 5000);
   </script>
 </body>
 </html>

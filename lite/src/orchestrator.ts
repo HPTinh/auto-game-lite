@@ -231,20 +231,30 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = 30 * 60_000;
     } else if (featureId === "maze") {
-      await runMazeAuto({
-        characterId: runtime.characterId,
-        accessToken: runtime.accessToken,
-        tier: Number(settings.tier || 1),
-        delayMs: 500,
-        maxPasses: Number(settings.max_passes || 5),
-        autoBoss: settings.auto_boss !== false,
-        autoClaimFinal: settings.auto_claim_final !== false,
-        bossHpReserve: Number(settings.boss_hp_reserve || 5),
-        onLog: (level: any, msg: string) => onLog(accountId, "MAZE")(level, msg),
-      } as any);
-      // maze thường 1 lần / ngày — check lại sau 1h
-      nextDelayMs = 60 * 60_000;
-      status = "done";
+      const runCount = Math.max(1, Math.min(20, Number(settings.run_count || 1)));
+      const tier = Math.min(6, Math.max(1, Number(settings.tier || 1)));
+      let okRuns = 0;
+      for (let i = 0; i < runCount; i++) {
+        if (!isAllowed(accountId, featureId, token)) break;
+        store.addLog(accountId, "MAZE", "INFO", `Mê cung tier ${tier} — lượt ${i + 1}/${runCount}`);
+        await runMazeAuto({
+          characterId: runtime.characterId,
+          accessToken: runtime.accessToken,
+          tier,
+          delayMs: 500,
+          maxPasses: Number(settings.max_passes || 5),
+          autoBoss: settings.auto_boss !== false,
+          autoClaimFinal: settings.auto_claim_final !== false,
+          bossHpReserve: Number(settings.boss_hp_reserve || 5),
+          onLog: (level: any, msg: string) => onLog(accountId, "MAZE")(level, msg),
+        } as any);
+        okRuns += 1;
+        if (i + 1 < runCount) await sleep(1500);
+      }
+      store.addLog(accountId, "MAZE", "SUCCESS", `Hoàn tất ${okRuns}/${runCount} lượt mê cung (tier ${tier}).`);
+      // xong batch: chờ theo setting (mặc định 1h) rồi chạy lại nếu vẫn bật
+      nextDelayMs = Math.max(60_000, Number(settings.repeat_interval_minutes || 60) * 60_000);
+      if (settings.stop_after_batch === true) status = "done";
     } else if (featureId === "auto_equip") {
       await runAutoEquipCheck({
         characterId: runtime.characterId,
