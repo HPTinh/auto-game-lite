@@ -93,6 +93,5 @@ export interface PublicAccount {
   activeTask?: string;
   logs: AppLog[];
   running: boolean;
-  hasPassword: boolean;
   updatedAt: string;
 }

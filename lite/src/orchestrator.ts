@@ -71,11 +71,15 @@ function isAllowed(accountId: string, featureId: FeatureId, token: number) {
 function onLog(accountId: string, module: string) {
   return (level: any, message: string) => {
     const lv = String(level || "INFO").toUpperCase();
-    // Lite: bỏ DEBUG/soft spam để tiết kiệm RAM
     if (lv === "DEBUG") return;
-    if (module === "FARM" && lv !== "ERROR" && lv !== "SUCCESS" && lv !== "WARN") {
-      // farm chỉ log WARN/ERROR/SUCCESS
-      if (lv === "INFO" && !String(message).includes("tóm tắt") && !String(message).includes("summary")) return;
+    const text = String(message || "");
+    // Farm: bỏ spam nhẹ, nhưng giữ log quan trọng để UI thấy bot đang chạy
+    if (module === "FARM" && lv === "INFO") {
+      const keep =
+        /bắt đầu|start|tóm tắt|summary|tiêu diệt|attack|boss|elite|kênh|channel|vòng|cycle|killed|đánh|scan|mp|hết|xong|done|quest/i.test(
+          text
+        );
+      if (!keep) return;
     }
     store.addLog(accountId, module, lv as any, message);
   };
@@ -100,6 +104,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       activeTask: featureId,
       errorMessage: undefined,
     });
+    store.addLog(accountId, featureId.toUpperCase(), "INFO", `▶ Đang chạy ${featureId}...`);
 
     let nextDelayMs = 60_000;
     let status: "ok" | "error" | "done" = "ok";
@@ -332,19 +337,21 @@ export async function startAccount(accountId: string) {
     activeTask: "Khởi động",
     errorMessage: undefined,
   });
-  store.addLog(accountId, "RUN", "INFO", "Bắt đầu treo (lite)");
+  // đọc lại account sau login (features mới nhất)
+  const acc2 = store.get(accountId)!;
+  store.addLog(accountId, "RUN", "SUCCESS", "▶ START — bot đang chạy trên server");
 
-  const enabled = (Object.entries(acc.features) as [FeatureId, any][])
+  const enabled = (Object.entries(acc2.features) as [FeatureId, any][])
     .filter(([, f]) => f?.enabled)
     .map(([id]) => id);
 
   if (enabled.length === 0) {
-    store.addLog(accountId, "RUN", "WARN", "Chưa bật chức năng nào — chỉ login/info");
+    store.addLog(accountId, "RUN", "WARN", "Chưa bật chức năng nào — tick Farm/Buff/... rồi Start lại");
     store.update(accountId, { running: true, state: "READY", activeTask: "Idle (không feature)" });
     return;
   }
 
-  store.addLog(accountId, "RUN", "INFO", `Chạy: ${enabled.join(", ")}`);
+  store.addLog(accountId, "RUN", "INFO", `Feature bật: ${enabled.join(", ")}`);
 
   // stagger start để tránh burst API
   let i = 0;

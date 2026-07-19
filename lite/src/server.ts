@@ -128,9 +128,8 @@ app.post("/api/accounts", async (req, res) => {
       const latest = store.get(acc.id);
       return res.status(400).json({
         ok: false,
-        error: e?.message || "Login fail — password đã lưu server, bấm Kiểm tra lại sau",
+        error: e?.message || "Login fail",
         account: latest ? store.toPublic(latest) : null,
-        saved: true,
       });
     }
   }
@@ -138,8 +137,6 @@ app.post("/api/accounts", async (req, res) => {
   const latest = store.get(acc.id);
   return res.json({
     ok: true,
-    saved: true,
-    message: "Đã lưu email/password trên server (data/accounts.json)",
     account: latest ? store.toPublic(latest) : null,
   });
 });

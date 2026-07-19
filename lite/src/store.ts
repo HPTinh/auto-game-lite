@@ -134,7 +134,6 @@ class Store {
       activeTask: acc.activeTask,
       logs: acc.logs || [],
       running: acc.running,
-      hasPassword: Boolean(acc.password),
       updatedAt: acc.updatedAt,
     };
   }
