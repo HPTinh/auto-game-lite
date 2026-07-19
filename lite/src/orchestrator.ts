@@ -362,9 +362,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "WORLD_BOSS"),
       });
-      // Boss còn sống → nextDelayMs rất nhỏ (DPS tiếp). Boss chết → check_interval.
-      // KHÔNG ép min = check_interval (tránh đánh xong đợi 10p mới đánh tiếp).
+      // Engine quyết định: boss sống → next ~3s (ATTACK); boss chết → next check_interval (CHECK only)
       nextDelayMs = Math.max(500, Number(result.nextCheckMs || checkMin * 60_000));
+      const nextLabel =
+        nextDelayMs >= 60_000
+          ? `${Math.round(nextDelayMs / 60000)}p CHECK`
+          : `${Math.round(nextDelayMs / 1000)}s ATTACK`;
       if (result.status === "ERROR") {
         status = "error";
         errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
@@ -373,7 +376,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "WORLD_BOSS",
           "INFO",
-          `WB ${result.status} · rank ${result.myTier || "?"} · atk ${result.attackCount || 0} · claim ${result.claimCount || 0} · +${result.claimStones || 0}LS · next ${Math.round(nextDelayMs / 60000)}p`
+          `WB ${result.status} · rank ${result.myTier || "?"} · atk ${result.attackCount || 0} · claim ${result.claimCount || 0} · +${result.claimStones || 0}LS · next ${nextLabel}`
         );
         if (result.claimed || (result.claimStones || 0) > 0) {
           try {

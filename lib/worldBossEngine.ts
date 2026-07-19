@@ -153,18 +153,36 @@ function isNoRewardSoft(value: any) {
 function isWaitingRespawnLike(value: any) {
   const text = textOf(value);
   return [
-    "respawn", "cooldown", "cool_down", "not_alive", "not alive", "not_spawned",
-    "spawn", "wait", "waiting", "boss_dead", "boss dead", "đang chờ", "cho hoi sinh",
-    "hồi sinh", "hoi sinh", "idle",
+    "respawn", "not_alive", "not alive", "not_spawned", "boss_dead", "boss dead",
+    "cho hoi sinh", "hồi sinh", "hoi sinh", "window_close", "window close", "window_closed",
+    "closed", "not_open", "window_open\":false",
+  ].some(key => text.includes(key));
+}
+
+/** Lỗi attack kiểu window close / boss không đánh được → phải re-check channel */
+function isAttackBlockedError(value: any) {
+  const text = textOf(value);
+  return [
+    "window_close", "window close", "window_closed", "closed", "not_open",
+    "window_open", "not available", "not_available", "unavailable",
+    "boss_dead", "boss dead", "not_alive", "idle", "respawn",
+    "cannot_attack", "cant_attack", "no_boss", "ended", "finished",
+    "không thể", "khong the", "đóng", "dong cua so",
   ].some(key => text.includes(key));
 }
 
 function isAttackStopSoft(value: any) {
   const text = textOf(value);
-  return isClaimRewardLike(value) || isWaitingRespawnLike(value) || [
+  return isClaimRewardLike(value) || isWaitingRespawnLike(value) || isAttackBlockedError(value) || [
     "no_hp", "low_hp", "dead_player", "not_enough_hp", "not_enough_mp",
-    "cooldown", "too_fast", "rate", "turn", "not_available", "unavailable", "rank",
+    "cooldown", "cool_down", "too_fast", "rate", "turn", "rank",
   ].some(key => text.includes(key));
+}
+
+function isRateLimitOnly(value: any) {
+  const text = textOf(value);
+  if (isAttackBlockedError(value) || isClaimRewardLike(value)) return false;
+  return ["cooldown", "cool_down", "too_fast", "rate", "turn", "slow"].some(k => text.includes(k));
 }
 
 function deepFindNumber(obj: any, includes: string[], excludes: string[] = []): number | null {
@@ -452,159 +470,24 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
 }
 
 /**
- * Đánh liên tục 1 tier khi boss sống.
- * - Giữa các đòn: chỉ chờ cooldown_sec (~3s) từ API — KHÔNG chờ check_interval.
- * - maxAttacks = giới hạn số đòn trong 1 đợt DPS (vd 999).
- * - bossStillAlive=true → caller phải tiếp tục đợt mới ngay (không chờ interval).
- * - bossStillAlive=false (chết) → caller chờ check_interval rồi re-check channel.
+ * State machine World Boss:
+ *
+ * MODE ATTACK (boss sống):
+ *   - Đánh mỗi ~3s (cooldown_sec API) đến đủ maxAttacks (vd 999)
+ *   - Lỗi attack (window close, …) → CHECK channel ngay
+ *   - killed / hp_after=0 → claim → chuyển MODE CHECK
+ *
+ * MODE CHECK (boss chết / window đóng):
+ *   - KHÔNG attack
+ *   - Chỉ rpc_wb_channels theo check_interval
+ *   - Khi available + sống lại → MODE ATTACK
  */
-async function dpsTierContinuous(
-  options: WorldBossAutoOptions,
-  tier: string,
-  channel: WorldBossChannelInfo | undefined,
-  maxAttacks: number
-): Promise<WorldBossTierResult & { bossStillAlive: boolean }> {
+export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
+  const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
+  const maxAttacks = clamp(options.maxAttacksPerCheck ?? 30, 1, 999, 30);
   const fixedDelayMs = Number(options.attackDelayMs);
   const defaultCdMs = Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? fixedDelayMs : 3000;
   const onLog = options.onLog;
-
-  const tierResult: WorldBossTierResult & { bossStillAlive: boolean } = {
-    tier,
-    attackCount: 0,
-    claimCount: 0,
-    claimStones: 0,
-    claimed: false,
-    status: "DONE",
-    errors: [],
-    channel,
-    bossStillAlive: true,
-  };
-
-  if (channel && channel.available === false) {
-    tierResult.status = "SKIPPED";
-    tierResult.bossStillAlive = false;
-    onLog?.("WARN", `Boss ${tier}: rank chưa đủ`);
-    return tierResult;
-  }
-
-  if (channel && !isWorldBossAlive(channel)) {
-    tierResult.status = "DEAD";
-    tierResult.bossStillAlive = false;
-    onLog?.("INFO", `Boss ${tier}: đã chết/chờ (channel)`);
-    await tryClaimTier(options, tier, tierResult, "dead_channel_claim");
-    return tierResult;
-  }
-
-  await tryClaimTier(options, tier, tierResult, "pre_dps_claim");
-
-  let lastCdMs = defaultCdMs;
-  onLog?.("INFO", `Boss ${tier}: bắt đầu DPS · max ${maxAttacks} đòn · cd≈${Math.round(defaultCdMs / 1000)}s/đòn`);
-
-  for (let i = 1; i <= maxAttacks; i++) {
-    if (options.shouldStop?.()) {
-      tierResult.status = "DONE";
-      tierResult.bossStillAlive = true;
-      onLog?.("WARN", `Boss ${tier}: dừng giữa DPS (stop) · đã ${tierResult.attackCount} đòn`);
-      break;
-    }
-
-    try {
-      const attack = await rpc("rpc_wb_attack", { p_character_id: options.characterId, p_tier: tier }, options.accessToken);
-      tierResult.lastAttack = attack;
-      tierResult.attackCount += 1;
-      lastCdMs = attackCooldownMs(attack, defaultCdMs);
-
-      const dmg = Number(attack?.damage);
-      const hpAfter = Number(attack?.hp_after);
-
-      if (i === 1 || i === maxAttacks || i % 10 === 0) {
-        onLog?.(
-          "INFO",
-          `Boss ${tier}: đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · cd ${Math.round(lastCdMs / 1000)}s`
-        );
-      }
-
-      // Boss chết → claim → hết DPS, chờ check interval (respawn)
-      if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
-        onLog?.("SUCCESS", `Boss ${tier}: GIẾT · ${tierResult.attackCount} đòn · claim`);
-        await tryClaimTier(options, tier, tierResult, "attack_killed");
-        tierResult.status = "WAITING_RESPAWN";
-        tierResult.bossStillAlive = false;
-        break;
-      }
-
-      if (isWaitingRespawnLike(attack)) {
-        tierResult.status = "WAITING_RESPAWN";
-        tierResult.bossStillAlive = false;
-        onLog?.("WARN", `Boss ${tier}: API báo chờ hồi sinh`);
-        break;
-      }
-
-      // Còn sống → chờ đúng cd game rồi đánh tiếp (độc lập với check interval)
-      if (i < maxAttacks) await sleep(lastCdMs);
-    } catch (error: any) {
-      tierResult.lastAttack = error?.data;
-
-      if (isClaimRewardLike(error)) {
-        await tryClaimTier(options, tier, tierResult, "attack_error_claimable");
-        tierResult.status = "WAITING_RESPAWN";
-        tierResult.bossStillAlive = false;
-        break;
-      }
-
-      if (isWaitingRespawnLike(error)) {
-        tierResult.status = "WAITING_RESPAWN";
-        tierResult.bossStillAlive = false;
-        onLog?.("WARN", `Boss ${tier}: cooldown/chờ hồi — ${error?.message || ""}`.slice(0, 120));
-        break;
-      }
-
-      // Soft rate limit: chờ cd rồi thử lại cùng vòng
-      if (isAttackStopSoft(error) && /cool|rate|fast|turn/i.test(String(error?.message || ""))) {
-        onLog?.("WARN", `Boss ${tier}: soft CD · chờ ${Math.round(lastCdMs / 1000)}s rồi đánh tiếp`);
-        await sleep(lastCdMs);
-        i -= 1; // không tính đòn fail
-        continue;
-      }
-
-      if (isAttackStopSoft(error)) {
-        tierResult.status = tierResult.attackCount > 0 ? "DONE" : "NO_REWARD";
-        tierResult.bossStillAlive = true;
-        onLog?.("WARN", `Boss ${tier}: soft stop · ${error?.message || ""}`.slice(0, 100));
-        break;
-      }
-
-      const message = error?.message || "attack error";
-      tierResult.errors.push(message);
-      tierResult.status = tierResult.attackCount > 0 ? "PARTIAL_ERROR" : "ERROR";
-      tierResult.bossStillAlive = tierResult.attackCount > 0;
-      onLog?.("ERROR", `Boss ${tier}: lỗi đánh: ${message}`);
-      break;
-    }
-  }
-
-  await tryClaimTier(options, tier, tierResult, "post_dps_claim");
-
-  if (tierResult.claimed && tierResult.bossStillAlive !== false) {
-    tierResult.status = "WAITING_RESPAWN";
-    tierResult.bossStillAlive = false;
-  }
-
-  // Hết max đòn mà chưa chết → bossStillAlive=true → caller DPS tiếp ngay
-  if (tierResult.bossStillAlive && tierResult.status === "DONE" && tierResult.attackCount >= maxAttacks) {
-    onLog?.("INFO", `Boss ${tier}: hết ${maxAttacks} đòn, boss còn sống → DPS tiếp ngay`);
-  }
-
-  return tierResult;
-}
-
-export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
-  // check_interval: chỉ dùng khi boss CHẾT / không có boss — re-check channel
-  const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
-  // max_attacks: số đòn liên tục khi boss SỐNG (vd 999) — độc lập với check interval
-  const maxAttacks = clamp(options.maxAttacksPerCheck ?? 30, 1, 999, 30);
-  /** Khi boss còn sống, hẹn lại DPS ngay (không chờ check interval) */
-  const CONTINUE_DPS_MS = 800;
 
   const summary: WorldBossRunSummary = {
     startedAt: new Date().toISOString(),
@@ -618,131 +501,231 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     tierResults: [],
     errors: [],
     nextCheckMs: checkIntervalMs,
-    nextCheckReason: "default_interval",
+    nextCheckReason: "default",
   };
 
-  const onLog = options.onLog;
-  const applyResult = (result: WorldBossTierResult) => {
-    summary.tierResults.push(result);
-    summary.attackCount += result.attackCount;
-    summary.claimCount += result.claimCount;
-    summary.claimStones += result.claimStones || 0;
-    summary.claimed = summary.claimed || result.claimed;
-    summary.errors.push(...result.errors);
+  const tierBag: WorldBossTierResult = {
+    tier: "?",
+    attackCount: 0,
+    claimCount: 0,
+    claimStones: 0,
+    claimed: false,
+    status: "DONE",
+    errors: [],
   };
 
   try {
-    // 1) Check channels + rank (độc lập)
-    onLog?.("INFO", "World Boss: check channels + rank...");
-    const { myTier, channels } = await fetchChannels(options.characterId, options.accessToken);
+    // ── CHECK channel + rank ──────────────────────────────────────
+    onLog?.("INFO", "WB: check channels (rpc_wb_channels)...");
+    let { myTier, channels } = await fetchChannels(options.characterId, options.accessToken);
     summary.myTier = myTier;
     summary.channels = channels;
 
-    const alive = channels.filter(c => c.available === true && isWorldBossAlive(c)).map(c => c.tier);
-    const dead = channels.filter(c => c.available === true && !isWorldBossAlive(c)).map(c => `${c.tier}(${c.status})`);
+    let { fight } = pickTiersToFight(channels, myTier, options);
+    summary.tiers = fight.slice();
+
+    const aliveStr = channels
+      .filter(c => c.available === true && isWorldBossAlive(c))
+      .map(c => c.tier)
+      .join(",") || "—";
+    const deadStr = channels
+      .filter(c => c.available === true && !isWorldBossAlive(c))
+      .map(c => `${c.tier}/${c.status}`)
+      .join(",") || "—";
+
     onLog?.(
       "INFO",
-      `WB my_tier=${myTier || "?"} · sống+đánh được: [${alive.join(",") || "—"}] · chết: [${dead.join(",") || "—"}] · DPS max ${maxAttacks} đòn (cd≈3s) · check chết ${checkIntervalMs / 60000}p`
+      `WB my_tier=${myTier || "?"} · sống: [${aliveStr}] · chết/đóng: [${deadStr}] · max ${maxAttacks} đòn · cd≈3s · check chết ${checkIntervalMs / 60000}p`
     );
 
-    const { fight, skipped } = pickTiersToFight(channels, myTier, options);
-    summary.tiers = fight.slice();
-    for (const s of skipped) {
-      onLog?.("DEBUG", `WB skip ${s.tier}: ${s.reason}`);
+    // Claim quà treo (luôn thử)
+    await tryClaimTier(options, "", tierBag, "session_start_claim");
+    if (tierBag.claimed) {
+      summary.claimed = true;
+      summary.claimCount += tierBag.claimCount;
+      summary.claimStones += tierBag.claimStones;
     }
 
-    // Claim quà treo
-    const preSweep: WorldBossTierResult = {
-      tier: "pending",
-      attackCount: 0,
-      claimCount: 0,
-      claimStones: 0,
-      claimed: false,
-      status: "DONE",
-      errors: [],
-    };
-    await tryClaimTier(options, "", preSweep, "pre_run_global");
-    if (preSweep.claimed || preSweep.errors.length) applyResult(preSweep);
-
-    // Không có boss sống → chỉ khi này mới chờ check_interval
+    // ── MODE CHECK: không có boss sống → chỉ hẹn check, KHÔNG attack ──
     if (fight.length === 0) {
       summary.status = summary.claimed ? "CLAIMED" : "WAITING_RESPAWN";
       summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = "no_alive_boss";
-      onLog?.("WARN", `WB: không có boss sống · check lại sau ${checkIntervalMs / 60000}p (không DPS)`);
+      summary.nextCheckReason = "check_only_boss_dead";
+      summary.tierResults.push({ ...tierBag, tier: myTier || "none", status: "DEAD" });
+      onLog?.("WARN", `WB MODE=CHECK · không có boss sống · ${checkIntervalMs / 60000}p sau check lại (không attack)`);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    // 2) DPS liên tục từng tier — boss sống thì đánh max đòn; còn sống thì hẹn DPS ngay
-    const byTier = new Map(channels.map(c => [c.tier, c]));
-    let anyStillAlive = false;
-    let anyKilled = false;
+    // ── MODE ATTACK: đánh mỗi 3s đến maxAttacks hoặc lỗi ──────────
+    const tier = fight[0];
+    const ch0 = channels.find(c => c.tier === tier);
+    tierBag.tier = tier;
+    tierBag.channel = ch0;
 
-    for (const tier of fight) {
-      if (options.shouldStop?.()) break;
+    onLog?.("INFO", `WB MODE=ATTACK · tier ${tier} · đánh mỗi ~3s đến ${maxAttacks} đòn (hoặc lỗi/window close)`);
 
-      const result = await dpsTierContinuous(options, tier, byTier.get(tier), maxAttacks);
-      applyResult(result);
+    let lastCdMs = defaultCdMs;
+    let attackError: any = null;
 
-      if (result.bossStillAlive) {
-        anyStillAlive = true;
-      } else if (result.status === "WAITING_RESPAWN" || result.claimed) {
-        anyKilled = true;
+    for (let i = 1; i <= maxAttacks; i++) {
+      if (options.shouldStop?.()) {
+        onLog?.("WARN", `WB dừng (stop) sau ${tierBag.attackCount} đòn`);
+        break;
+      }
+
+      try {
+        const attack = await rpc(
+          "rpc_wb_attack",
+          { p_character_id: options.characterId, p_tier: tier },
+          options.accessToken
+        );
+        tierBag.lastAttack = attack;
+        tierBag.attackCount += 1;
+        summary.attackCount += 1;
+        lastCdMs = attackCooldownMs(attack, defaultCdMs);
+
+        const dmg = Number(attack?.damage);
+        const hpAfter = Number(attack?.hp_after);
+
+        if (i === 1 || i === maxAttacks || i % 10 === 0) {
+          onLog?.(
+            "INFO",
+            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · next ${Math.round(lastCdMs / 1000)}s`
+          );
+        }
+
+        // Giết boss
+        if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
+          onLog?.("SUCCESS", `WB ${tier}: GIẾT sau ${tierBag.attackCount} đòn → claim → MODE CHECK`);
+          await tryClaimTier(options, tier, tierBag, "killed");
+          summary.claimed = summary.claimed || tierBag.claimed;
+          summary.claimCount += tierBag.claimCount;
+          summary.claimStones += tierBag.claimStones;
+          tierBag.status = "WAITING_RESPAWN";
+          summary.status = "WAITING_RESPAWN";
+          summary.nextCheckMs = checkIntervalMs;
+          summary.nextCheckReason = "boss_killed_check_only";
+          summary.tierResults.push(tierBag);
+          onLog?.("INFO", `WB MODE=CHECK · boss chết · check sống lại sau ${checkIntervalMs / 60000}p`);
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
+
+        // Response báo window/chờ
+        if (isWaitingRespawnLike(attack) || isAttackBlockedError(attack)) {
+          attackError = attack;
+          onLog?.("WARN", `WB ${tier}: response chặn attack (window/dead) sau đòn ${i} → CHECK channel`);
+          break;
+        }
+
+        // Boss còn sống → chờ đúng 3s (cooldown API) rồi đánh tiếp
+        if (i < maxAttacks) await sleep(lastCdMs);
+      } catch (error: any) {
+        attackError = error;
+        tierBag.lastAttack = error?.data;
+
+        // Rate limit thuần → chờ cd, không tính đòn, đánh lại
+        if (isRateLimitOnly(error)) {
+          onLog?.("WARN", `WB ${tier}: rate/cd · chờ ${Math.round(lastCdMs / 1000)}s đánh lại`);
+          await sleep(lastCdMs);
+          i -= 1;
+          continue;
+        }
+
+        // Claimable error
+        if (isClaimRewardLike(error)) {
+          onLog?.("SUCCESS", `WB ${tier}: lỗi kiểu claimable → claim → MODE CHECK`);
+          await tryClaimTier(options, tier, tierBag, "error_claimable");
+          summary.claimed = summary.claimed || tierBag.claimed;
+          summary.claimCount += tierBag.claimCount;
+          summary.claimStones += tierBag.claimStones;
+          tierBag.status = "WAITING_RESPAWN";
+          summary.status = "WAITING_RESPAWN";
+          summary.nextCheckMs = checkIntervalMs;
+          summary.nextCheckReason = "claimable_error_check_only";
+          summary.tierResults.push(tierBag);
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
+
+        // Window close / blocked → thoát vòng attack, CHECK channel
+        if (isAttackBlockedError(error) || isWaitingRespawnLike(error) || isAttackStopSoft(error)) {
+          onLog?.("WARN", `WB ${tier}: lỗi attack đòn ~${i}: ${(error?.message || "blocked").slice(0, 100)} → CHECK channel`);
+          break;
+        }
+
+        // Lỗi cứng
+        const msg = error?.message || "attack error";
+        tierBag.errors.push(msg);
+        summary.errors.push(msg);
+        onLog?.("ERROR", `WB ${tier}: lỗi cứng: ${msg.slice(0, 120)} → CHECK channel`);
+        break;
       }
     }
 
-    // Claim cuối
-    const postSweep: WorldBossTierResult = {
-      tier: "pending_final",
-      attackCount: 0,
-      claimCount: 0,
-      claimStones: 0,
-      claimed: false,
-      status: "DONE",
-      errors: [],
-    };
-    await tryClaimTier(options, "", postSweep, "post_run_global");
-    if (postSweep.claimed || postSweep.errors.length) applyResult(postSweep);
+    // ── Sau lỗi attack hoặc hết max đòn: CHECK channel thật ─────────
+    onLog?.("INFO", "WB: re-check channels sau attack (xác nhận boss sống/chết)...");
+    try {
+      const again = await fetchChannels(options.characterId, options.accessToken);
+      myTier = again.myTier;
+      channels = again.channels;
+      summary.myTier = myTier;
+      summary.channels = channels;
+      fight = pickTiersToFight(channels, myTier, options).fight;
+    } catch (e: any) {
+      onLog?.("WARN", `WB re-check fail: ${e?.message || e}`);
+      fight = [];
+    }
 
-    const hasError = summary.tierResults.some(item => item.status === "ERROR");
-    if (hasError && summary.attackCount === 0 && !summary.claimed) {
-      summary.status = "ERROR";
-      summary.nextCheckMs = 30_000;
-      summary.nextCheckReason = "error_retry";
-    } else if (anyStillAlive) {
-      // Boss còn sống sau max đòn → DPS tiếp NGAY (không chờ check interval)
+    await tryClaimTier(options, "", tierBag, "after_attack_claim");
+    summary.claimed = summary.claimed || tierBag.claimed;
+    summary.claimCount += tierBag.claimCount;
+    summary.claimStones += tierBag.claimStones;
+    summary.tierResults.push(tierBag);
+
+    if (fight.length === 0) {
+      // Boss thật sự chết / window đóng → CHỈ CHECK, không attack
+      summary.status = "WAITING_RESPAWN";
+      summary.nextCheckMs = checkIntervalMs;
+      summary.nextCheckReason = "boss_dead_check_only";
+      onLog?.(
+        "WARN",
+        `WB MODE=CHECK · boss đã chết/đóng (atk ${summary.attackCount}) · chỉ check mỗi ${checkIntervalMs / 60000}p đến khi sống`
+      );
+    } else if (tierBag.attackCount >= maxAttacks) {
+      // Đủ max đòn, channel vẫn sống → DPS tiếp ngay (đợt mới)
       summary.status = "DONE";
-      summary.nextCheckMs = CONTINUE_DPS_MS;
-      summary.nextCheckReason = "boss_still_alive_continue_dps";
+      summary.nextCheckMs = lastCdMs;
+      summary.nextCheckReason = "max_hits_continue_attack";
       onLog?.(
         "INFO",
-        `WB DPS tạm nghỉ ${CONTINUE_DPS_MS}ms rồi đánh tiếp (boss còn sống) · atk ${summary.attackCount}`
+        `WB đủ ${maxAttacks} đòn, boss vẫn sống → đợt DPS mới sau ${Math.round(lastCdMs / 1000)}s`
       );
-    } else if (anyKilled || summary.claimed) {
-      // Boss chết → chờ check_interval để re-check channel (sống lại)
-      summary.status = "WAITING_RESPAWN";
-      summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = "boss_dead_wait_check";
-      onLog?.(
-        "SUCCESS",
-        `WB boss chết/claim · +${summary.claimStones || 0} LS · check sống lại sau ${checkIntervalMs / 60000}p`
-      );
+    } else if (attackError) {
+      // Lỗi nhưng channel vẫn sống → thử attack lại sau cd
+      summary.status = "DONE";
+      summary.nextCheckMs = lastCdMs;
+      summary.nextCheckReason = "error_but_alive_retry_attack";
+      onLog?.("INFO", `WB lỗi attack nhưng channel còn sống → attack lại sau ${Math.round(lastCdMs / 1000)}s`);
     } else {
-      summary.status = "WAITING_RESPAWN";
-      summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = "no_more_targets";
-      onLog?.("INFO", `WB hết target · check sau ${checkIntervalMs / 60000}p`);
+      summary.status = "DONE";
+      summary.nextCheckMs = lastCdMs;
+      summary.nextCheckReason = "continue_attack";
     }
 
     onLog?.(
       "SUCCESS",
-      `WB session · atk ${summary.attackCount} · claim ${summary.claimCount} · next ${summary.nextCheckMs! < 5000 ? summary.nextCheckMs + "ms (DPS)" : Math.round(summary.nextCheckMs! / 60000) + "p (check)"}`
+      `WB xong session · atk ${summary.attackCount} · claim ${summary.claimCount} · +${summary.claimStones || 0}LS · next ${
+        (summary.nextCheckMs || 0) >= 60_000
+          ? Math.round((summary.nextCheckMs || 0) / 60000) + "p CHECK"
+          : Math.round((summary.nextCheckMs || 0) / 1000) + "s ATTACK"
+      }`
     );
   } catch (e: any) {
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
-    summary.nextCheckMs = 30_000;
+    summary.nextCheckMs = checkIntervalMs;
     onLog?.("ERROR", `WB fail: ${e?.message || e}`);
   }
 
