@@ -60,7 +60,6 @@ export async function loginAccount(accountId: string, force = false) {
   }
 
   store.update(accountId, { state: "LOGGING_IN", activeTask: "Đăng nhập", errorMessage: undefined });
-  store.addLog(accountId, "AUTH", "INFO", force ? "Đăng nhập lại..." : "Đang đăng nhập...");
 
   const { res, data } = await gameFetch(`${config.gameBaseUrl}/auth/v1/token?grant_type=password`, {
     method: "POST",
@@ -80,7 +79,6 @@ export async function loginAccount(accountId: string, force = false) {
 
   const token = data.access_token as string;
   store.update(accountId, { accessToken: token });
-  store.addLog(accountId, "AUTH", "SUCCESS", "Đăng nhập OK");
 
   // character
   store.update(accountId, { activeTask: "Lấy nhân vật" });
@@ -110,7 +108,6 @@ export async function loginAccount(accountId: string, force = false) {
     level,
     accessToken: token,
   });
-  store.addLog(accountId, "CHAR", "SUCCESS", `NV: ${characterName || characterId}`);
 
   await refreshAccountInfo(accountId);
   return { accessToken: token, characterId };
@@ -232,10 +229,21 @@ export async function refreshAccountInfo(accountId: string) {
 
     if (!acc.running) patch.state = "READY";
     store.update(accountId, patch);
-    store.addLog(accountId, "INFO", "SUCCESS", `Lv ${patch.level ?? "?"} | Rank ${patch.rankLabel ?? "?"} | LS ${patch.spiritStones ?? "?"}`);
+    // chỉ log 1 dòng khi check thủ công / login — rate-limit trong store dedupe
+    store.addLog(
+      accountId,
+      "INFO",
+      "SUCCESS",
+      `OK · ${characterNameOr(accountId, patch)} · Lv ${patch.level ?? "?"} · Rank ${patch.rankLabel ?? "?"} · LS ${patch.spiritStones ?? "?"}`
+    );
     return true;
   } catch (e: any) {
     store.addLog(accountId, "INFO", "WARN", e?.message || "Refresh info lỗi");
     return false;
   }
+}
+
+function characterNameOr(accountId: string, patch: any) {
+  const acc = store.get(accountId);
+  return patch.characterName || acc?.characterName || acc?.email || accountId.slice(0, 6);
 }

@@ -115,7 +115,6 @@ app.post("/api/accounts", async (req, res) => {
   let acc = existing;
   if (acc) {
     store.setPassword(acc.id, password);
-    store.addLog(acc.id, "SYS", "INFO", "Account đã tồn tại — đã cập nhật password trên server.");
   } else {
     acc = store.addAccount(email, password, enabled);
   }

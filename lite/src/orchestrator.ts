@@ -1,5 +1,6 @@
 import { config, type FeatureId } from "./config";
 import { ensureRuntime, loginAccount, refreshAccountInfo } from "./auth";
+import { logGate, shouldAcceptEngineLog } from "./logGate";
 import { store } from "./store";
 import {
   clearFarmRuntimeLocks,
@@ -68,21 +69,41 @@ function isAllowed(accountId: string, featureId: FeatureId, token: number) {
   return true;
 }
 
+/** Log tối ưu: filter engine + rate-limit + dedupe */
 function onLog(accountId: string, module: string) {
   return (level: any, message: string) => {
-    const lv = String(level || "INFO").toUpperCase();
-    if (lv === "DEBUG") return;
+    const lv = String(level || "INFO").toUpperCase() as any;
     const text = String(message || "");
-    // Farm: bỏ spam nhẹ, nhưng giữ log quan trọng để UI thấy bot đang chạy
-    if (module === "FARM" && lv === "INFO") {
-      const keep =
-        /bắt đầu|start|tóm tắt|summary|tiêu diệt|attack|boss|elite|kênh|channel|vòng|cycle|killed|đánh|scan|mp|hết|xong|done|quest/i.test(
-          text
-        );
-      if (!keep) return;
-    }
-    store.addLog(accountId, module, lv as any, message);
+    if (!shouldAcceptEngineLog(module, lv, text)) return;
+    const gated = logGate.allow(accountId, module, lv, text);
+    if (!gated) return;
+    store.addLog(accountId, module, lv, gated);
   };
+}
+
+/** Log hệ thống lite (start/stop/summary) — vẫn qua rate-limit nhẹ */
+function sysLog(accountId: string, module: string, level: any, message: string, force = false) {
+  if (force) {
+    store.addLog(accountId, module, level, message, { force: true });
+    return;
+  }
+  const gated = logGate.allow(accountId, module, level, message, {
+    minIntervalMs: level === "ERROR" ? 5_000 : 20_000,
+  });
+  if (!gated) return;
+  store.addLog(accountId, module, level, gated);
+}
+
+/** Tóm tắt 1 dòng sau mỗi vòng farm — thay cho spam engine */
+function farmCycleSummary(result: any): string {
+  const atk = result?.attackCount ?? 0;
+  const kill = result?.killedCount ?? result?.observedKilledCount ?? 0;
+  const boss = result?.killedBossCount ?? 0;
+  const elite = result?.killedEliteCount ?? 0;
+  const st = result?.status || "?";
+  const mode = result?.effectiveMode || result?.mode || "?";
+  const wait = Math.round(Number(result?.nextDelayMs || 0) / 1000);
+  return `Farm ${st} · ${mode} · atk ${atk} · kill ${kill} (B${boss}/E${elite}) · next ${wait}s`;
 }
 
 async function runFeatureOnce(accountId: string, featureId: FeatureId, token: number) {
@@ -104,7 +125,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       activeTask: featureId,
       errorMessage: undefined,
     });
-    store.addLog(accountId, featureId.toUpperCase(), "INFO", `▶ Đang chạy ${featureId}...`);
+    // không log "Đang chạy..." mỗi vòng — chỉ tóm tắt sau khi xong
 
     let nextDelayMs = 60_000;
     let status: "ok" | "error" | "done" = "ok";
@@ -120,22 +141,33 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           boss_priority_mode: settings.boss_priority_mode !== false,
           boss_priority_fast: settings.boss_priority_fast !== false,
           smart_rebirth_farm: settings.smart_rebirth_farm !== false,
-          farm_log_mode: settings.farm_log_mode || "summary",
+          farm_log_mode: "summary",
+          // engine summary mặc định dài — lite tự log 1 dòng
+          summary_log_interval_seconds: Math.max(1800, Number(settings.summary_log_interval_seconds || 3600)),
         },
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "FARM"),
       });
       nextDelayMs = Math.max(config.minFarmDelayMs, Number(result.nextDelayMs || settings.empty_scan_delay_ms || 1000));
+      const line = farmCycleSummary(result);
       if (result.status === "ERROR") {
         status = "error";
-        errMsg = (result.errors || []).slice(0, 2).join("; ") || "Farm error";
+        errMsg = (result.errors || []).slice(0, 1).join("; ") || "Farm error";
+        sysLog(accountId, "FARM", "ERROR", errMsg);
       } else if (
         result.status === "DONE" &&
         result.effectiveMode === "smart_done_stopped" &&
         settings.smart_stop_when_quest_done === true
       ) {
         status = "done";
-        store.addLog(accountId, "FARM", "SUCCESS", "Đủ nhiệm vụ trùng sinh — dừng farm");
+        sysLog(accountId, "FARM", "SUCCESS", "Đủ nhiệm vụ trùng sinh — dừng farm", true);
+      } else {
+        // 1 dòng tóm tắt; vòng không đánh: thưa hơn (45s)
+        const empty = !(result.attackCount > 0);
+        const gated = logGate.allow(accountId, "FARM", "INFO", line, {
+          minIntervalMs: empty ? 45_000 : 20_000,
+        });
+        if (gated) store.addLog(accountId, "FARM", "INFO", gated);
       }
     } else if (featureId === "buff") {
       const result = await runAutoBuffCheck({
@@ -148,6 +180,8 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       if (result.status === "ERROR") {
         status = "error";
         errMsg = "Buff error";
+      } else {
+        sysLog(accountId, "BUFF", "SUCCESS", `Buff OK · next ${Math.round(nextDelayMs / 1000)}s`);
       }
     } else if (featureId === "claim_exp") {
       await runClaimExpAuto({
@@ -205,7 +239,14 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       );
       if (result.status === "ERROR") {
         status = "error";
-        errMsg = (result.errors || []).slice(0, 2).join("; ") || "World boss error";
+        errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
+      } else {
+        sysLog(
+          accountId,
+          "WORLD_BOSS",
+          "INFO",
+          `WB ${result.status} · atk ${result.attackCount || 0} · claim ${result.claimCount || 0}`
+        );
       }
     } else if (featureId === "breakthrough") {
       const result = await runBreakthroughAuto({
@@ -225,9 +266,10 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         status = "error";
         errMsg = result.reason || "Breakthrough error";
       } else if (result.status === "SUCCESS") {
-        store.addLog(accountId, "BREAKTHROUGH", "SUCCESS", "Đột phá thành công");
+        sysLog(accountId, "BREAKTHROUGH", "SUCCESS", "Đột phá thành công", true);
         await refreshAccountInfo(accountId);
       }
+      // WAITING (chưa đủ EXP): im lặng — khỏi spam
     } else if (featureId === "mail") {
       await runMailClaimAll({
         characterId: runtime.characterId,
@@ -241,7 +283,6 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       let okRuns = 0;
       for (let i = 0; i < runCount; i++) {
         if (!isAllowed(accountId, featureId, token)) break;
-        store.addLog(accountId, "MAZE", "INFO", `Mê cung tier ${tier} — lượt ${i + 1}/${runCount}`);
         await runMazeAuto({
           characterId: runtime.characterId,
           accessToken: runtime.accessToken,
@@ -251,13 +292,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           autoBoss: settings.auto_boss !== false,
           autoClaimFinal: settings.auto_claim_final !== false,
           bossHpReserve: Number(settings.boss_hp_reserve || 5),
-          onLog: (level: any, msg: string) => onLog(accountId, "MAZE")(level, msg),
+          onLog: onLog(accountId, "MAZE"),
         } as any);
         okRuns += 1;
         if (i + 1 < runCount) await sleep(1500);
       }
-      store.addLog(accountId, "MAZE", "SUCCESS", `Hoàn tất ${okRuns}/${runCount} lượt mê cung (tier ${tier}).`);
-      // xong batch: chờ theo setting (mặc định 1h) rồi chạy lại nếu vẫn bật
+      sysLog(accountId, "MAZE", "SUCCESS", `Mê cung tier ${tier}: ${okRuns}/${runCount} lượt`, true);
       nextDelayMs = Math.max(60_000, Number(settings.repeat_interval_minutes || 60) * 60_000);
       if (settings.stop_after_batch === true) status = "done";
     } else if (featureId === "auto_equip") {
@@ -296,10 +336,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       return;
     }
 
-    // error: vẫn retry sau delay dài hơn
     if (status === "error") {
       nextDelayMs = Math.max(nextDelayMs, 30_000);
-      store.addLog(accountId, featureId.toUpperCase(), "ERROR", errMsg || "Lỗi, sẽ retry");
+      // lỗi đã log ở nhánh feature — không log lại
     }
 
     schedule(accountId, featureId, nextDelayMs, () => {
@@ -307,7 +346,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     });
   } catch (e: any) {
     const msg = e?.message || String(e);
-    store.addLog(accountId, featureId.toUpperCase(), "ERROR", msg);
+    sysLog(accountId, featureId.toUpperCase(), "ERROR", msg);
     store.setFeature(accountId, featureId, { status: "ERROR", lastError: msg });
     if (isAllowed(accountId, featureId, token)) {
       schedule(accountId, featureId, 45_000, () => {
@@ -337,21 +376,18 @@ export async function startAccount(accountId: string) {
     activeTask: "Khởi động",
     errorMessage: undefined,
   });
-  // đọc lại account sau login (features mới nhất)
   const acc2 = store.get(accountId)!;
-  store.addLog(accountId, "RUN", "SUCCESS", "▶ START — bot đang chạy trên server");
-
   const enabled = (Object.entries(acc2.features) as [FeatureId, any][])
     .filter(([, f]) => f?.enabled)
     .map(([id]) => id);
 
   if (enabled.length === 0) {
-    store.addLog(accountId, "RUN", "WARN", "Chưa bật chức năng nào — tick Farm/Buff/... rồi Start lại");
+    sysLog(accountId, "RUN", "WARN", "Chưa bật chức năng — tick rồi Start lại", true);
     store.update(accountId, { running: true, state: "READY", activeTask: "Idle (không feature)" });
     return;
   }
 
-  store.addLog(accountId, "RUN", "INFO", `Feature bật: ${enabled.join(", ")}`);
+  sysLog(accountId, "RUN", "SUCCESS", `▶ START · ${enabled.join(", ")}`, true);
 
   // stagger start để tránh burst API
   let i = 0;
@@ -385,7 +421,7 @@ export function stopAccount(accountId: string) {
     state: "STOPPED",
     activeTask: undefined,
   });
-  store.addLog(accountId, "RUN", "WARN", "Đã dừng");
+  sysLog(accountId, "RUN", "WARN", "Đã dừng", true);
 }
 
 /** Gọi sau boot: resume các account đang treo trước khi process chết/sleep */

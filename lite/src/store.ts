@@ -59,8 +59,8 @@ class Store {
         version: 1,
         accounts: Array.from(this.accounts.values()).map((a) => ({
           ...a,
-          // không lưu log quá dài vào disk
-          logs: (a.logs || []).slice(0, 30),
+          // log chỉ trên RAM — disk chỉ giữ vài dòng gần nhất (tránh phình file)
+          logs: (a.logs || []).slice(0, 8),
         })),
         updatedAt: new Date().toISOString(),
       };
@@ -158,8 +158,7 @@ class Store {
       updatedAt: now,
     };
     this.accounts.set(acc.id, acc);
-    this.addLog(acc.id, "SYS", "INFO", "Đã thêm tài khoản.");
-    this.persist();
+    this.persist(true);
     this.notify();
     return acc;
   }
@@ -213,26 +212,57 @@ class Store {
     acc.password = password;
     acc.updatedAt = new Date().toISOString();
     this.persist(true);
-    this.addLog(id, "AUTH", "INFO", "Đã cập nhật password trên server.");
     this.notify();
     return acc;
   }
 
-  addLog(id: string, module: string, level: LogLevel, message: string) {
+  /**
+   * Ghi log in-memory. Không ghi disk mỗi dòng (tránh spam I/O Render).
+   * Dedupe dòng trùng liên tiếp: gộp thành message (×N).
+   */
+  addLog(id: string, module: string, level: LogLevel, message: string, opts?: { force?: boolean }) {
     const acc = this.accounts.get(id);
     if (!acc) return;
+
+    const msg = String(message || "").slice(0, 280);
+    if (!msg) return;
+
+    const logs = acc.logs || [];
+    const head = logs[0];
+    // Gộp trùng liên tiếp cùng module+level+message
+    if (
+      !opts?.force &&
+      head &&
+      head.module === module &&
+      head.level === level &&
+      normalizeSame(head.message) === normalizeSame(msg)
+    ) {
+      const base = head.message.replace(/\s*\(×\d+\)\s*$/, "");
+      const m = head.message.match(/\(×(\d+)\)\s*$/);
+      const n = m ? Number(m[1]) + 1 : 2;
+      head.message = `${base} (×${n})`;
+      head.time = new Date().toISOString();
+      acc.updatedAt = head.time;
+      return;
+    }
+
     const log: AppLog = {
       id: uid(),
       time: new Date().toISOString(),
       module,
       level,
-      message: String(message || "").slice(0, 500),
+      message: msg,
     };
-    acc.logs = [log, ...(acc.logs || [])].slice(0, config.maxLogs);
-    acc.updatedAt = new Date().toISOString();
-    this.persist();
-    // log spam: không notify mỗi dòng — UI poll
+    acc.logs = [log, ...logs].slice(0, config.maxLogs);
+    acc.updatedAt = log.time;
+    // Không persist disk — log chỉ trên RAM; account/settings vẫn persist chỗ khác
   }
+}
+
+function normalizeSame(message: string) {
+  return String(message || "")
+    .replace(/\s*\(×\d+\)\s*$/, "")
+    .trim();
 }
 
 export const store = new Store();

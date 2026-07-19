@@ -41,7 +41,7 @@
     .chip button.gear{border:0;background:transparent;color:var(--mu);padding:0 2px;font-size:12px;line-height:1}
     .chip button.gear:hover{color:var(--info)}
     .acts{display:flex;flex-wrap:wrap;gap:4px}
-    .logs{max-height:90px;overflow:auto;font:11px/1.35 ui-monospace,Consolas,monospace;background:#0b0d12;border:1px solid var(--line);border-radius:4px;padding:6px;margin-top:6px}
+    .logs{max-height:72px;overflow:auto;font:11px/1.35 ui-monospace,Consolas,monospace;background:#0b0d12;border:1px solid var(--line);border-radius:4px;padding:6px;margin-top:6px}
     .L-ERROR{color:var(--err)}.L-WARN{color:#f5a524}.L-SUCCESS{color:var(--ok)}.L-INFO{color:var(--info)}
     /* modal */
     .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50;padding:12px}
@@ -258,7 +258,7 @@
 
     function logsHtml(logs) {
       if (!logs?.length) return '<span class="mu">Chưa có log</span>';
-      return logs.slice(0,12).map(l => {
+      return logs.slice(0,8).map(l => {
         const t=(l.time||"").slice(11,19);
         return `<div class="L-${l.level}">[${t}][${esc(l.module)}] ${esc(l.message)}</div>`;
       }).join("");

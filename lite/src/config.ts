@@ -10,7 +10,8 @@ export const config = {
   apiKey: String(process.env.LITE_API_KEY || "").trim(),
   selfPingMinutes: Math.max(0, num(process.env.SELF_PING_MINUTES, 10)),
   publicUrl: String(process.env.PUBLIC_URL || "").replace(/\/$/, ""),
-  maxLogs: Math.max(20, num(process.env.MAX_LOGS_PER_ACCOUNT, 80)),
+  /** Giữ log ngắn trên RAM/UI — mặc định 40 */
+  maxLogs: Math.max(15, num(process.env.MAX_LOGS_PER_ACCOUNT, 40)),
   minFarmDelayMs: Math.max(300, num(process.env.MIN_FARM_DELAY_MS, 800)),
   /** Render free disk mất khi redeploy — có thể trỏ volume path nếu sau này gắn disk */
   dataDir: process.env.DATA_DIR
