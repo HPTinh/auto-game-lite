@@ -120,13 +120,16 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   mail: { claim_mail: true },
   maze: {
     tier: 1,
-    run_count: 1,
+    /** Số lần mê cung cần chạy mỗi ngày (reset 00:00 giờ VN) */
+    run_count: 3,
     max_passes: 5,
     auto_boss: true,
     auto_claim_final: true,
     boss_hp_reserve: 5,
-    repeat_interval_minutes: 60,
-    stop_after_batch: false,
+    // trạng thái ngày — tự cập nhật, không cần user sửa
+    daily_date: "",
+    daily_completed: 0,
+    daily_locked: false,
     skip_monster: true,
     skip_trap: true,
     skip_fire: true,

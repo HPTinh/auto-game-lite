@@ -142,12 +142,13 @@
       ],
       maze: [
         {k:"tier",l:"Bậc (1-6)",t:"number",min:1,max:6},
-        {k:"run_count",l:"Số lần / batch",t:"number",min:1,max:20},
+        {k:"run_count",l:"Số lần / ngày",t:"number",min:1,max:50},
         {k:"max_passes",l:"Max passes",t:"number",min:1},
-        {k:"repeat_interval_minutes",l:"Lặp sau (phút)",t:"number",min:1},
         {k:"auto_boss",l:"Tự boss",t:"bool"},
         {k:"auto_claim_final",l:"Nhận quà",t:"bool"},
-        {k:"stop_after_batch",l:"Dừng sau batch",t:"bool"},
+        {k:"daily_completed",l:"Đã chạy hôm nay (tự đếm)",t:"number",min:0},
+        {k:"daily_date",l:"Ngày đếm (YYYY-MM-DD, tự)",t:"text"},
+        {k:"daily_locked",l:"Đã đủ hôm nay — chờ 00h",t:"bool"},
       ],
       buff: [
         {k:"interval_seconds",l:"Chu kỳ (s)",t:"number",min:30},

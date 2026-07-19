@@ -169,6 +169,52 @@ function sysLog(accountId: string, module: string, level: any, message: string, 
   store.addLog(accountId, module, level, gated);
 }
 
+/** Ngày hiện tại theo giờ Việt Nam YYYY-MM-DD */
+function vnDateString(d = new Date()): string {
+  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" });
+}
+
+/** ms đến 00:00 đêm tiếp theo (giờ VN) */
+function msUntilNextVnMidnight(): number {
+  const vnOffsetMs = 7 * 60 * 60 * 1000;
+  const vnNow = new Date(Date.now() + vnOffsetMs);
+  const y = vnNow.getUTCFullYear();
+  const m = vnNow.getUTCMonth();
+  const day = vnNow.getUTCDate();
+  const nextMidnightUtcMs = Date.UTC(y, m, day + 1, 0, 0, 0, 0) - vnOffsetMs;
+  // +5s đệm sau 00:00; tối thiểu 60s
+  return Math.max(60_000, nextMidnightUtcMs - Date.now() + 5_000);
+}
+
+/** Chuẩn hoá tiến độ mê cung theo ngày; reset sau 00h VN */
+function normalizeMazeDaily(settings: Record<string, any>) {
+  const today = vnDateString();
+  const date = String(settings.daily_date || "");
+  let completed = Math.max(0, Math.floor(Number(settings.daily_completed || 0)) || 0);
+  let locked = settings.daily_locked === true;
+  if (date !== today) {
+    completed = 0;
+    locked = false;
+  }
+  const target = Math.max(1, Math.min(50, Math.floor(Number(settings.run_count || 1)) || 1));
+  return { today, completed, locked, target };
+}
+
+function persistMazeDaily(
+  accountId: string,
+  settings: Record<string, any>,
+  daily: { today: string; completed: number; locked: boolean }
+) {
+  store.setFeature(accountId, "maze", {
+    settings: {
+      ...settings,
+      daily_date: daily.today,
+      daily_completed: daily.completed,
+      daily_locked: daily.locked,
+    },
+  });
+}
+
 /** Tóm tắt 1 dòng sau mỗi vòng farm — thay cho spam engine */
 function farmCycleSummary(result: any, farmSettings?: Record<string, any>): string {
   const atk = result?.attackCount ?? 0;
@@ -191,7 +237,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
   featureBusy.add(key);
 
   const acc = store.get(accountId)!;
-  const settings = { ...(acc.features[featureId]?.settings || {}) };
+  let settings = { ...(acc.features[featureId]?.settings || {}) };
 
   try {
     const runtime = await ensureRuntime(accountId);
@@ -353,28 +399,113 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = 30 * 60_000;
     } else if (featureId === "maze") {
-      const runCount = Math.max(1, Math.min(20, Number(settings.run_count || 1)));
+      // Mê cung theo ngày (00:00 VN): đủ run_count thì khóa đến hết ngày.
+      // Stop/Start lại vẫn nhớ daily_completed. Tăng run_count khi đã lock → vẫn chờ 00h.
       const tier = Math.min(6, Math.max(1, Number(settings.tier || 1)));
-      let okRuns = 0;
-      for (let i = 0; i < runCount; i++) {
-        if (!isAllowed(accountId, featureId, token)) break;
-        await runMazeAuto({
-          characterId: runtime.characterId,
-          accessToken: runtime.accessToken,
-          tier,
-          delayMs: 500,
-          maxPasses: Number(settings.max_passes || 5),
-          autoBoss: settings.auto_boss !== false,
-          autoClaimFinal: settings.auto_claim_final !== false,
-          bossHpReserve: Number(settings.boss_hp_reserve || 5),
-          onLog: onLog(accountId, "MAZE"),
-        } as any);
-        okRuns += 1;
-        if (i + 1 < runCount) await sleep(1500);
+      let daily = normalizeMazeDaily(settings);
+      const waitMidnight = () => {
+        const wait = msUntilNextVnMidnight();
+        nextDelayMs = wait;
+        const hrs = Math.ceil(wait / 3600_000);
+        sysLog(
+          accountId,
+          "MAZE",
+          "INFO",
+          `Mê cung đủ ${daily.completed}/${daily.target} hôm nay (${daily.today}) · chờ ~${hrs}h đến 00:00 VN`
+        );
+      };
+
+      // Đồng bộ state ngày (reset nếu sang ngày mới)
+      if (
+        settings.daily_date !== daily.today ||
+        Number(settings.daily_completed || 0) !== daily.completed ||
+        Boolean(settings.daily_locked) !== daily.locked
+      ) {
+        persistMazeDaily(accountId, settings, daily);
+        settings = {
+          ...settings,
+          daily_date: daily.today,
+          daily_completed: daily.completed,
+          daily_locked: daily.locked,
+        };
       }
-      sysLog(accountId, "MAZE", "SUCCESS", `Mê cung tier ${tier}: ${okRuns}/${runCount} lượt`, true);
-      nextDelayMs = Math.max(60_000, Number(settings.repeat_interval_minutes || 60) * 60_000);
-      if (settings.stop_after_batch === true) status = "done";
+
+      // Đã khóa trong ngày, hoặc đã đủ target → không chạy thêm (kể cả khi tăng run_count)
+      if (daily.locked || daily.completed >= daily.target) {
+        if (!daily.locked && daily.completed >= daily.target) {
+          daily = { ...daily, locked: true };
+          persistMazeDaily(accountId, settings, daily);
+        }
+        waitMidnight();
+      } else {
+        const remaining = daily.target - daily.completed;
+        sysLog(accountId, "MAZE", "INFO", `Mê cung tier ${tier} · còn ${remaining} lượt hôm nay (${daily.completed}/${daily.target})`);
+
+        let okRuns = 0;
+        for (let i = 0; i < remaining; i++) {
+          if (!isAllowed(accountId, featureId, token)) break;
+
+          // đọc lại target nếu user đổi setting giữa chừng (trừ khi đã lock)
+          const latest = store.get(accountId)?.features?.maze?.settings || settings;
+          daily = normalizeMazeDaily(latest);
+          if (daily.locked || daily.completed >= daily.target) break;
+
+          try {
+            await runMazeAuto({
+              characterId: runtime.characterId,
+              accessToken: runtime.accessToken,
+              tier,
+              delayMs: 500,
+              maxPasses: Number(latest.max_passes || settings.max_passes || 5),
+              autoBoss: latest.auto_boss !== false,
+              autoClaimFinal: latest.auto_claim_final !== false,
+              bossHpReserve: Number(latest.boss_hp_reserve ?? settings.boss_hp_reserve ?? 5),
+              onLog: onLog(accountId, "MAZE"),
+            } as any);
+            okRuns += 1;
+            daily = {
+              today: daily.today,
+              completed: daily.completed + 1,
+              locked: false,
+              target: daily.target,
+            };
+            if (daily.completed >= daily.target) {
+              daily.locked = true;
+            }
+            persistMazeDaily(accountId, { ...settings, ...latest }, daily);
+            settings = {
+              ...settings,
+              ...latest,
+              daily_date: daily.today,
+              daily_completed: daily.completed,
+              daily_locked: daily.locked,
+            };
+            sysLog(accountId, "MAZE", "SUCCESS", `Mê cung +1 · ${daily.completed}/${daily.target}`);
+          } catch (e: any) {
+            sysLog(accountId, "MAZE", "ERROR", e?.message || "Mê cung lỗi");
+            // lỗi: thử lại sau 10 phút, không + completed
+            nextDelayMs = 10 * 60_000;
+            status = "error";
+            errMsg = e?.message || "Maze error";
+            break;
+          }
+
+          if (daily.locked) break;
+          if (i + 1 < remaining) await sleep(1500);
+        }
+
+        if (status !== "error") {
+          if (daily.locked || daily.completed >= daily.target) {
+            daily.locked = true;
+            persistMazeDaily(accountId, settings, daily);
+            waitMidnight();
+          } else {
+            // chưa xong (bị stop giữa chừng) — chạy tiếp sau 30s
+            nextDelayMs = 30_000;
+            sysLog(accountId, "MAZE", "INFO", `Mê cung tạm dừng · ${daily.completed}/${daily.target} · tiếp sau 30s`);
+          }
+        }
+      }
     } else if (featureId === "pvp") {
       const huntList = Array.isArray(settings.hunt_list) ? settings.hunt_list : [];
       const result = await runPvpAuto({

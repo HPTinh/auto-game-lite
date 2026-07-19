@@ -124,7 +124,16 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /xong|win|loss|hết lượt/i.test(text);
   }
 
-  if (module === "MAZE" || module === "CRAFT" || module === "AUTO_EQUIP") {
+  if (module === "MAZE") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /đủ|còn|hôm nay|00:00|chờ|\+\d|\/\d/i.test(text)
+    );
+  }
+
+  if (module === "CRAFT" || module === "AUTO_EQUIP") {
     return lv !== "INFO" || /bắt đầu|xong|hoàn tất|thành công|fail|lỗi/i.test(text);
   }
 
