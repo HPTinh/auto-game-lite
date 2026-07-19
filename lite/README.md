@@ -64,10 +64,13 @@ UI: `http://localhost:3000?key=matkhau`
 
 | Key | Gợi ý |
 |---|---|
-| `LITE_API_KEY` | mật khẩu mạnh (bắt buộc production) |
+| `LITE_API_KEY` | Pass web thường (vd `0000`) — share cho người dùng |
+| `LITE_BACKUP_KEY` | Pass 2 **chỉ bạn** — mở Export/Import (double-click AUTO LITE) |
 | `PUBLIC_URL` | `https://YOUR-SERVICE.onrender.com` |
 | `SELF_PING_MINUTES` | `10` |
 | `MAX_LOGS_PER_ACCOUNT` | `60` |
+
+**Export/Import:** luôn ẩn khi vào bằng pass web. Double-click tiêu đề **AUTO LITE** → nhập `LITE_BACKUP_KEY` → 2 nút hiện. Đóng tab = ẩn lại. API backup cũng chặn nếu sai pass 2.
 
 ### 3. Cron keep-alive (bắt buộc free tier)
 
@@ -98,7 +101,7 @@ Thêm account → **Kiểm tra** → tick feature → **Start treo**.
 2. **Disk ephemeral** — file `data/accounts.json` **mất khi redeploy**. Sau deploy lại cần thêm account. (Có thể export/import sau nếu cần.)
 3. **Cold start** — lần wake đầu ~30–60s; cron 10 phút giữ ấm tốt hơn.
 4. **Nhiều account** — farm song song tốn RAM/CPU; free nên **1–3 account** là an toàn.
-5. **Không share** `LITE_API_KEY` / password account.
+5. **Không share** `LITE_BACKUP_KEY` / password account game. Pass web (`LITE_API_KEY`) có thể share.
 
 ---
 

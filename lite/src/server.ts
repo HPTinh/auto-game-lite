@@ -93,6 +93,8 @@ app.get("/api/status", (_req, res) => {
     lastPingAt: lastPingAt ? new Date(lastPingAt).toISOString() : null,
     pingCount,
     hasApiKey: Boolean(config.apiKey),
+    /** true nếu server có cài LITE_BACKUP_KEY — UI mới cho phép mở khóa Export/Import */
+    hasBackupKey: Boolean(config.backupKey),
   });
 });
 
@@ -100,8 +102,57 @@ app.get("/api/accounts", (_req, res) => {
   res.json({ ok: true, accounts: store.listPublic() });
 });
 
-/** Backup đầy đủ (password + settings) — browser localStorage / file */
-app.get("/api/backup", (_req, res) => {
+/** Lấy pass 2 từ header / body / query (không log ra) */
+function readBackupKey(req: Request): string {
+  return (
+    String(req.headers["x-backup-key"] || "").trim() ||
+    String(req.body?.backupKey || req.body?.backup_key || "").trim() ||
+    String(req.query.backupKey || req.query.backup_key || "").trim()
+  );
+}
+
+function backupKeyOk(req: Request): boolean {
+  if (!config.backupKey) return false;
+  const got = readBackupKey(req);
+  return Boolean(got) && got === config.backupKey;
+}
+
+/** Middleware: bắt buộc pass 2 (LITE_BACKUP_KEY) cho backup */
+function requireBackupKey(req: Request, res: Response, next: NextFunction) {
+  if (!config.backupKey) {
+    return res.status(403).json({
+      ok: false,
+      error: "Backup tắt — chưa set LITE_BACKUP_KEY trên server",
+    });
+  }
+  if (!backupKeyOk(req)) {
+    return res.status(403).json({
+      ok: false,
+      error: "Sai pass backup (pass 2). Double-click AUTO LITE rồi nhập LITE_BACKUP_KEY",
+    });
+  }
+  return next();
+}
+
+/**
+ * Kiểm tra pass 2 — UI double-click gọi endpoint này.
+ * Không trả secret; chỉ ok/fail.
+ */
+app.post("/api/backup/unlock", (req, res) => {
+  if (!config.backupKey) {
+    return res.status(403).json({
+      ok: false,
+      error: "Chưa cấu hình LITE_BACKUP_KEY trên Render",
+    });
+  }
+  if (!backupKeyOk(req)) {
+    return res.status(403).json({ ok: false, error: "Sai mật khẩu backup" });
+  }
+  return res.json({ ok: true, unlocked: true });
+});
+
+/** Backup đầy đủ (password + settings) — cần pass 2 */
+app.get("/api/backup", requireBackupKey, (_req, res) => {
   const data = store.exportBackup();
   res.json({
     ok: true,
@@ -110,8 +161,8 @@ app.get("/api/backup", (_req, res) => {
   });
 });
 
-/** Restore merge theo email — không mất setting nếu trùng account */
-app.post("/api/backup/restore", (req, res) => {
+/** Restore merge theo email — cần pass 2 */
+app.post("/api/backup/restore", requireBackupKey, (req, res) => {
   try {
     const replace = req.body?.replace === true;
     const result = store.importBackup(req.body, { replace });

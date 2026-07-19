@@ -7,7 +7,13 @@ const num = (v: string | undefined, fallback: number) => {
 
 export const config = {
   port: num(process.env.PORT, 3000),
+  /** Pass web thường — mọi người dùng (vd 0000) */
   apiKey: String(process.env.LITE_API_KEY || "").trim(),
+  /**
+   * Pass 2 (admin) — chỉ Export/Import backup.
+   * Env: LITE_BACKUP_KEY. Không set = tắt backup API.
+   */
+  backupKey: String(process.env.LITE_BACKUP_KEY || process.env.LITE_ADMIN_KEY || "").trim(),
   selfPingMinutes: Math.max(0, num(process.env.SELF_PING_MINUTES, 10)),
   publicUrl: String(process.env.PUBLIC_URL || "").replace(/\/$/, ""),
   /** Giữ log ngắn trên RAM/UI — mặc định 40 */

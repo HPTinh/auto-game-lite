@@ -232,33 +232,54 @@
     if (new URLSearchParams(location.search).get("key")) localStorage.setItem("lite_api_key", API_KEY);
 
     /**
-     * Ẩn Export/Import khi dùng pass web thường (0000).
-     * Hiện khi:
-     *  - LITE_API_KEY khác 0000, hoặc
-     *  - đã double-click tiêu đề và nhập mã hiện nút (UI-only, API vẫn 0000).
-     * Chỉ style.display — không làm nặng, không ảnh hưởng bot/server.
+     * Export/Import: luôn ẩn với pass web thường (0000).
+     * Chỉ hiện sau khi double-click AUTO LITE + nhập đúng LITE_BACKUP_KEY (pass 2 trên Render).
+     * Pass 2 lưu sessionStorage (đóng tab = ẩn lại). API backup cũng chặn nếu sai pass 2.
      */
-    const PUBLIC_WEB_KEY = "0000";
-    const BACKUP_UI_KEY = "lite_backup_ui_unlock";
-    let backupUiUnlock = localStorage.getItem(BACKUP_UI_KEY) || "";
-    function canShowBackupButtons() {
-      const apiKey = String(API_KEY || "").trim();
-      const unlock = String(backupUiUnlock || "").trim();
-      // Pass web khác 0000 → hiện
-      if (apiKey && apiKey !== PUBLIC_WEB_KEY) return true;
-      // Hoặc đã nhập mã hiện nút (khác rỗng và khác 0000)
-      if (unlock && unlock !== PUBLIC_WEB_KEY) return true;
-      return false;
-    }
+    const BACKUP_SESSION_KEY = "lite_backup_key_session";
+    let BACKUP_KEY_PASS = sessionStorage.getItem(BACKUP_SESSION_KEY) || "";
+    let backupUnlocked = false;
+
     function updateBackupButtonsVisibility() {
-      const show = canShowBackupButtons();
+      const show = backupUnlocked && Boolean(BACKUP_KEY_PASS);
       const exp = $("btnExport");
       const imp = $("btnImport");
       if (exp) exp.style.display = show ? "" : "none";
       if (imp) imp.style.display = show ? "" : "none";
     }
 
-    const BACKUP_KEY = "auto_lite_accounts_backup_v1";
+    async function unlockBackupWithPass(pass) {
+      const key = String(pass || "").trim();
+      if (!key) {
+        BACKUP_KEY_PASS = "";
+        backupUnlocked = false;
+        sessionStorage.removeItem(BACKUP_SESSION_KEY);
+        updateBackupButtonsVisibility();
+        return { ok: false, error: "Đã khóa Export/Import" };
+      }
+      // Xác thực với server (pass 2 = LITE_BACKUP_KEY)
+      const data = await api("/api/backup/unlock", {
+        method: "POST",
+        body: JSON.stringify({ backupKey: key }),
+        headers: { "x-backup-key": key },
+        _skipBackupHeader: true, // dùng key vừa nhập, không lấy session cũ
+        _backupKeyOverride: key,
+      });
+      BACKUP_KEY_PASS = key;
+      backupUnlocked = true;
+      sessionStorage.setItem(BACKUP_SESSION_KEY, key);
+      updateBackupButtonsVisibility();
+      return data;
+    }
+
+    function lockBackupUi() {
+      BACKUP_KEY_PASS = "";
+      backupUnlocked = false;
+      sessionStorage.removeItem(BACKUP_SESSION_KEY);
+      updateBackupButtonsVisibility();
+    }
+
+    const LOCAL_BACKUP_STORAGE = "auto_lite_accounts_backup_v1";
     let accounts = [];
     let modal = null; // {accId, featureId, draft}
     let busy = false;
@@ -267,7 +288,7 @@
     function saveLocalBackup(data) {
       try {
         if (!data?.accounts?.length) return;
-        localStorage.setItem(BACKUP_KEY, JSON.stringify({
+        localStorage.setItem(LOCAL_BACKUP_STORAGE, JSON.stringify({
           version: 1,
           updatedAt: new Date().toISOString(),
           accounts: data.accounts,
@@ -277,7 +298,7 @@
 
     function readLocalBackup() {
       try {
-        const raw = localStorage.getItem(BACKUP_KEY);
+        const raw = localStorage.getItem(LOCAL_BACKUP_STORAGE);
         if (!raw) return null;
         return JSON.parse(raw);
       } catch {
@@ -285,7 +306,9 @@
       }
     }
 
+    /** Chỉ khi đã mở khóa pass 2 — im lặng nếu chưa unlock */
     async function pullAndCacheBackup() {
+      if (!backupUnlocked || !BACKUP_KEY_PASS) return null;
       try {
         const data = await api("/api/backup");
         if (data?.accounts?.length) saveLocalBackup(data);
@@ -298,12 +321,13 @@
     async function autoRestoreIfEmpty() {
       if (didAutoRestore) return false;
       didAutoRestore = true;
+      // Cần pass 2 mới restore full password — người thường (0000) bỏ qua im lặng
+      if (!backupUnlocked || !BACKUP_KEY_PASS) return false;
       const local = readLocalBackup();
       if (!local?.accounts?.length) return false;
       try {
         const cur = await api("/api/accounts");
         if ((cur.accounts || []).length > 0) {
-          // server còn data — chỉ cache lại
           await pullAndCacheBackup();
           return false;
         }
@@ -325,19 +349,46 @@
     async function api(path, opts={}) {
       const headers = Object.assign({"content-type":"application/json"}, opts.headers||{});
       if (API_KEY) headers["x-api-key"] = API_KEY;
+      // Gắn pass 2 cho API backup (sau khi unlock)
+      if (!opts._skipBackupHeader) {
+        const bk = opts._backupKeyOverride || BACKUP_KEY_PASS;
+        if (bk) headers["x-backup-key"] = bk;
+      } else if (opts._backupKeyOverride) {
+        headers["x-backup-key"] = opts._backupKeyOverride;
+      }
       const res = await fetch(path, {...opts, headers});
       const data = await res.json().catch(()=>({}));
       if (res.status === 401 && !opts._retried) {
-        const k = prompt("LITE_API_KEY:");
+        const k = prompt("LITE_API_KEY (pass web):");
         if (k) {
           API_KEY = k.trim();
           localStorage.setItem("lite_api_key", API_KEY);
-          updateBackupButtonsVisibility();
           return api(path, {...opts, _retried:true});
         }
       }
       if (!res.ok) throw new Error(data.error || res.statusText || "API error");
       return data;
+    }
+
+    /** Thử khôi phục session unlock trong cùng tab (F5) */
+    async function tryRestoreBackupSession() {
+      if (!BACKUP_KEY_PASS) {
+        backupUnlocked = false;
+        updateBackupButtonsVisibility();
+        return;
+      }
+      try {
+        await api("/api/backup/unlock", {
+          method: "POST",
+          body: JSON.stringify({ backupKey: BACKUP_KEY_PASS }),
+          headers: { "x-backup-key": BACKUP_KEY_PASS },
+          _backupKeyOverride: BACKUP_KEY_PASS,
+        });
+        backupUnlocked = true;
+      } catch {
+        lockBackupUi();
+      }
+      updateBackupButtonsVisibility();
     }
 
     function stClass(acc) {
@@ -829,30 +880,34 @@
     $("stopAll").onclick = async () => { try { await api("/api/stop-all",{method:"POST",body:"{}"}); msg("Stop all",true); await load(true);} catch(e){msg(e.message,false);} };
     $("refresh").onclick = () => load(true);
 
-    // Double-click "AUTO LITE" → nhập mã hiện/ẩn Export/Import (không đổi pass API 0000)
-    document.querySelector("h1")?.addEventListener("dblclick", () => {
-      const k = prompt(
-        "Mã hiện Export/Import\n• Để trống hoặc 0000 = ẩn\n• Nhập bất kỳ mã khác = hiện nút (API vẫn dùng pass web)",
-        backupUiUnlock || ""
-      );
-      if (k === null) return;
-      backupUiUnlock = String(k).trim();
-      if (backupUiUnlock && backupUiUnlock !== PUBLIC_WEB_KEY) {
-        localStorage.setItem(BACKUP_UI_KEY, backupUiUnlock);
-      } else {
-        backupUiUnlock = "";
-        localStorage.removeItem(BACKUP_UI_KEY);
+    // Double-click "AUTO LITE" → nhập pass 2 (LITE_BACKUP_KEY trên Render)
+    document.querySelector("h1")?.addEventListener("dblclick", async () => {
+      if (backupUnlocked) {
+        const close = confirm("Export/Import đang mở. Bấm OK để khóa lại (ẩn nút)?");
+        if (close) {
+          lockBackupUi();
+          msg("Đã ẩn Export / Import", true);
+        }
+        return;
       }
-      updateBackupButtonsVisibility();
-      msg(
-        canShowBackupButtons()
-          ? "Đã hiện Export / Import"
-          : "Đã ẩn Export / Import (pass thường)",
-        true
-      );
+      const k = prompt("Nhập pass backup (LITE_BACKUP_KEY trên Render)\nChỉ bạn biết — người dùng pass 0000 không thấy 2 nút này.");
+      if (k === null) return;
+      if (!String(k).trim()) {
+        msg("Chưa nhập pass", false);
+        return;
+      }
+      try {
+        await unlockBackupWithPass(k);
+        msg("OK — Export / Import đã hiện (chỉ tab này)", true);
+      } catch (e) {
+        lockBackupUi();
+        msg(e.message || "Sai pass backup", false);
+      }
     });
 
+    // Ẩn nút ngay; nếu session còn pass 2 thì verify lại với server
     updateBackupButtonsVisibility();
+    void tryRestoreBackupSession();
     $("modalCancel").onclick = closeModal;
     $("modalSave").onclick = saveModal;
     $("mask").addEventListener("click", (e) => { if (e.target === $("mask")) closeModal(); });
