@@ -650,18 +650,34 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       return summary;
     }
 
-    // ── MODE ATTACK: window_open=true → dame mỗi delayMs ───────────
+    // ── MODE ATTACK: window_open=true → dame mỗi hitDelayMs ────────
+    // Lỗi attack → chỉ chờ hitDelayMs rồi đánh lại. KHÔNG chờ check_interval.
+    // Chỉ snapshot window_open=false mới chờ check_interval.
     const tier = fight[0] || primaryTier;
     tierBag.tier = tier;
     tierBag.channel = channels.find(c => c.tier === tier);
 
-    const hitDelayMs = defaultCdMs; // 3000 mặc định, 1500 nếu setting nhanh
-    let lastCdMs = hitDelayMs;
+    const hitDelayMs = defaultCdMs; // 3000 mặc định, 1500 nhanh
 
     onLog?.(
       "INFO",
-      `WB MODE=ATTACK · window_open=true · tier ${tier} · dame mỗi ${hitDelayMs}ms · max ${maxAttacks}`
+      `WB MODE=ATTACK · window_open=true · tier ${tier} · dame mỗi ${hitDelayMs}ms · max ${maxAttacks} (lỗi → chờ ${hitDelayMs}ms attack lại)`
     );
+
+    const quickWindowOpen = async (): Promise<boolean> => {
+      try {
+        const s = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
+        onLog?.(
+          "INFO",
+          `WB snapshot: window_open=${s.windowOpen} status=${s.eventStatus || "?"} hp=${s.hpCurrent ?? "?"}`
+        );
+        return s.windowOpen === true;
+      } catch (e: any) {
+        // Snapshot fail: vẫn coi mở để không bị kẹt chờ check dài
+        onLog?.("WARN", `WB snapshot fail · coi window mở · attack tiếp`);
+        return true;
+      }
+    };
 
     for (let i = 1; i <= maxAttacks; i++) {
       if (options.shouldStop?.()) {
@@ -678,9 +694,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         tierBag.lastAttack = attack;
         tierBag.attackCount += 1;
         summary.attackCount += 1;
-        // Setting delay (3000/1500); API cd chỉ tăng thêm nếu game yêu cầu chậm hơn
-        const apiCd = attackCooldownMs(attack, hitDelayMs);
-        lastCdMs = useFixedDelay ? hitDelayMs : Math.max(hitDelayMs, apiCd);
 
         const dmg = Number(attack?.damage);
         const hpAfter = Number(attack?.hp_after);
@@ -688,12 +701,13 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         if (i === 1 || i === maxAttacks || i % 10 === 0) {
           onLog?.(
             "INFO",
-            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · delay ${lastCdMs}ms`
+            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · delay ${hitDelayMs}ms`
           );
         }
 
+        // Giết boss → claim → CHECK
         if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
-          onLog?.("SUCCESS", `WB ${tier}: GIẾT · ${tierBag.attackCount} đòn → claim → MODE CHECK`);
+          onLog?.("SUCCESS", `WB ${tier}: GIẾT · ${tierBag.attackCount} đòn → claim → CHECK`);
           await tryClaimTier(options, tier, tierBag, "killed");
           summary.claimed = summary.claimed || tierBag.claimed;
           summary.claimCount += tierBag.claimCount;
@@ -703,94 +717,88 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           summary.nextCheckMs = checkIntervalMs;
           summary.nextCheckReason = "boss_killed";
           summary.tierResults.push(tierBag);
-          onLog?.("INFO", `WB MODE=CHECK · check sống lại sau ${checkIntervalMs / 60000}p (rpc_wb_snapshot)`);
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
 
+        // Response chặn → snapshot; open=true → chờ hitDelay attack tiếp; false → CHECK
         if (isWaitingRespawnLike(attack) || isAttackBlockedError(attack)) {
-          onLog?.("WARN", `WB ${tier}: response chặn đòn ${i} → snapshot window`);
-          break;
-        }
-
-        // window_open=true → delay rồi dame tiếp
-        if (i < maxAttacks) await sleep(lastCdMs);
-      } catch (error: any) {
-        tierBag.lastAttack = error?.data;
-
-        if (isRateLimitOnly(error)) {
-          onLog?.("WARN", `WB ${tier}: rate · chờ ${lastCdMs}ms`);
-          await sleep(lastCdMs);
-          i -= 1;
+          onLog?.("WARN", `WB ${tier}: chặn đòn ${i} → snapshot`);
+          const open = await quickWindowOpen();
+          if (!open) {
+            await tryClaimTier(options, "", tierBag, "window_closed");
+            summary.claimed = summary.claimed || tierBag.claimed;
+            summary.claimCount += tierBag.claimCount;
+            summary.claimStones += tierBag.claimStones;
+            tierBag.status = "WAITING_RESPAWN";
+            summary.status = "WAITING_RESPAWN";
+            summary.nextCheckMs = checkIntervalMs;
+            summary.nextCheckReason = "window_open_false";
+            summary.tierResults.push(tierBag);
+            onLog?.("WARN", `WB MODE=CHECK · window_open=false · ${checkIntervalMs / 60000}p`);
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+          await sleep(hitDelayMs);
           continue;
         }
+
+        if (i < maxAttacks) await sleep(hitDelayMs);
+      } catch (error: any) {
+        tierBag.lastAttack = error?.data;
+        const msg = error?.message || "attack error";
 
         if (isClaimRewardLike(error)) {
           await tryClaimTier(options, tier, tierBag, "error_claimable");
           summary.claimed = summary.claimed || tierBag.claimed;
           summary.claimCount += tierBag.claimCount;
           summary.claimStones += tierBag.claimStones;
+        }
+
+        // Mọi lỗi: snapshot. open → chỉ chờ hitDelay; false → CHECK
+        onLog?.("WARN", `WB ${tier}: lỗi đòn ~${i}: ${msg.slice(0, 100)}`);
+        const open = await quickWindowOpen();
+        if (!open) {
+          await tryClaimTier(options, "", tierBag, "after_error");
+          summary.claimed = summary.claimed || tierBag.claimed;
+          summary.claimCount += tierBag.claimCount;
+          summary.claimStones += tierBag.claimStones;
           tierBag.status = "WAITING_RESPAWN";
           summary.status = "WAITING_RESPAWN";
           summary.nextCheckMs = checkIntervalMs;
-          summary.nextCheckReason = "claimable_error";
+          summary.nextCheckReason = "window_open_false_after_error";
           summary.tierResults.push(tierBag);
+          onLog?.("WARN", `WB MODE=CHECK · window_open=false · ${checkIntervalMs / 60000}p`);
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
 
-        const msg = error?.message || "attack error";
-        onLog?.("WARN", `WB ${tier}: lỗi đòn ~${i}: ${msg.slice(0, 100)} → snapshot`);
-        if (!isAttackBlockedError(error) && !isWaitingRespawnLike(error) && !isAttackStopSoft(error)) {
-          tierBag.errors.push(msg);
-          summary.errors.push(msg);
-        }
-        break;
+        // window còn mở: KHÔNG chờ check_interval — chỉ hitDelay rồi attack
+        onLog?.("INFO", `WB window mở · attack lại sau ${hitDelayMs}ms (không chờ check)`);
+        await sleep(hitDelayMs);
+        i -= 1;
+        continue;
       }
     }
 
-    // ── Snapshot: window_open? ────────────────────────────────────
-    onLog?.("INFO", `WB: snapshot ${tier} (window_open?)...`);
-    let snap2: WorldBossSnapshot | null = null;
-    try {
-      snap2 = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
-      onLog?.(
-        "INFO",
-        `WB snapshot: window_open=${snap2.windowOpen} status=${snap2.eventStatus || "?"} hp=${snap2.hpCurrent ?? "?"} · ${snap2.reason}`
-      );
-    } catch (e: any) {
-      onLog?.("WARN", `WB snapshot fail: ${e?.message || e}`);
-    }
-
-    await tryClaimTier(options, "", tierBag, "after_attack_claim");
+    // Hết max đòn: snapshot — open thì DPS tiếp sau hitDelay
+    await tryClaimTier(options, "", tierBag, "after_batch");
     summary.claimed = summary.claimed || tierBag.claimed;
     summary.claimCount += tierBag.claimCount;
     summary.claimStones += tierBag.claimStones;
     summary.tierResults.push(tierBag);
 
-    // window_open=true → tiếp tục dame; false → chỉ check
-    if (snap2 && snap2.windowOpen === true) {
+    const stillOpen = await quickWindowOpen();
+    if (stillOpen) {
       summary.status = "DONE";
-      summary.nextCheckMs = lastCdMs;
+      summary.nextCheckMs = hitDelayMs;
       summary.nextCheckReason = "window_open_continue_dps";
-      onLog?.(
-        "INFO",
-        `WB MODE=ATTACK · window_open=true · dame tiếp sau ${lastCdMs}ms`
-      );
-    } else if (snap2 && snap2.windowOpen === false) {
+      onLog?.("INFO", `WB window_open=true · DPS tiếp sau ${hitDelayMs}ms`);
+    } else {
       summary.status = "WAITING_RESPAWN";
       summary.nextCheckMs = checkIntervalMs;
       summary.nextCheckReason = "window_open_false";
-      onLog?.(
-        "WARN",
-        `WB MODE=CHECK · window_open=false · atk ${summary.attackCount} · check mỗi ${checkIntervalMs / 60000}p`
-      );
-    } else {
-      // snapshot fail: còn window trước đó → DPS, không thì check
-      summary.status = "DONE";
-      summary.nextCheckMs = lastCdMs;
-      summary.nextCheckReason = "fallback_continue_attack";
-      onLog?.("INFO", `WB snapshot fail · fallback ATTACK sau ${lastCdMs}ms`);
+      onLog?.("WARN", `WB window_open=false · CHECK ${checkIntervalMs / 60000}p`);
     }
 
     onLog?.(
@@ -802,10 +810,11 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       }`
     );
   } catch (e: any) {
+    // Lỗi ngoài: retry attack sau delay đòn — không chờ check interval
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
-    summary.nextCheckMs = checkIntervalMs;
-    onLog?.("ERROR", `WB fail: ${e?.message || e}`);
+    summary.nextCheckMs = defaultCdMs;
+    onLog?.("ERROR", `WB fail: ${e?.message || e} · retry sau ${defaultCdMs}ms`);
   }
 
   summary.finishedAt = new Date().toISOString();
