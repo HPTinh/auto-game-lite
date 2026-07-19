@@ -373,35 +373,16 @@ export async function fetchWorldBossSnapshot(
     Number(config?.attack_cooldown_sec || config?.cooldown_sec || 3) || 3
   );
 
-  // Window đóng / event expired / idle / dead / hp 0 / có died_at
-  const statusDead = ["expired", "idle", "dead", "closed", "ended", "finished"].includes(eventStatus);
-  const hpDead = Number.isFinite(hpCurrent as number) && (hpCurrent as number) <= 0;
-  const hasDiedAt = Boolean(diedAt);
-
+  // Rule đơn giản (theo game): window_open = true → còn boss, CỨ ĐÁNH
+  // window_open = false → đóng window, chỉ CHECK
   let canAttack = false;
   let reason = "";
 
-  if (!windowOpen) {
-    reason = `window_open=false (end ${data?.window_end || event?.window_end || "?"})`;
-  } else if (statusDead) {
-    reason = `event.status=${eventStatus}`;
-  } else if (hpDead) {
-    reason = `hp_current=${hpCurrent}`;
-  } else if (hasDiedAt) {
-    reason = `died_at=${diedAt}`;
-  } else if (eventStatus === "open" || eventStatus === "alive" || eventStatus === "active" || !eventStatus) {
-    // window mở + còn HP
-    if (Number.isFinite(hpCurrent as number) && (hpCurrent as number) > 0) {
-      canAttack = true;
-      reason = "window_open + hp>0";
-    } else if (!Number.isFinite(hpCurrent as number)) {
-      canAttack = windowOpen;
-      reason = windowOpen ? "window_open" : "closed";
-    } else {
-      reason = `hp=${hpCurrent}`;
-    }
+  if (windowOpen === true) {
+    canAttack = true;
+    reason = `window_open=true · status=${eventStatus || "?"} · hp=${hpCurrent ?? "?"}`;
   } else {
-    reason = `status=${eventStatus || "?"}`;
+    reason = `window_open=false · status=${eventStatus || "?"} · end ${data?.window_end || event?.window_end || "?"}`;
   }
 
   return {
@@ -570,20 +551,18 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
 /**
  * State machine World Boss:
  *
- * MODE ATTACK:
- *   - Đánh mỗi ~3s (config.attack_cooldown_sec / cooldown_sec) đến maxAttacks
- *   - Lỗi attack / window close → rpc_wb_snapshot xác nhận
- *
- * MODE CHECK (window_open=false | event.status=expired | hp<=0):
- *   - KHÔNG attack
- *   - rpc_wb_snapshot / channels theo check_interval
- *   - window_open + hp>0 → ATTACK lại
+ * window_open = true  → MODE ATTACK: dame mỗi attack_delay_ms
+ *   - mặc định 3000ms (3s)
+ *   - setting nhanh: 1500ms
+ * window_open = false → MODE CHECK: không attack, check theo interval
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 30, 1, 999, 30);
+  // Delay đòn: user setting > 0 → dùng; không setting → 3000ms (game cd chuẩn)
   const fixedDelayMs = Number(options.attackDelayMs);
-  let defaultCdMs = Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? fixedDelayMs : 3000;
+  const useFixedDelay = Number.isFinite(fixedDelayMs) && fixedDelayMs > 0;
+  let defaultCdMs = useFixedDelay ? Math.max(200, fixedDelayMs) : 3000;
   const onLog = options.onLog;
 
   const summary: WorldBossRunSummary = {

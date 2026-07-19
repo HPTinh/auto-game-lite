@@ -348,15 +348,15 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     } else if (featureId === "world_boss") {
       const checkMin = Math.max(1, Math.min(24 * 60, Number(settings.check_interval_minutes || 10) || 10));
       const maxAtk = Math.max(1, Math.min(999, Number(settings.max_attacks_per_check || 30) || 30));
-      // attack_delay_ms: 0 = theo cooldown_sec API (mặc định 3s)
-      const attackDelayMs = Number(settings.attack_delay_ms ?? 0);
+      // attack_delay_ms: mặc định 3000; nhanh 1500
+      const attackDelayMs = Number(settings.attack_delay_ms ?? 3000);
       const result = await runWorldBossAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         autoSelectTiers: true,
         tiers: undefined,
         maxAttacksPerCheck: maxAtk,
-        attackDelayMs: Number.isFinite(attackDelayMs) ? attackDelayMs : 0,
+        attackDelayMs: Number.isFinite(attackDelayMs) && attackDelayMs > 0 ? attackDelayMs : 3000,
         autoClaim: settings.auto_claim !== false,
         checkIntervalMinutes: checkMin,
         shouldStop: () => !isAllowed(accountId, featureId, token),
