@@ -610,22 +610,25 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
     return false;
   }
 }
-
 /**
- * World Boss — logic gọn:
+ * World Boss — check nhanh bang rpc_wb_channels (preview):
+ *   window_open, hp_current, status, available
  *
- * Mỗi lần đánh:
- *   1) rpc_wb_snapshot(tier)
- *   2) window_open === true  → rpc_wb_attack → sleep(delay) → lặp
- *   3) window_open === false → tính giờ mở lại từ window_start/window_end, ngủ đến đó (không poll)
+ * Vong danh:
+ *   1) rpc_wb_channels → channel tier
+ *   2) window_open=true && hp_current>0 → rpc_wb_attack
+ *   3) sleep(attack_delay_ms) → channels lai (check HP) → lap
+ *   4) window dong / hp<=0 → claim + cho gio chan VN
  *
- * delay mặc định 3000ms, setting 1500 = nhanh.
+ * delay mac dinh 3000ms, setting 1500 = nhanh.
+ * Khong snapshot moi don (cham hon) — chi channels.
  */
+// (Logic: channels check HP/window moi don — nhanh hon snapshot)
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 999, 1, 999, 999);
   const fixedDelayMs = Number(options.attackDelayMs);
-  // Mặc định 3s; set 1500 = nhanh
+  // Mac dinh 3s; set 1500 = nhanh
   const hitDelayMs =
     Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(200, fixedDelayMs) : 3000;
   const onLog = options.onLog;
@@ -645,7 +648,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     nextCheckReason: "default",
   };
 
-  const tierBag: WorldBossTierResult = {
+  const tierResult: WorldBossTierResult = {
     tier: "?",
     attackCount: 0,
     claimCount: 0,
@@ -655,157 +658,248 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     errors: [],
   };
 
-  /** window_open=false → chờ giờ chẵn kế tiếp (VN): 5h30 chết → 6h00 hồi */
-  const scheduleWhenClosed = (snap: WorldBossSnapshot) => {
-    const { waitMs, nextOpenAt, reason } = msUntilWindowReopen(snap, checkIntervalMs);
+  /** window dong / boss chet → cho gio chan VN */
+  const scheduleWhenClosed = (ch?: WorldBossChannelInfo | null) => {
+    const base: Pick<WorldBossSnapshot, "windowOpen" | "windowStart" | "windowEnd"> = {
+      windowOpen: false,
+    };
+    const { waitMs, nextOpenAt, reason } = msUntilWindowReopen(base, checkIntervalMs);
     summary.status = "WAITING_RESPAWN";
     summary.nextCheckMs = waitMs;
     summary.nextCheckReason = reason;
     const when = nextOpenAt
       ? new Date(nextOpenAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })
       : "?";
+    const hp = ch?.hp_current;
     onLog?.(
       "WARN",
-      `WB window đóng · start=${snap.windowStart || "?"} end=${snap.windowEnd || "?"} · hồi giờ chẵn ~${when} (chờ ${formatWait(waitMs)}) · không poll`
+      `WB closed · status=${ch?.status || "?"} window_open=${ch?.window_open ?? false} hp=${Number.isFinite(Number(hp)) ? Number(hp).toLocaleString() : "?"} · reopen ~${when} (wait ${formatWait(waitMs)})`
     );
   };
 
-  try {
-    // 1) Chọn tier từ channels (rank available)
-    onLog?.("INFO", "WB: channels...");
-    const { myTier, channels } = await fetchChannels(options.characterId, options.accessToken);
-    summary.myTier = myTier;
-    summary.channels = channels;
+  /** channels → 1 tier (fast: HP + window_open) */
+  const getChannel = async (tierWanted: string) => {
+    const data = await fetchChannels(options.characterId, options.accessToken);
+    summary.channels = data.channels;
+    if (data.myTier) summary.myTier = data.myTier;
+    const ch =
+      data.channels.find((c) => c.tier === tierWanted) ||
+      data.channels.find((c) => c.available === true) ||
+      data.channels.find((c) => c.tier === data.myTier) ||
+      null;
+    return { ...data, channel: ch };
+  };
 
-    const { fight } = pickTiersToFight(channels, myTier, options);
+  /** Co the danh theo preview channels */
+  const canFightChannel = (ch: WorldBossChannelInfo | null | undefined): boolean => {
+    if (!ch) return false;
+    if (ch.window_open !== true) return false;
+    return isWorldBossAlive(ch);
+  };
+
+  try {
+    // 1) Chon tier tu channels
+    onLog?.("INFO", "WB: check channels (HP + window_open)...");
+    const first = await fetchChannels(options.characterId, options.accessToken);
+    summary.myTier = first.myTier;
+    summary.channels = first.channels;
+
+    const { fight } = pickTiersToFight(first.channels, first.myTier, options);
     const tier =
       fight[0] ||
-      channels.find(c => c.available === true)?.tier ||
-      myTier ||
+      first.channels.find((c) => c.available === true)?.tier ||
+      first.myTier ||
       "lk";
     summary.tiers = [tier];
-    tierBag.tier = tier;
-    tierBag.channel = channels.find(c => c.tier === tier);
+    tierResult.tier = tier;
+    tierResult.channel = first.channels.find((c) => c.tier === tier);
 
-    // Claim quà treo
-    await tryClaimTier(options, "", tierBag, "start_claim");
-    if (tierBag.claimed) {
+    // Claim qua treo
+    await tryClaimTier(options, "", tierResult, "start_claim");
+    if (tierResult.claimed) {
       summary.claimed = true;
-      summary.claimCount += tierBag.claimCount;
-      summary.claimStones += tierBag.claimStones;
+      summary.claimCount += tierResult.claimCount;
+      summary.claimStones += tierResult.claimStones;
     }
 
+    const ch0 = tierResult.channel;
     onLog?.(
       "INFO",
-      `WB tier=${tier} my_tier=${myTier || "?"} · delay ${hitDelayMs}ms · max ${maxAttacks} · check_interval ${checkIntervalMs / 60000}p (chỉ khi window đóng)`
+      `WB tier=${tier} my=${first.myTier || "?"} · window_open=${ch0?.window_open ?? "?"} · hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"} · delay ${hitDelayMs}ms · max ${maxAttacks}`
     );
 
-    // 2) Vòng đánh: MỖI ĐÒN = snapshot trước → attack nếu open
+    // Window da dong ngay tu dau
+    if (!canFightChannel(ch0)) {
+      await tryClaimTier(options, "", tierResult, "closed_at_start");
+      summary.claimed = summary.claimed || tierResult.claimed;
+      summary.claimCount += tierResult.claimCount;
+      summary.claimStones += tierResult.claimStones;
+      tierResult.status = "WAITING_RESPAWN";
+      summary.tierResults.push(tierResult);
+      scheduleWhenClosed(ch0);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // 2) Vong danh: channels → attack neu con mau → delay → channels lai
     for (let i = 1; i <= maxAttacks; i++) {
       if (options.shouldStop?.()) {
-        onLog?.("WARN", `WB stop · đã ${tierBag.attackCount} đòn`);
+        onLog?.("WARN", `WB stop · ${tierResult.attackCount} hits`);
         break;
       }
 
-      // —— snapshot TRƯỚC attack ——
-      let snap: WorldBossSnapshot;
+      // —— FAST CHECK: rpc_wb_channels ——
+      let ch: WorldBossChannelInfo | null = null;
       try {
-        snap = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
+        if (i === 1 && tierResult.channel) {
+          ch = tierResult.channel;
+        } else {
+          const refreshed = await getChannel(tier);
+          ch = refreshed.channel;
+          if (ch) tierResult.channel = ch;
+        }
       } catch (e: any) {
-        // Snapshot lỗi: chờ delay đòn rồi thử lại (không chờ check interval)
-        onLog?.("WARN", `WB snapshot lỗi: ${e?.message || e} · thử lại sau ${hitDelayMs}ms`);
+        onLog?.("WARN", `WB channels error: ${e?.message || e} · retry ${hitDelayMs}ms`);
         await sleep(hitDelayMs);
         i -= 1;
         continue;
       }
 
-      // window đóng → không attack; hẹn đúng giờ mở lại (window_start / window_end)
-      if (snap.windowOpen !== true) {
-        await tryClaimTier(options, "", tierBag, "window_closed_claim");
-        summary.claimed = summary.claimed || tierBag.claimed;
-        summary.claimCount += tierBag.claimCount;
-        summary.claimStones += tierBag.claimStones;
-        tierBag.status = "WAITING_RESPAWN";
-        summary.tierResults.push(tierBag);
-        scheduleWhenClosed(snap);
+      const hpNow = Number(ch?.hp_current);
+      const winOpen = ch?.window_open === true;
+
+      // window closed or no HP → claim + wait respawn
+      if (!canFightChannel(ch)) {
+        onLog?.(
+          "INFO",
+          `WB ${tier}: stop · window_open=${winOpen} hp=${Number.isFinite(hpNow) ? hpNow.toLocaleString() : "?"} status=${ch?.status || "?"}`
+        );
+        await tryClaimTier(options, "", tierResult, "window_or_hp_closed");
+        summary.claimed = summary.claimed || tierResult.claimed;
+        summary.claimCount += tierResult.claimCount;
+        summary.claimStones += tierResult.claimStones;
+        tierResult.status = "WAITING_RESPAWN";
+        summary.tierResults.push(tierResult);
+        scheduleWhenClosed(ch);
         summary.finishedAt = new Date().toISOString();
         return summary;
       }
 
-      // window_open=true → ATTACK ngay
+      // window_open=true + con HP → ATTACK
       try {
         const attack = await rpc(
           "rpc_wb_attack",
           { p_character_id: options.characterId, p_tier: tier },
           options.accessToken
         );
-        tierBag.lastAttack = attack;
-        tierBag.attackCount += 1;
+        tierResult.lastAttack = attack;
+        tierResult.attackCount += 1;
         summary.attackCount += 1;
 
         const dmg = Number(attack?.damage);
-        const hpAfter = Number(attack?.hp_after);
+        const hpAfterAtk = Number(attack?.hp_after);
 
-        if (i === 1 || i === maxAttacks || i % 5 === 0) {
+        if (i === 1 || i === maxAttacks || i % 3 === 0 || isBossKilledByAttack(attack)) {
           onLog?.(
             "INFO",
-            `WB ${tier} #${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · next ${hitDelayMs}ms`
+            `WB ${tier} #${tierResult.attackCount} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp_after ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · next channels ${hitDelayMs}ms`
           );
         }
 
-        // Boss chết / claimable → claim + hẹn giờ mở lại từ window_start/end
         if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
-          onLog?.("SUCCESS", `WB ${tier}: GIẾT · ${tierBag.attackCount} đòn → claim → hẹn mở cửa`);
-          await tryClaimTier(options, tier, tierBag, "killed");
-          summary.claimed = summary.claimed || tierBag.claimed;
-          summary.claimCount += tierBag.claimCount;
-          summary.claimStones += tierBag.claimStones;
-          tierBag.status = "WAITING_RESPAWN";
-          summary.tierResults.push(tierBag);
+          onLog?.("SUCCESS", `WB ${tier}: KILL · ${tierResult.attackCount} hits → claim`);
+          await tryClaimTier(options, tier, tierResult, "killed");
+          summary.claimed = summary.claimed || tierResult.claimed;
+          summary.claimCount += tierResult.claimCount;
+          summary.claimStones += tierResult.claimStones;
+          tierResult.status = "WAITING_RESPAWN";
+          summary.tierResults.push(tierResult);
           try {
-            const after = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
-            // Ép closed để tính next open từ start/end
-            scheduleWhenClosed({ ...after, windowOpen: false });
+            const after = await getChannel(tier);
+            scheduleWhenClosed(after.channel);
           } catch {
-            summary.status = "WAITING_RESPAWN";
-            summary.nextCheckMs = checkIntervalMs;
-            summary.nextCheckReason = "boss_killed_fallback";
+            scheduleWhenClosed(ch);
           }
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
+
+        if (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0) {
+          onLog?.("SUCCESS", `WB ${tier}: hp_after=0 · claim`);
+          await tryClaimTier(options, tier, tierResult, "hp_after_0");
+          summary.claimed = summary.claimed || tierResult.claimed;
+          summary.claimCount += tierResult.claimCount;
+          summary.claimStones += tierResult.claimStones;
+          tierResult.status = "WAITING_RESPAWN";
+          summary.tierResults.push(tierResult);
+          scheduleWhenClosed(ch);
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
       } catch (error: any) {
-        // Attack lỗi: KHÔNG chờ check interval — vòng sau snapshot lại sau hitDelay
         const msg = error?.message || "attack error";
-        tierBag.lastAttack = error?.data;
-        onLog?.("WARN", `WB attack lỗi #${i}: ${msg.slice(0, 100)} · ${hitDelayMs}ms sau snapshot+retry`);
+        tierResult.lastAttack = error?.data;
+        onLog?.("WARN", `WB attack error #${i}: ${msg.slice(0, 100)} · ${hitDelayMs}ms → recheck channels`);
 
         if (isClaimRewardLike(error)) {
-          await tryClaimTier(options, tier, tierBag, "error_claimable");
-          summary.claimed = summary.claimed || tierBag.claimed;
-          summary.claimCount += tierBag.claimCount;
-          summary.claimStones += tierBag.claimStones;
+          await tryClaimTier(options, tier, tierResult, "error_claimable");
+          summary.claimed = summary.claimed || tierResult.claimed;
+          summary.claimCount += tierResult.claimCount;
+          summary.claimStones += tierResult.claimStones;
         }
-        // tiếp tục vòng: sleep rồi snapshot lại (có thể window đã đóng)
+        if (isAttackBlockedError(error) || isWaitingRespawnLike(error)) {
+          await tryClaimTier(options, "", tierResult, "error_window");
+          summary.claimed = summary.claimed || tierResult.claimed;
+          summary.claimCount += tierResult.claimCount;
+          summary.claimStones += tierResult.claimStones;
+          tierResult.status = "WAITING_RESPAWN";
+          summary.tierResults.push(tierResult);
+          scheduleWhenClosed(ch);
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
       }
 
-      // Chờ đúng delay đòn rồi lặp (snapshot lại ở đầu vòng)
+      // Cho delay roi lap → vong sau fetch channels check HP
       if (i < maxAttacks) await sleep(hitDelayMs);
     }
 
-    // Hết max đòn — hẹn DPS tiếp sau hitDelay (session sau sẽ snapshot lại)
-    await tryClaimTier(options, "", tierBag, "after_batch");
-    summary.claimed = summary.claimed || tierBag.claimed;
-    summary.claimCount += tierBag.claimCount;
-    summary.claimStones += tierBag.claimStones;
-    summary.tierResults.push(tierBag);
+    // Het max don — check channels lan cuoi
+    try {
+      const last = await getChannel(tier);
+      const chLast = last.channel;
+      if (!canFightChannel(chLast)) {
+        await tryClaimTier(options, "", tierResult, "after_batch_closed");
+        summary.claimed = summary.claimed || tierResult.claimed;
+        summary.claimCount += tierResult.claimCount;
+        summary.claimStones += tierResult.claimStones;
+        tierResult.status = "WAITING_RESPAWN";
+        summary.tierResults.push(tierResult);
+        scheduleWhenClosed(chLast);
+        summary.finishedAt = new Date().toISOString();
+        return summary;
+      }
+      const hpLeft = Number(chLast?.hp_current);
+      onLog?.(
+        "INFO",
+        `WB batch xong · con hp ${Number.isFinite(hpLeft) ? hpLeft.toLocaleString() : "?"} · window_open=${chLast?.window_open} · next ${hitDelayMs}ms`
+      );
+    } catch {
+      /* ignore */
+    }
+
+    await tryClaimTier(options, "", tierResult, "after_batch");
+    summary.claimed = summary.claimed || tierResult.claimed;
+    summary.claimCount += tierResult.claimCount;
+    summary.claimStones += tierResult.claimStones;
+    summary.tierResults.push(tierResult);
 
     summary.status = "DONE";
     summary.nextCheckMs = hitDelayMs;
     summary.nextCheckReason = "batch_done_continue";
     onLog?.(
       "SUCCESS",
-      `WB đợt xong · atk ${summary.attackCount} · claim ${summary.claimCount} · +${summary.claimStones || 0}LS · next ${hitDelayMs}ms ATTACK`
+      `WB dot xong · atk ${summary.attackCount} · claim ${summary.claimCount} · +${summary.claimStones || 0}LS · next ${hitDelayMs}ms ATTACK`
     );
   } catch (e: any) {
     summary.status = "ERROR";
