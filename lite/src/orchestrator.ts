@@ -15,6 +15,7 @@ import {
   runMailClaimAll,
   runMazeAuto,
   runOnboardingClaimAuto,
+  runKhoiLoiAuto,
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
@@ -583,6 +584,28 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           "NHAP_MONG",
           "INFO",
           `NM ${result.status} · runs ${result.runsFinished}/${result.runsStarted} · answers ${result.answers} · score ${result.lastScore ?? "?"}`
+        );
+      }
+    } else if (featureId === "khoi_loi") {
+      const hours = Math.max(2, Number(settings.interval_hours ?? 2) || 2);
+      const result = await runKhoiLoiAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings: { ...settings, interval_hours: hours },
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "KHOI_LOI"),
+      });
+      // Tối thiểu 2 giờ giữa 2 lần claim
+      nextDelayMs = Math.max(2 * 60 * 60_000, Number(result.nextDelayMs || hours * 60 * 60_000));
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Khôi Lỗi error";
+      } else {
+        sysLog(
+          accountId,
+          "KHOI_LOI",
+          "INFO",
+          `KL ${result.status} · claim ${result.claimedCount}/${result.ownedCount} · drops ${result.totalDrops} · next ${hours}h`
         );
       }
     } else if (featureId === "auto_equip") {

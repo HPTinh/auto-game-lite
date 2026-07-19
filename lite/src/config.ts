@@ -36,6 +36,7 @@ export type FeatureId =
   | "maze"
   | "pvp"
   | "nhap_mong"
+  | "khoi_loi"
   | "auto_equip"
   | "craft"
   | "body_cult"
@@ -53,6 +54,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   maze: "Mê cung",
   pvp: "Auto PVP",
   nhap_mong: "Nhập Mộng",
+  khoi_loi: "Khôi Lỗi",
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
@@ -107,6 +109,13 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     max_inline_wait_sec: 30,
     /** khi hết lượt free/paid */
     interval_minutes: 30,
+  },
+  khoi_loi: {
+    /** chu kỳ claim — giờ, tối thiểu 2, mặc định 2 */
+    interval_hours: 2,
+    /** chỉ claim puppet có pending > 0 */
+    only_with_pending: true,
+    claim_delay_ms: 500,
   },
   buff: {
     interval_seconds: 300,

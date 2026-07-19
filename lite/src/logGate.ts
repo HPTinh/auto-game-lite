@@ -132,6 +132,10 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     );
   }
 
+  if (module === "KHOI_LOI") {
+    return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /claim|puppet|pending|xong|KL /i.test(text);
+  }
+
   if (module === "MAZE") {
     return (
       lv === "ERROR" ||
