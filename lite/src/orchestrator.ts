@@ -217,6 +217,41 @@ function persistMazeDaily(
   });
 }
 
+/** PVP quota theo ngày (00:00 VN) */
+function normalizePvpDaily(settings: Record<string, any>) {
+  const today = vnDateString();
+  const date = String(settings.daily_date || "");
+  let completed = Math.max(0, Math.floor(Number(settings.daily_completed || 0)) || 0);
+  let locked = settings.daily_locked === true;
+  if (date !== today) {
+    completed = 0;
+    locked = false;
+  }
+  const target = Math.max(
+    1,
+    Math.min(100, Math.floor(Number(settings.daily_target ?? settings.max_attacks ?? settings.times ?? 30)) || 30)
+  );
+  return { today, completed, locked, target };
+}
+
+function persistPvpDaily(
+  accountId: string,
+  settings: Record<string, any>,
+  daily: { today: string; completed: number; locked: boolean },
+  extra?: Record<string, any>
+) {
+  store.setFeature(accountId, "pvp", {
+    settings: {
+      ...settings,
+      ...(extra || {}),
+      daily_date: daily.today,
+      daily_completed: daily.completed,
+      daily_locked: daily.locked,
+      daily_target: daily.target ?? settings.daily_target ?? settings.max_attacks,
+    },
+  });
+}
+
 /** Tóm tắt 1 dòng sau mỗi vòng farm — thay cho spam engine */
 function farmCycleSummary(result: any, farmSettings?: Record<string, any>): string {
   const atk = result?.attackCount ?? 0;
@@ -528,37 +563,111 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         }
       }
     } else if (featureId === "pvp") {
-      const huntList = Array.isArray(settings.hunt_list) ? settings.hunt_list : [];
-      const result = await runPvpAuto({
-        characterId: runtime.characterId,
-        accessToken: runtime.accessToken,
-        settings,
-        huntList,
-        shouldStop: () => !isAllowed(accountId, featureId, token),
-        onLog: onLog(accountId, "PVP"),
-      });
-      // lưu hunt list lại vào feature settings
-      store.setFeature(accountId, "pvp", {
-        settings: {
-          ...settings,
-          hunt_list: result.huntList || huntList,
-        },
-      });
-      nextDelayMs = Math.max(60_000, Number(settings.interval_minutes || 30) * 60_000);
-      if (result.status === "ERROR") {
-        status = "error";
-        errMsg = result.reason || "PVP error";
-      } else if (result.status === "NO_ATTACKS") {
-        // hết lượt — chờ lâu hơn
-        nextDelayMs = Math.max(nextDelayMs, 60 * 60_000);
-        sysLog(accountId, "PVP", "WARN", `Hết lượt PVP · ${result.wins}W/${result.losses}L`);
-      } else {
+      // PVP theo ngày: daily_target (vd 30) → đủ thì khóa đến 00:00 VN
+      let daily = normalizePvpDaily(settings);
+      const waitMidnight = () => {
+        const wait = msUntilNextVnMidnight();
+        nextDelayMs = wait;
+        const hrs = Math.ceil(wait / 3600_000);
         sysLog(
           accountId,
           "PVP",
           "INFO",
-          `PVP ${result.wins}W/${result.losses}L · hunt ${result.huntCount} · next ${Math.round(nextDelayMs / 1000)}s`
+          `PVP đủ ${daily.completed}/${daily.target} hôm nay (${daily.today}) · chờ ~${hrs}h đến 00:00 VN`
         );
+      };
+
+      // Đồng bộ state ngày
+      if (
+        settings.daily_date !== daily.today ||
+        Number(settings.daily_completed || 0) !== daily.completed ||
+        Boolean(settings.daily_locked) !== daily.locked
+      ) {
+        persistPvpDaily(accountId, settings, daily);
+        settings = {
+          ...settings,
+          daily_date: daily.today,
+          daily_completed: daily.completed,
+          daily_locked: daily.locked,
+        };
+      }
+
+      // Đã khóa / đủ target hôm nay → không đánh (kể cả tăng daily_target khi đã lock)
+      if (daily.locked || daily.completed >= daily.target) {
+        if (!daily.locked && daily.completed >= daily.target) {
+          daily = { ...daily, locked: true };
+          persistPvpDaily(accountId, settings, daily);
+        }
+        waitMidnight();
+      } else {
+        const remaining = daily.target - daily.completed;
+        const huntList = Array.isArray(settings.hunt_list) ? settings.hunt_list : [];
+        sysLog(accountId, "PVP", "INFO", `PVP còn ${remaining}/${daily.target} trận hôm nay`);
+
+        const result = await runPvpAuto({
+          characterId: runtime.characterId,
+          accessToken: runtime.accessToken,
+          settings: {
+            ...settings,
+            max_attacks: remaining, // chỉ đánh phần còn lại trong ngày
+          },
+          huntList,
+          shouldStop: () => !isAllowed(accountId, featureId, token),
+          onLog: onLog(accountId, "PVP"),
+        });
+
+        const fought = Math.max(0, Number(result.fought || 0));
+        daily = {
+          today: daily.today,
+          completed: Math.min(daily.target, daily.completed + fought),
+          locked: false,
+          target: daily.target,
+        };
+        if (daily.completed >= daily.target) {
+          daily.locked = true;
+        }
+
+        persistPvpDaily(accountId, settings, daily, {
+          hunt_list: result.huntList || huntList,
+        });
+        settings = {
+          ...settings,
+          hunt_list: result.huntList || huntList,
+          daily_date: daily.today,
+          daily_completed: daily.completed,
+          daily_locked: daily.locked,
+        };
+
+        if (result.status === "ERROR") {
+          status = "error";
+          errMsg = result.reason || "PVP error";
+          // lỗi: thử lại sau 5p (vẫn trong ngày nếu chưa đủ)
+          nextDelayMs = 5 * 60_000;
+          sysLog(accountId, "PVP", "ERROR", errMsg);
+        } else if (daily.locked || daily.completed >= daily.target) {
+          waitMidnight();
+        } else if (result.status === "NO_ATTACKS") {
+          // hết lượt game — chờ midnight hoặc 1h
+          nextDelayMs = Math.min(msUntilNextVnMidnight(), 60 * 60_000);
+          sysLog(
+            accountId,
+            "PVP",
+            "WARN",
+            `Hết lượt game · đã ${daily.completed}/${daily.target} hôm nay · ${result.wins}W/${result.losses}L`
+          );
+        } else if (result.status === "NO_OPPONENT") {
+          nextDelayMs = 15 * 60_000;
+          sysLog(accountId, "PVP", "WARN", `Không có đối thủ · ${daily.completed}/${daily.target} · thử lại 15p`);
+        } else {
+          // Còn quota ngày nhưng batch xong (ít hơn remaining) → chạy tiếp sớm
+          nextDelayMs = Math.max(10_000, Number(settings.delay_ms || 1500) * 2);
+          sysLog(
+            accountId,
+            "PVP",
+            "INFO",
+            `PVP ${result.wins}W/${result.losses}L · ngày ${daily.completed}/${daily.target} · tiếp sau ${Math.round(nextDelayMs / 1000)}s`
+          );
+        }
       }
     } else if (featureId === "nhap_mong") {
       const result = await runNhapMongAuto({

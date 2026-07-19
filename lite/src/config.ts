@@ -87,14 +87,20 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     no_mob_before_rotate: 1,
   },
   pvp: {
-    max_attacks: 10,
+    /** Số trận PVP mục tiêu mỗi ngày (reset 00:00 VN) */
+    daily_target: 30,
+    /** alias — orchestrator dùng daily_target ưu tiên */
+    max_attacks: 30,
     delay_ms: 1500,
-    interval_minutes: 30,
     hunt_on_win: true,
     prefer_hunt: true,
     prefer_weaker: true,
     max_hunt: 15,
     hunt_list: [],
+    // tiến độ ngày (tự lưu)
+    daily_date: "",
+    daily_completed: 0,
+    daily_locked: false,
   },
   nhap_mong: {
     /** safe | gamble | first */

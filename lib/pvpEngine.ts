@@ -167,7 +167,8 @@ function pickQueue(opponents: any[], hunt: PvpHuntTarget[], preferWeaker: boolea
 export async function runPvpAuto(options: PvpAutoOptions): Promise<PvpRunSummary & { huntList: PvpHuntTarget[] }> {
   const settings = options.settings || {};
   const onLog = options.onLog;
-  const maxAttacks = Math.max(1, Math.min(50, Math.floor(Number(settings.max_attacks ?? settings.times ?? 5)) || 5));
+  // max_attacks = số trận cần đánh trong lần gọi (orchestrator truyền phần còn lại trong ngày)
+  const maxAttacks = Math.max(1, Math.min(100, Math.floor(Number(settings.max_attacks ?? settings.times ?? settings.daily_target ?? 5)) || 5));
   const delayMs = Math.max(400, Number(settings.delay_ms || 1500));
   const huntOnWin = settings.hunt_on_win !== false;
   const preferHunt = settings.prefer_hunt !== false;
