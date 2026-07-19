@@ -611,26 +611,21 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
   }
 }
 /**
- * World Boss — check nhanh bang rpc_wb_channels (preview):
- *   window_open, hp_current, status, available
+ * World Boss — spam attack theo delay user:
+ *   1) rpc_wb_channels 1 lan (tier + window_open + HP)
+ *   2) for 1..max_attacks: rpc_wb_attack → sleep(delay) — moi lan (ke ca fail) = 1 attempt
+ *   3) KHONG channels moi don (tranh cho lau)
+ *   4) chi dung som khi kill / hp_after<=0
  *
- * Vong danh:
- *   1) rpc_wb_channels → channel tier
- *   2) window_open=true && hp_current>0 → rpc_wb_attack
- *   3) sleep(attack_delay_ms) → channels lai (check HP) → lap
- *   4) window dong / hp<=0 → claim + cho gio chan VN
- *
- * delay mac dinh 3000ms, setting 1500 = nhanh.
- * Khong snapshot moi don (cham hon) — chi channels.
+ * attack_delay_ms: toi thieu 1500ms (vd 1500 = 1.5s/don)
  */
-// (Logic: channels check HP/window moi don — nhanh hon snapshot)
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 999, 1, 999, 999);
   const fixedDelayMs = Number(options.attackDelayMs);
-  // Mac dinh 3s; set 1500 = nhanh
+  // User delay, MIN 1500ms — khong cho delay ngan hon 1.5s
   const hitDelayMs =
-    Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(200, fixedDelayMs) : 3000;
+    Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(1500, fixedDelayMs) : 1500;
   const onLog = options.onLog;
 
   const summary: WorldBossRunSummary = {
@@ -658,7 +653,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     errors: [],
   };
 
-  /** window dong / boss chet → cho gio chan VN */
   const scheduleWhenClosed = (ch?: WorldBossChannelInfo | null) => {
     const base: Pick<WorldBossSnapshot, "windowOpen" | "windowStart" | "windowEnd"> = {
       windowOpen: false,
@@ -677,7 +671,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     );
   };
 
-  /** channels → 1 tier (fast: HP + window_open) */
   const getChannel = async (tierWanted: string) => {
     const data = await fetchChannels(options.characterId, options.accessToken);
     summary.channels = data.channels;
@@ -690,7 +683,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     return { ...data, channel: ch };
   };
 
-  /** Co the danh theo preview channels */
   const canFightChannel = (ch: WorldBossChannelInfo | null | undefined): boolean => {
     if (!ch) return false;
     if (ch.window_open !== true) return false;
@@ -698,8 +690,8 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
   };
 
   try {
-    // 1) Chon tier tu channels
-    onLog?.("INFO", "WB: check channels (HP + window_open)...");
+    // 1) channels 1 lan
+    onLog?.("INFO", "WB: channels once (HP + window_open)...");
     const first = await fetchChannels(options.characterId, options.accessToken);
     summary.myTier = first.myTier;
     summary.channels = first.channels;
@@ -714,7 +706,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     tierResult.tier = tier;
     tierResult.channel = first.channels.find((c) => c.tier === tier);
 
-    // Claim qua treo
     await tryClaimTier(options, "", tierResult, "start_claim");
     if (tierResult.claimed) {
       summary.claimed = true;
@@ -725,10 +716,9 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     const ch0 = tierResult.channel;
     onLog?.(
       "INFO",
-      `WB tier=${tier} my=${first.myTier || "?"} · window_open=${ch0?.window_open ?? "?"} · hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"} · delay ${hitDelayMs}ms · max ${maxAttacks}`
+      `WB tier=${tier} my=${first.myTier || "?"} · open=${ch0?.window_open ?? "?"} · hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"} · delay ${hitDelayMs}ms · max ${maxAttacks} attempts`
     );
 
-    // Window da dong ngay tu dau
     if (!canFightChannel(ch0)) {
       await tryClaimTier(options, "", tierResult, "closed_at_start");
       summary.claimed = summary.claimed || tierResult.claimed;
@@ -741,51 +731,17 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       return summary;
     }
 
-    // 2) Vong danh: channels → attack neu con mau → delay → channels lai
-    for (let i = 1; i <= maxAttacks; i++) {
+    // 2) Spam attack: moi lan (OK hoac fail) = 1 attempt, chi cho hitDelayMs
+    let okHits = 0;
+    let failHits = 0;
+
+    for (let attempt = 1; attempt <= maxAttacks; attempt++) {
       if (options.shouldStop?.()) {
-        onLog?.("WARN", `WB stop · ${tierResult.attackCount} hits`);
+        onLog?.("WARN", `WB stop · attempts ${attempt - 1}/${maxAttacks} ok=${okHits} fail=${failHits}`);
         break;
       }
 
-      // —— FAST CHECK: rpc_wb_channels ——
-      let ch: WorldBossChannelInfo | null = null;
-      try {
-        if (i === 1 && tierResult.channel) {
-          ch = tierResult.channel;
-        } else {
-          const refreshed = await getChannel(tier);
-          ch = refreshed.channel;
-          if (ch) tierResult.channel = ch;
-        }
-      } catch (e: any) {
-        onLog?.("WARN", `WB channels error: ${e?.message || e} · retry ${hitDelayMs}ms`);
-        await sleep(hitDelayMs);
-        i -= 1;
-        continue;
-      }
-
-      const hpNow = Number(ch?.hp_current);
-      const winOpen = ch?.window_open === true;
-
-      // window closed or no HP → claim + wait respawn
-      if (!canFightChannel(ch)) {
-        onLog?.(
-          "INFO",
-          `WB ${tier}: stop · window_open=${winOpen} hp=${Number.isFinite(hpNow) ? hpNow.toLocaleString() : "?"} status=${ch?.status || "?"}`
-        );
-        await tryClaimTier(options, "", tierResult, "window_or_hp_closed");
-        summary.claimed = summary.claimed || tierResult.claimed;
-        summary.claimCount += tierResult.claimCount;
-        summary.claimStones += tierResult.claimStones;
-        tierResult.status = "WAITING_RESPAWN";
-        summary.tierResults.push(tierResult);
-        scheduleWhenClosed(ch);
-        summary.finishedAt = new Date().toISOString();
-        return summary;
-      }
-
-      // window_open=true + con HP → ATTACK
+      let killed = false;
       try {
         const attack = await rpc(
           "rpc_wb_attack",
@@ -795,19 +751,26 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         tierResult.lastAttack = attack;
         tierResult.attackCount += 1;
         summary.attackCount += 1;
+        okHits += 1;
 
         const dmg = Number(attack?.damage);
         const hpAfterAtk = Number(attack?.hp_after);
 
-        if (i === 1 || i === maxAttacks || i % 3 === 0 || isBossKilledByAttack(attack)) {
+        if (attempt === 1 || attempt === maxAttacks || attempt % 10 === 0 || isBossKilledByAttack(attack)) {
           onLog?.(
             "INFO",
-            `WB ${tier} #${tierResult.attackCount} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp_after ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · next channels ${hitDelayMs}ms`
+            `WB ${tier} #${attempt}/${maxAttacks} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · next ${hitDelayMs}ms`
           );
         }
 
-        if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
-          onLog?.("SUCCESS", `WB ${tier}: KILL · ${tierResult.attackCount} hits → claim`);
+        if (
+          isBossKilledByAttack(attack) ||
+          attack?.can_claim === true ||
+          attack?.claimable === true ||
+          (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0)
+        ) {
+          killed = true;
+          onLog?.("SUCCESS", `WB ${tier}: KILL at attempt #${attempt} · claim`);
           await tryClaimTier(options, tier, tierResult, "killed");
           summary.claimed = summary.claimed || tierResult.claimed;
           summary.claimCount += tierResult.claimCount;
@@ -818,56 +781,59 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
             const after = await getChannel(tier);
             scheduleWhenClosed(after.channel);
           } catch {
-            scheduleWhenClosed(ch);
+            scheduleWhenClosed(ch0);
           }
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
-
-        if (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0) {
-          onLog?.("SUCCESS", `WB ${tier}: hp_after=0 · claim`);
-          await tryClaimTier(options, tier, tierResult, "hp_after_0");
-          summary.claimed = summary.claimed || tierResult.claimed;
-          summary.claimCount += tierResult.claimCount;
-          summary.claimStones += tierResult.claimStones;
-          tierResult.status = "WAITING_RESPAWN";
-          summary.tierResults.push(tierResult);
-          scheduleWhenClosed(ch);
-          summary.finishedAt = new Date().toISOString();
-          return summary;
-        }
       } catch (error: any) {
-        const msg = error?.message || "attack error";
+        // FAIL van tinh 1 attempt — khong dung batch, khong cho hang gio
+        failHits += 1;
+        tierResult.attackCount += 1; // dem ca fail
+        summary.attackCount += 1;
         tierResult.lastAttack = error?.data;
-        onLog?.("WARN", `WB attack error #${i}: ${msg.slice(0, 100)} · ${hitDelayMs}ms → recheck channels`);
+        const msg = error?.message || "attack error";
 
+        if (attempt === 1 || attempt % 10 === 0 || failHits <= 3) {
+          onLog?.(
+            "WARN",
+            `WB ${tier} #${attempt}/${maxAttacks} FAIL · ${msg.slice(0, 80)} · van dem 1 lan · next ${hitDelayMs}ms`
+          );
+        }
+
+        // Co the van claim duoc (boss chet)
         if (isClaimRewardLike(error)) {
           await tryClaimTier(options, tier, tierResult, "error_claimable");
           summary.claimed = summary.claimed || tierResult.claimed;
           summary.claimCount += tierResult.claimCount;
           summary.claimStones += tierResult.claimStones;
+          if (tierResult.claimed) {
+            killed = true;
+            tierResult.status = "WAITING_RESPAWN";
+            summary.tierResults.push(tierResult);
+            scheduleWhenClosed(ch0);
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
         }
-        if (isAttackBlockedError(error) || isWaitingRespawnLike(error)) {
-          await tryClaimTier(options, "", tierResult, "error_window");
-          summary.claimed = summary.claimed || tierResult.claimed;
-          summary.claimCount += tierResult.claimCount;
-          summary.claimStones += tierResult.claimStones;
-          tierResult.status = "WAITING_RESPAWN";
-          summary.tierResults.push(tierResult);
-          scheduleWhenClosed(ch);
-          summary.finishedAt = new Date().toISOString();
-          return summary;
-        }
+        // isAttackBlockedError: van tiep tuc spam den het max — user yeu cau
       }
 
-      // Cho delay roi lap → vong sau fetch channels check HP
-      if (i < maxAttacks) await sleep(hitDelayMs);
+      // Delay chinh xac giua 2 attempt (ke ca fail)
+      if (!killed && attempt < maxAttacks) {
+        await sleep(hitDelayMs);
+      }
     }
 
-    // Het max don — check channels lan cuoi
+    // 3) Het batch — check channels 1 lan (log HP), hen don tiep sau hitDelayMs
     try {
       const last = await getChannel(tier);
       const chLast = last.channel;
+      const hpLeft = Number(chLast?.hp_current);
+      onLog?.(
+        "INFO",
+        `WB batch done · attempts ${maxAttacks} ok=${okHits} fail=${failHits} · hp ${Number.isFinite(hpLeft) ? hpLeft.toLocaleString() : "?"} · open=${chLast?.window_open} · next ${hitDelayMs}ms`
+      );
       if (!canFightChannel(chLast)) {
         await tryClaimTier(options, "", tierResult, "after_batch_closed");
         summary.claimed = summary.claimed || tierResult.claimed;
@@ -879,11 +845,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         summary.finishedAt = new Date().toISOString();
         return summary;
       }
-      const hpLeft = Number(chLast?.hp_current);
-      onLog?.(
-        "INFO",
-        `WB batch xong · con hp ${Number.isFinite(hpLeft) ? hpLeft.toLocaleString() : "?"} · window_open=${chLast?.window_open} · next ${hitDelayMs}ms`
-      );
     } catch {
       /* ignore */
     }
@@ -894,16 +855,18 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     summary.claimStones += tierResult.claimStones;
     summary.tierResults.push(tierResult);
 
+    // Het 999 don → quay lai sau dung hitDelayMs (tiep tuc DPS), KHONG cho hang gio
     summary.status = "DONE";
     summary.nextCheckMs = hitDelayMs;
     summary.nextCheckReason = "batch_done_continue";
     onLog?.(
       "SUCCESS",
-      `WB dot xong · atk ${summary.attackCount} · claim ${summary.claimCount} · +${summary.claimStones || 0}LS · next ${hitDelayMs}ms ATTACK`
+      `WB batch · atk ${summary.attackCount} (ok ${okHits}/fail ${failHits}) · claim ${summary.claimCount} · +${summary.claimStones || 0} LS · next ${hitDelayMs}ms`
     );
   } catch (e: any) {
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
+    // Loi he thong: van retry sau hitDelay, khong 1 gio
     summary.nextCheckMs = hitDelayMs;
     onLog?.("ERROR", `WB fail: ${e?.message || e} · retry ${hitDelayMs}ms`);
   }

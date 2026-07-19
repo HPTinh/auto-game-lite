@@ -169,14 +169,13 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     tiers: "",
     /** chu kỳ CHECK khi window_open=false — phút, min 1, mặc định 10 */
     check_interval_minutes: 10,
-    /** số đòn tối đa mỗi đợt DPS — 1..999, mặc định 999 (cứ dame khi window mở) */
+    /** số lần attack / đợt (OK hoặc fail đều tính 1) — 1..999 */
     max_attacks_per_check: 999,
     /**
-     * Delay giữa 2 đòn (ms) khi window_open=true:
-     * - 3000 = mặc định (3s, chuẩn game)
-     * - 1500 = nhanh
+     * Delay giữa 2 lần attack (ms) — tối thiểu 1500.
+     * Vòng: attack → chờ delay → attack (không channels giữa 2 đòn).
      */
-    attack_delay_ms: 3000,
+    attack_delay_ms: 1500,
     auto_claim: true,
   },
   breakthrough: {

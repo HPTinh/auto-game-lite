@@ -199,8 +199,8 @@
       ],
       claim_exp: [{k:"interval_minutes",l:"Chu kỳ (phút)",t:"number",min:1}],
       world_boss: [
-        {k:"max_attacks_per_check",l:"Max đòn / đợt (1-999)",t:"number",min:1,max:999},
-        {k:"attack_delay_ms",l:"Delay đòn ms (3000=3s, 1500=nhanh)",t:"number",min:200,max:10000},
+        {k:"max_attacks_per_check",l:"Số lần attack / đợt (1-999, fail cũng tính)",t:"number",min:1,max:999},
+        {k:"attack_delay_ms",l:"Delay giữa 2 lần (ms, min 1500)",t:"number",min:1500,max:10000},
         {k:"check_interval_minutes",l:"Check khi window đóng (phút)",t:"number",min:1,max:1440},
         {k:"auto_claim",l:"Tự nhận quà",t:"bool"},
       ],

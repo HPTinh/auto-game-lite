@@ -389,9 +389,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     } else if (featureId === "world_boss") {
       const checkMin = Math.max(1, Math.min(24 * 60, Number(settings.check_interval_minutes || 10) || 10));
       const maxAtk = Math.max(1, Math.min(999, Number(settings.max_attacks_per_check ?? 999) || 999));
-      // 3000 = mặc định 3s/đòn; 1500 = nhanh — không liên quan check interval
-      const attackDelayMs = Number(settings.attack_delay_ms ?? 3000);
-      const hitMs = Number.isFinite(attackDelayMs) && attackDelayMs > 0 ? attackDelayMs : 3000;
+      // Delay giữa 2 attempt — tối thiểu 1500ms (engine cũng clamp)
+      const attackDelayMs = Number(settings.attack_delay_ms ?? 1500);
+      const hitMs = Number.isFinite(attackDelayMs) && attackDelayMs > 0 ? Math.max(1500, attackDelayMs) : 1500;
       const result = await runWorldBossAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
@@ -404,11 +404,11 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "WORLD_BOSS"),
       });
-      // Engine: window mở → hitMs; window đóng → chờ đến window_start (có thể nhiều giờ)
-      nextDelayMs = Math.max(200, Number(result.nextCheckMs || hitMs));
+      // window mở / batch xong → hitMs; chỉ window đóng thật → nextCheckMs dài (giờ chẵn)
+      nextDelayMs = Math.max(hitMs, Number(result.nextCheckMs || hitMs));
       const nextLabel =
         nextDelayMs >= 3600_000
-          ? `${(nextDelayMs / 3600_000).toFixed(1)}h mở cửa`
+          ? `${(nextDelayMs / 3600_000).toFixed(1)}h reopen`
           : nextDelayMs >= 60_000
             ? `${Math.round(nextDelayMs / 60000)}p`
             : `${Math.round(nextDelayMs / 1000)}s ATTACK`;
