@@ -287,7 +287,8 @@ function isClaimSuccess(data: any) {
 export function isWorldBossAlive(ch: WorldBossChannelInfo | any): boolean {
   if (!ch) return false;
   const status = String(ch.status || "").toLowerCase();
-  if (["idle", "dead", "closed", "down", "respawn", "waiting"].includes(status)) return false;
+  if (["idle", "dead", "closed", "down", "respawn", "waiting", "expired"].includes(status)) return false;
+  if (ch.window_open === false) return false;
   const hp = Number(ch.hp_current);
   if (Number.isFinite(hp) && hp <= 0) return false;
   // open / alive + còn HP
@@ -298,6 +299,27 @@ export function isWorldBossAlive(ch: WorldBossChannelInfo | any): boolean {
   // status lạ nhưng available + hp > 0
   if (ch.available === true && Number.isFinite(hp) && hp > 0) return true;
   return false;
+}
+
+/**
+ * Snapshot chi tiết 1 tier (rpc_wb_snapshot) — chuẩn để biết window đóng/boss chết.
+ * window_open: false | event.status: expired/idle/dead | hp_current <= 0 | died_at
+ */
+export interface WorldBossSnapshot {
+  ok: boolean;
+  tier: string;
+  windowOpen: boolean;
+  eventStatus?: string;
+  hpCurrent?: number;
+  hpMax?: number;
+  diedAt?: string | null;
+  windowStart?: string;
+  windowEnd?: string;
+  attackCooldownSec: number;
+  canAttack: boolean;
+  reason?: string;
+  me?: { rank?: number; attack_count?: number; total_damage?: number };
+  raw?: any;
 }
 
 function normalizeChannel(raw: any): WorldBossChannelInfo {
@@ -322,6 +344,82 @@ async function fetchChannels(characterId: string, accessToken: string) {
   const channels = list.map(normalizeChannel).filter((c: WorldBossChannelInfo) => c.tier);
   const myTier = String(data?.my_tier || data?.tier || "").trim().toLowerCase() || undefined;
   return { myTier, channels, buffTotal: data?.my_buff_total, raw: data };
+}
+
+/**
+ * rpc_wb_snapshot — check window boss theo tier (chuẩn khi window close / boss die)
+ * body: { p_character_id, p_tier }
+ */
+export async function fetchWorldBossSnapshot(
+  characterId: string,
+  accessToken: string,
+  tier: string
+): Promise<WorldBossSnapshot> {
+  const data = await rpc(
+    "rpc_wb_snapshot",
+    { p_character_id: characterId, p_tier: String(tier).toLowerCase() },
+    accessToken
+  );
+
+  const event = data?.event || {};
+  const config = data?.config || {};
+  const windowOpen = data?.window_open === true;
+  const eventStatus = String(event?.status || "").toLowerCase();
+  const hpCurrent = event?.hp_current != null ? Number(event.hp_current) : undefined;
+  const hpMax = event?.hp_max != null ? Number(event.hp_max) : undefined;
+  const diedAt = event?.died_at ?? null;
+  const attackCooldownSec = Math.max(
+    1,
+    Number(config?.attack_cooldown_sec || config?.cooldown_sec || 3) || 3
+  );
+
+  // Window đóng / event expired / idle / dead / hp 0 / có died_at
+  const statusDead = ["expired", "idle", "dead", "closed", "ended", "finished"].includes(eventStatus);
+  const hpDead = Number.isFinite(hpCurrent as number) && (hpCurrent as number) <= 0;
+  const hasDiedAt = Boolean(diedAt);
+
+  let canAttack = false;
+  let reason = "";
+
+  if (!windowOpen) {
+    reason = `window_open=false (end ${data?.window_end || event?.window_end || "?"})`;
+  } else if (statusDead) {
+    reason = `event.status=${eventStatus}`;
+  } else if (hpDead) {
+    reason = `hp_current=${hpCurrent}`;
+  } else if (hasDiedAt) {
+    reason = `died_at=${diedAt}`;
+  } else if (eventStatus === "open" || eventStatus === "alive" || eventStatus === "active" || !eventStatus) {
+    // window mở + còn HP
+    if (Number.isFinite(hpCurrent as number) && (hpCurrent as number) > 0) {
+      canAttack = true;
+      reason = "window_open + hp>0";
+    } else if (!Number.isFinite(hpCurrent as number)) {
+      canAttack = windowOpen;
+      reason = windowOpen ? "window_open" : "closed";
+    } else {
+      reason = `hp=${hpCurrent}`;
+    }
+  } else {
+    reason = `status=${eventStatus || "?"}`;
+  }
+
+  return {
+    ok: data?.ok !== false,
+    tier: String(event?.tier || tier).toLowerCase(),
+    windowOpen,
+    eventStatus,
+    hpCurrent,
+    hpMax,
+    diedAt,
+    windowStart: data?.window_start || event?.window_start,
+    windowEnd: data?.window_end || event?.window_end,
+    attackCooldownSec,
+    canAttack,
+    reason,
+    me: data?.me,
+    raw: data,
+  };
 }
 
 /**
@@ -472,21 +570,20 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
 /**
  * State machine World Boss:
  *
- * MODE ATTACK (boss sống):
- *   - Đánh mỗi ~3s (cooldown_sec API) đến đủ maxAttacks (vd 999)
- *   - Lỗi attack (window close, …) → CHECK channel ngay
- *   - killed / hp_after=0 → claim → chuyển MODE CHECK
+ * MODE ATTACK:
+ *   - Đánh mỗi ~3s (config.attack_cooldown_sec / cooldown_sec) đến maxAttacks
+ *   - Lỗi attack / window close → rpc_wb_snapshot xác nhận
  *
- * MODE CHECK (boss chết / window đóng):
+ * MODE CHECK (window_open=false | event.status=expired | hp<=0):
  *   - KHÔNG attack
- *   - Chỉ rpc_wb_channels theo check_interval
- *   - Khi available + sống lại → MODE ATTACK
+ *   - rpc_wb_snapshot / channels theo check_interval
+ *   - window_open + hp>0 → ATTACK lại
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 30, 1, 999, 30);
   const fixedDelayMs = Number(options.attackDelayMs);
-  const defaultCdMs = Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? fixedDelayMs : 3000;
+  let defaultCdMs = Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? fixedDelayMs : 3000;
   const onLog = options.onLog;
 
   const summary: WorldBossRunSummary = {
@@ -515,30 +612,39 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
   };
 
   try {
-    // ── CHECK channel + rank ──────────────────────────────────────
+    // ── 1) channels: rank + tier available ─────────────────────────
     onLog?.("INFO", "WB: check channels (rpc_wb_channels)...");
-    let { myTier, channels } = await fetchChannels(options.characterId, options.accessToken);
+    const { myTier, channels } = await fetchChannels(options.characterId, options.accessToken);
     summary.myTier = myTier;
     summary.channels = channels;
 
     let { fight } = pickTiersToFight(channels, myTier, options);
     summary.tiers = fight.slice();
 
-    const aliveStr = channels
-      .filter(c => c.available === true && isWorldBossAlive(c))
-      .map(c => c.tier)
-      .join(",") || "—";
-    const deadStr = channels
-      .filter(c => c.available === true && !isWorldBossAlive(c))
-      .map(c => `${c.tier}/${c.status}`)
-      .join(",") || "—";
+    // ── 2) snapshot tier chính (chuẩn window_open / expired) ───────
+    // Ưu tiên my_tier nếu available, không thì tier đầu trong fight, không thì my_tier thô
+    const primaryTier =
+      fight[0] ||
+      (channels.find(c => c.available === true)?.tier) ||
+      myTier ||
+      "lk";
 
-    onLog?.(
-      "INFO",
-      `WB my_tier=${myTier || "?"} · sống: [${aliveStr}] · chết/đóng: [${deadStr}] · max ${maxAttacks} đòn · cd≈3s · check chết ${checkIntervalMs / 60000}p`
-    );
+    let snap: WorldBossSnapshot | null = null;
+    try {
+      snap = await fetchWorldBossSnapshot(options.characterId, options.accessToken, primaryTier);
+      defaultCdMs =
+        Number.isFinite(fixedDelayMs) && fixedDelayMs > 0
+          ? fixedDelayMs
+          : Math.max(1000, snap.attackCooldownSec * 1000);
+      onLog?.(
+        "INFO",
+        `WB snapshot ${primaryTier}: window_open=${snap.windowOpen} status=${snap.eventStatus || "?"} hp=${snap.hpCurrent ?? "?"} cd=${snap.attackCooldownSec}s · ${snap.reason}`
+      );
+    } catch (e: any) {
+      onLog?.("WARN", `WB snapshot fail (fallback channels): ${e?.message || e}`);
+    }
 
-    // Claim quà treo (luôn thử)
+    // Claim quà treo
     await tryClaimTier(options, "", tierBag, "session_start_claim");
     if (tierBag.claimed) {
       summary.claimed = true;
@@ -546,31 +652,46 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       summary.claimStones += tierBag.claimStones;
     }
 
-    // ── MODE CHECK: không có boss sống → chỉ hẹn check, KHÔNG attack ──
-    if (fight.length === 0) {
+    // ── MODE CHECK: window đóng / boss chết ───────────────────────
+    const channelAlive = fight.length > 0;
+    const snapCanAttack = snap ? snap.canAttack : channelAlive;
+    const canAttackNow = channelAlive && snapCanAttack;
+
+    if (!canAttackNow) {
       summary.status = summary.claimed ? "CLAIMED" : "WAITING_RESPAWN";
       summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = "check_only_boss_dead";
-      summary.tierResults.push({ ...tierBag, tier: myTier || "none", status: "DEAD" });
-      onLog?.("WARN", `WB MODE=CHECK · không có boss sống · ${checkIntervalMs / 60000}p sau check lại (không attack)`);
+      summary.nextCheckReason = snap && !snap.windowOpen
+        ? "window_closed"
+        : snap && !snap.canAttack
+          ? "snapshot_boss_dead"
+          : "no_alive_boss";
+      tierBag.tier = primaryTier;
+      tierBag.status = "DEAD";
+      summary.tierResults.push(tierBag);
+      onLog?.(
+        "WARN",
+        `WB MODE=CHECK · không attack · ${snap?.reason || "no alive tier"} · check lại sau ${checkIntervalMs / 60000}p`
+      );
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    // ── MODE ATTACK: đánh mỗi 3s đến maxAttacks hoặc lỗi ──────────
-    const tier = fight[0];
-    const ch0 = channels.find(c => c.tier === tier);
+    // ── MODE ATTACK: đánh mỗi 3s đến max / lỗi ────────────────────
+    const tier = fight[0] || primaryTier;
     tierBag.tier = tier;
-    tierBag.channel = ch0;
+    tierBag.channel = channels.find(c => c.tier === tier);
 
-    onLog?.("INFO", `WB MODE=ATTACK · tier ${tier} · đánh mỗi ~3s đến ${maxAttacks} đòn (hoặc lỗi/window close)`);
+    onLog?.(
+      "INFO",
+      `WB MODE=ATTACK · tier ${tier} · mỗi ${Math.round(defaultCdMs / 1000)}s · max ${maxAttacks} đòn`
+    );
 
     let lastCdMs = defaultCdMs;
-    let attackError: any = null;
+    let needSnapshotRecheck = false;
 
     for (let i = 1; i <= maxAttacks; i++) {
       if (options.shouldStop?.()) {
-        onLog?.("WARN", `WB dừng (stop) sau ${tierBag.attackCount} đòn`);
+        onLog?.("WARN", `WB stop sau ${tierBag.attackCount} đòn`);
         break;
       }
 
@@ -591,13 +712,12 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         if (i === 1 || i === maxAttacks || i % 10 === 0) {
           onLog?.(
             "INFO",
-            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · next ${Math.round(lastCdMs / 1000)}s`
+            `WB ${tier} đòn ${i}/${maxAttacks} · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfter) ? hpAfter.toLocaleString() : "?"} · cd ${Math.round(lastCdMs / 1000)}s`
           );
         }
 
-        // Giết boss
         if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
-          onLog?.("SUCCESS", `WB ${tier}: GIẾT sau ${tierBag.attackCount} đòn → claim → MODE CHECK`);
+          onLog?.("SUCCESS", `WB ${tier}: GIẾT · ${tierBag.attackCount} đòn → claim → MODE CHECK`);
           await tryClaimTier(options, tier, tierBag, "killed");
           summary.claimed = summary.claimed || tierBag.claimed;
           summary.claimCount += tierBag.claimCount;
@@ -605,37 +725,31 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           tierBag.status = "WAITING_RESPAWN";
           summary.status = "WAITING_RESPAWN";
           summary.nextCheckMs = checkIntervalMs;
-          summary.nextCheckReason = "boss_killed_check_only";
+          summary.nextCheckReason = "boss_killed";
           summary.tierResults.push(tierBag);
-          onLog?.("INFO", `WB MODE=CHECK · boss chết · check sống lại sau ${checkIntervalMs / 60000}p`);
+          onLog?.("INFO", `WB MODE=CHECK · check sống lại sau ${checkIntervalMs / 60000}p (rpc_wb_snapshot)`);
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
 
-        // Response báo window/chờ
         if (isWaitingRespawnLike(attack) || isAttackBlockedError(attack)) {
-          attackError = attack;
-          onLog?.("WARN", `WB ${tier}: response chặn attack (window/dead) sau đòn ${i} → CHECK channel`);
+          needSnapshotRecheck = true;
+          onLog?.("WARN", `WB ${tier}: response chặn (window/dead) đòn ${i} → snapshot`);
           break;
         }
 
-        // Boss còn sống → chờ đúng 3s (cooldown API) rồi đánh tiếp
         if (i < maxAttacks) await sleep(lastCdMs);
       } catch (error: any) {
-        attackError = error;
         tierBag.lastAttack = error?.data;
 
-        // Rate limit thuần → chờ cd, không tính đòn, đánh lại
         if (isRateLimitOnly(error)) {
-          onLog?.("WARN", `WB ${tier}: rate/cd · chờ ${Math.round(lastCdMs / 1000)}s đánh lại`);
+          onLog?.("WARN", `WB ${tier}: rate/cd · chờ ${Math.round(lastCdMs / 1000)}s`);
           await sleep(lastCdMs);
           i -= 1;
           continue;
         }
 
-        // Claimable error
         if (isClaimRewardLike(error)) {
-          onLog?.("SUCCESS", `WB ${tier}: lỗi kiểu claimable → claim → MODE CHECK`);
           await tryClaimTier(options, tier, tierBag, "error_claimable");
           summary.claimed = summary.claimed || tierBag.claimed;
           summary.claimCount += tierBag.claimCount;
@@ -643,39 +757,38 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           tierBag.status = "WAITING_RESPAWN";
           summary.status = "WAITING_RESPAWN";
           summary.nextCheckMs = checkIntervalMs;
-          summary.nextCheckReason = "claimable_error_check_only";
+          summary.nextCheckReason = "claimable_error";
           summary.tierResults.push(tierBag);
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
 
-        // Window close / blocked → thoát vòng attack, CHECK channel
-        if (isAttackBlockedError(error) || isWaitingRespawnLike(error) || isAttackStopSoft(error)) {
-          onLog?.("WARN", `WB ${tier}: lỗi attack đòn ~${i}: ${(error?.message || "blocked").slice(0, 100)} → CHECK channel`);
-          break;
-        }
-
-        // Lỗi cứng
+        // window close / blocked → snapshot xác nhận
+        needSnapshotRecheck = true;
         const msg = error?.message || "attack error";
-        tierBag.errors.push(msg);
-        summary.errors.push(msg);
-        onLog?.("ERROR", `WB ${tier}: lỗi cứng: ${msg.slice(0, 120)} → CHECK channel`);
+        onLog?.("WARN", `WB ${tier}: lỗi attack đòn ~${i}: ${msg.slice(0, 100)} → rpc_wb_snapshot`);
+        if (!isAttackBlockedError(error) && !isWaitingRespawnLike(error) && !isAttackStopSoft(error)) {
+          tierBag.errors.push(msg);
+          summary.errors.push(msg);
+        }
         break;
       }
     }
 
-    // ── Sau lỗi attack hoặc hết max đòn: CHECK channel thật ─────────
-    onLog?.("INFO", "WB: re-check channels sau attack (xác nhận boss sống/chết)...");
+    // ── 3) Xác nhận bằng rpc_wb_snapshot (chuẩn window_open / expired) ──
+    onLog?.("INFO", `WB: snapshot tier ${tier} (xác nhận window)...`);
+    let snap2: WorldBossSnapshot | null = null;
     try {
-      const again = await fetchChannels(options.characterId, options.accessToken);
-      myTier = again.myTier;
-      channels = again.channels;
-      summary.myTier = myTier;
-      summary.channels = channels;
-      fight = pickTiersToFight(channels, myTier, options).fight;
+      snap2 = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
+      onLog?.(
+        "INFO",
+        `WB snapshot: window_open=${snap2.windowOpen} status=${snap2.eventStatus || "?"} hp=${snap2.hpCurrent ?? "?"} · ${snap2.reason}`
+      );
+      if (snap2.attackCooldownSec > 0) {
+        lastCdMs = Math.max(1000, snap2.attackCooldownSec * 1000);
+      }
     } catch (e: any) {
-      onLog?.("WARN", `WB re-check fail: ${e?.message || e}`);
-      fight = [];
+      onLog?.("WARN", `WB snapshot fail: ${e?.message || e}`);
     }
 
     await tryClaimTier(options, "", tierBag, "after_attack_claim");
@@ -684,39 +797,35 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     summary.claimStones += tierBag.claimStones;
     summary.tierResults.push(tierBag);
 
-    if (fight.length === 0) {
-      // Boss thật sự chết / window đóng → CHỈ CHECK, không attack
+    // window đóng / expired / hp 0 → CHỈ CHECK
+    if (snap2 && !snap2.canAttack) {
       summary.status = "WAITING_RESPAWN";
       summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = "boss_dead_check_only";
+      summary.nextCheckReason = !snap2.windowOpen ? "window_open_false" : "snapshot_not_attackable";
       onLog?.(
         "WARN",
-        `WB MODE=CHECK · boss đã chết/đóng (atk ${summary.attackCount}) · chỉ check mỗi ${checkIntervalMs / 60000}p đến khi sống`
+        `WB MODE=CHECK · ${snap2.reason} · atk ${summary.attackCount} · chỉ snapshot mỗi ${checkIntervalMs / 60000}p đến khi window_open`
       );
-    } else if (tierBag.attackCount >= maxAttacks) {
-      // Đủ max đòn, channel vẫn sống → DPS tiếp ngay (đợt mới)
+    } else if (snap2?.canAttack || (!snap2 && fight.length > 0)) {
+      // Còn đánh được: hết max đòn hoặc lỗi tạm → attack lại sau cd 3s
       summary.status = "DONE";
       summary.nextCheckMs = lastCdMs;
-      summary.nextCheckReason = "max_hits_continue_attack";
+      summary.nextCheckReason =
+        tierBag.attackCount >= maxAttacks ? "max_hits_continue" : needSnapshotRecheck ? "retry_after_error" : "continue_attack";
       onLog?.(
         "INFO",
-        `WB đủ ${maxAttacks} đòn, boss vẫn sống → đợt DPS mới sau ${Math.round(lastCdMs / 1000)}s`
+        `WB MODE=ATTACK tiếp · window còn mở · đợt mới sau ${Math.round(lastCdMs / 1000)}s (cd game)`
       );
-    } else if (attackError) {
-      // Lỗi nhưng channel vẫn sống → thử attack lại sau cd
-      summary.status = "DONE";
-      summary.nextCheckMs = lastCdMs;
-      summary.nextCheckReason = "error_but_alive_retry_attack";
-      onLog?.("INFO", `WB lỗi attack nhưng channel còn sống → attack lại sau ${Math.round(lastCdMs / 1000)}s`);
     } else {
-      summary.status = "DONE";
-      summary.nextCheckMs = lastCdMs;
-      summary.nextCheckReason = "continue_attack";
+      summary.status = "WAITING_RESPAWN";
+      summary.nextCheckMs = checkIntervalMs;
+      summary.nextCheckReason = "fallback_check";
+      onLog?.("WARN", `WB MODE=CHECK · fallback · ${checkIntervalMs / 60000}p`);
     }
 
     onLog?.(
       "SUCCESS",
-      `WB xong session · atk ${summary.attackCount} · claim ${summary.claimCount} · +${summary.claimStones || 0}LS · next ${
+      `WB session · atk ${summary.attackCount} · claim ${summary.claimCount} · +${summary.claimStones || 0}LS · next ${
         (summary.nextCheckMs || 0) >= 60_000
           ? Math.round((summary.nextCheckMs || 0) / 60000) + "p CHECK"
           : Math.round((summary.nextCheckMs || 0) / 1000) + "s ATTACK"
