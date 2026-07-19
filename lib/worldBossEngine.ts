@@ -762,18 +762,24 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           );
         }
 
-        // Boss chết / claimable
+        // Boss chết / claimable → claim + hẹn giờ mở lại từ window_start/end
         if (isBossKilledByAttack(attack) || attack?.can_claim === true || attack?.claimable === true) {
-          onLog?.("SUCCESS", `WB ${tier}: GIẾT · ${tierBag.attackCount} đòn → claim → CHECK`);
+          onLog?.("SUCCESS", `WB ${tier}: GIẾT · ${tierBag.attackCount} đòn → claim → hẹn mở cửa`);
           await tryClaimTier(options, tier, tierBag, "killed");
           summary.claimed = summary.claimed || tierBag.claimed;
           summary.claimCount += tierBag.claimCount;
           summary.claimStones += tierBag.claimStones;
           tierBag.status = "WAITING_RESPAWN";
-          summary.status = "WAITING_RESPAWN";
-          summary.nextCheckMs = checkIntervalMs;
-          summary.nextCheckReason = "boss_killed";
           summary.tierResults.push(tierBag);
+          try {
+            const after = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
+            // Ép closed để tính next open từ start/end
+            scheduleWhenClosed({ ...after, windowOpen: false });
+          } catch {
+            summary.status = "WAITING_RESPAWN";
+            summary.nextCheckMs = checkIntervalMs;
+            summary.nextCheckReason = "boss_killed_fallback";
+          }
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
