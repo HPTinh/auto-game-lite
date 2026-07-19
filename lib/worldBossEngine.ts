@@ -611,13 +611,13 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     let snap: WorldBossSnapshot | null = null;
     try {
       snap = await fetchWorldBossSnapshot(options.characterId, options.accessToken, primaryTier);
-      defaultCdMs =
-        Number.isFinite(fixedDelayMs) && fixedDelayMs > 0
-          ? fixedDelayMs
-          : Math.max(1000, snap.attackCooldownSec * 1000);
+      // Delay: setting user (3000 mặc định / 1500 nhanh); không đè lung tung
+      if (!useFixedDelay && snap.attackCooldownSec > 0) {
+        defaultCdMs = Math.max(1000, snap.attackCooldownSec * 1000);
+      }
       onLog?.(
         "INFO",
-        `WB snapshot ${primaryTier}: window_open=${snap.windowOpen} status=${snap.eventStatus || "?"} hp=${snap.hpCurrent ?? "?"} cd=${snap.attackCooldownSec}s · ${snap.reason}`
+        `WB snapshot ${primaryTier}: window_open=${snap.windowOpen} status=${snap.eventStatus || "?"} hp=${snap.hpCurrent ?? "?"} · delay ${defaultCdMs}ms · ${snap.reason}`
       );
     } catch (e: any) {
       onLog?.("WARN", `WB snapshot fail (fallback channels): ${e?.message || e}`);
@@ -712,17 +712,17 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         }
 
         if (isWaitingRespawnLike(attack) || isAttackBlockedError(attack)) {
-          needSnapshotRecheck = true;
-          onLog?.("WARN", `WB ${tier}: response chặn (window/dead) đòn ${i} → snapshot`);
+          onLog?.("WARN", `WB ${tier}: response chặn đòn ${i} → snapshot window`);
           break;
         }
 
+        // window_open=true → delay rồi dame tiếp
         if (i < maxAttacks) await sleep(lastCdMs);
       } catch (error: any) {
         tierBag.lastAttack = error?.data;
 
         if (isRateLimitOnly(error)) {
-          onLog?.("WARN", `WB ${tier}: rate/cd · chờ ${Math.round(lastCdMs / 1000)}s`);
+          onLog?.("WARN", `WB ${tier}: rate · chờ ${lastCdMs}ms`);
           await sleep(lastCdMs);
           i -= 1;
           continue;
@@ -742,10 +742,8 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           return summary;
         }
 
-        // window close / blocked → snapshot xác nhận
-        needSnapshotRecheck = true;
         const msg = error?.message || "attack error";
-        onLog?.("WARN", `WB ${tier}: lỗi attack đòn ~${i}: ${msg.slice(0, 100)} → rpc_wb_snapshot`);
+        onLog?.("WARN", `WB ${tier}: lỗi đòn ~${i}: ${msg.slice(0, 100)} → snapshot`);
         if (!isAttackBlockedError(error) && !isWaitingRespawnLike(error) && !isAttackStopSoft(error)) {
           tierBag.errors.push(msg);
           summary.errors.push(msg);
@@ -754,8 +752,8 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       }
     }
 
-    // ── 3) Xác nhận bằng rpc_wb_snapshot (chuẩn window_open / expired) ──
-    onLog?.("INFO", `WB: snapshot tier ${tier} (xác nhận window)...`);
+    // ── Snapshot: window_open? ────────────────────────────────────
+    onLog?.("INFO", `WB: snapshot ${tier} (window_open?)...`);
     let snap2: WorldBossSnapshot | null = null;
     try {
       snap2 = await fetchWorldBossSnapshot(options.characterId, options.accessToken, tier);
@@ -763,9 +761,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         "INFO",
         `WB snapshot: window_open=${snap2.windowOpen} status=${snap2.eventStatus || "?"} hp=${snap2.hpCurrent ?? "?"} · ${snap2.reason}`
       );
-      if (snap2.attackCooldownSec > 0) {
-        lastCdMs = Math.max(1000, snap2.attackCooldownSec * 1000);
-      }
     } catch (e: any) {
       onLog?.("WARN", `WB snapshot fail: ${e?.message || e}`);
     }
@@ -776,30 +771,29 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     summary.claimStones += tierBag.claimStones;
     summary.tierResults.push(tierBag);
 
-    // window đóng / expired / hp 0 → CHỈ CHECK
-    if (snap2 && !snap2.canAttack) {
-      summary.status = "WAITING_RESPAWN";
-      summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = !snap2.windowOpen ? "window_open_false" : "snapshot_not_attackable";
-      onLog?.(
-        "WARN",
-        `WB MODE=CHECK · ${snap2.reason} · atk ${summary.attackCount} · chỉ snapshot mỗi ${checkIntervalMs / 60000}p đến khi window_open`
-      );
-    } else if (snap2?.canAttack || (!snap2 && fight.length > 0)) {
-      // Còn đánh được: hết max đòn hoặc lỗi tạm → attack lại sau cd 3s
+    // window_open=true → tiếp tục dame; false → chỉ check
+    if (snap2 && snap2.windowOpen === true) {
       summary.status = "DONE";
       summary.nextCheckMs = lastCdMs;
-      summary.nextCheckReason =
-        tierBag.attackCount >= maxAttacks ? "max_hits_continue" : needSnapshotRecheck ? "retry_after_error" : "continue_attack";
+      summary.nextCheckReason = "window_open_continue_dps";
       onLog?.(
         "INFO",
-        `WB MODE=ATTACK tiếp · window còn mở · đợt mới sau ${Math.round(lastCdMs / 1000)}s (cd game)`
+        `WB MODE=ATTACK · window_open=true · dame tiếp sau ${lastCdMs}ms`
       );
-    } else {
+    } else if (snap2 && snap2.windowOpen === false) {
       summary.status = "WAITING_RESPAWN";
       summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = "fallback_check";
-      onLog?.("WARN", `WB MODE=CHECK · fallback · ${checkIntervalMs / 60000}p`);
+      summary.nextCheckReason = "window_open_false";
+      onLog?.(
+        "WARN",
+        `WB MODE=CHECK · window_open=false · atk ${summary.attackCount} · check mỗi ${checkIntervalMs / 60000}p`
+      );
+    } else {
+      // snapshot fail: còn window trước đó → DPS, không thì check
+      summary.status = "DONE";
+      summary.nextCheckMs = lastCdMs;
+      summary.nextCheckReason = "fallback_continue_attack";
+      onLog?.("INFO", `WB snapshot fail · fallback ATTACK sau ${lastCdMs}ms`);
     }
 
     onLog?.(
