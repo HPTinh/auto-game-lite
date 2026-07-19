@@ -631,42 +631,37 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       summary.claimStones += tierBag.claimStones;
     }
 
-    // ── MODE CHECK: window đóng / boss chết ───────────────────────
-    const channelAlive = fight.length > 0;
-    const snapCanAttack = snap ? snap.canAttack : channelAlive;
-    const canAttackNow = channelAlive && snapCanAttack;
+    // ── window_open=true → luôn ATTACK; false → chỉ CHECK ─────────
+    const windowOpen = snap ? snap.windowOpen === true : fight.length > 0;
+    const canAttackNow = windowOpen === true;
 
     if (!canAttackNow) {
       summary.status = summary.claimed ? "CLAIMED" : "WAITING_RESPAWN";
       summary.nextCheckMs = checkIntervalMs;
-      summary.nextCheckReason = snap && !snap.windowOpen
-        ? "window_closed"
-        : snap && !snap.canAttack
-          ? "snapshot_boss_dead"
-          : "no_alive_boss";
+      summary.nextCheckReason = "window_closed_check_only";
       tierBag.tier = primaryTier;
       tierBag.status = "DEAD";
       summary.tierResults.push(tierBag);
       onLog?.(
         "WARN",
-        `WB MODE=CHECK · không attack · ${snap?.reason || "no alive tier"} · check lại sau ${checkIntervalMs / 60000}p`
+        `WB MODE=CHECK · window_open=false · không dame · check sau ${checkIntervalMs / 60000}p`
       );
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    // ── MODE ATTACK: đánh mỗi 3s đến max / lỗi ────────────────────
+    // ── MODE ATTACK: window_open=true → dame mỗi delayMs ───────────
     const tier = fight[0] || primaryTier;
     tierBag.tier = tier;
     tierBag.channel = channels.find(c => c.tier === tier);
 
+    const hitDelayMs = defaultCdMs; // 3000 mặc định, 1500 nếu setting nhanh
+    let lastCdMs = hitDelayMs;
+
     onLog?.(
       "INFO",
-      `WB MODE=ATTACK · tier ${tier} · mỗi ${Math.round(defaultCdMs / 1000)}s · max ${maxAttacks} đòn`
+      `WB MODE=ATTACK · window_open=true · tier ${tier} · dame mỗi ${hitDelayMs}ms · max ${maxAttacks}`
     );
-
-    let lastCdMs = defaultCdMs;
-    let needSnapshotRecheck = false;
 
     for (let i = 1; i <= maxAttacks; i++) {
       if (options.shouldStop?.()) {
