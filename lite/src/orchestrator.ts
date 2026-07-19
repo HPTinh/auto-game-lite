@@ -359,13 +359,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         attackDelayMs: Number.isFinite(attackDelayMs) ? attackDelayMs : 0,
         autoClaim: settings.auto_claim !== false,
         checkIntervalMinutes: checkMin,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "WORLD_BOSS"),
       });
-      // Chu kỳ check sống/chết: tối thiểu theo setting (1p+), tôn trọng nextCheckMs từ engine
-      nextDelayMs = Math.max(
-        checkMin * 60_000,
-        Number(result.nextCheckMs || 0)
-      );
+      // Boss còn sống → nextDelayMs rất nhỏ (DPS tiếp). Boss chết → check_interval.
+      // KHÔNG ép min = check_interval (tránh đánh xong đợi 10p mới đánh tiếp).
+      nextDelayMs = Math.max(500, Number(result.nextCheckMs || checkMin * 60_000));
       if (result.status === "ERROR") {
         status = "error";
         errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";

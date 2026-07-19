@@ -168,8 +168,8 @@
       ],
       claim_exp: [{k:"interval_minutes",l:"Chu kỳ (phút)",t:"number",min:1}],
       world_boss: [
-        {k:"check_interval_minutes",l:"Check sống/chết (phút, min 1)",t:"number",min:1,max:1440},
-        {k:"max_attacks_per_check",l:"Max đòn / lần (1-999)",t:"number",min:1,max:999},
+        {k:"max_attacks_per_check",l:"Max đòn DPS khi boss sống (1-999)",t:"number",min:1,max:999},
+        {k:"check_interval_minutes",l:"Check lại khi boss chết (phút)",t:"number",min:1,max:1440},
         {k:"attack_delay_ms",l:"Delay đòn ms (0=API cd ~3s)",t:"number",min:0},
         {k:"auto_claim",l:"Tự nhận quà",t:"bool"},
       ],
