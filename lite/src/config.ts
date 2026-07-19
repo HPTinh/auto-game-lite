@@ -12,7 +12,8 @@ export const config = {
   publicUrl: String(process.env.PUBLIC_URL || "").replace(/\/$/, ""),
   /** Giữ log ngắn trên RAM/UI — mặc định 40 */
   maxLogs: Math.max(15, num(process.env.MAX_LOGS_PER_ACCOUNT, 40)),
-  minFarmDelayMs: Math.max(300, num(process.env.MIN_FARM_DELAY_MS, 800)),
+  /** Delay tối thiểu giữa 2 vòng farm (ms) — mặc định 5s */
+  minFarmDelayMs: Math.max(1000, num(process.env.MIN_FARM_DELAY_MS, 5000)),
   /** Render free disk mất khi redeploy — có thể trỏ volume path nếu sau này gắn disk */
   dataDir: process.env.DATA_DIR
     ? path.resolve(process.env.DATA_DIR)
@@ -70,7 +71,7 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     farm_realm_tier_override: "auto",
     smart_rebirth_farm: true,
     attack_delay_ms: 5000,
-    empty_scan_delay_ms: 1000,
+    empty_scan_delay_ms: 5000,
     farm_log_mode: "summary",
     summary_log_interval_seconds: 1800,
     max_available_base_codes: 2,

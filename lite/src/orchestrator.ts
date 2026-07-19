@@ -218,7 +218,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "FARM"),
       });
-      nextDelayMs = Math.max(config.minFarmDelayMs, Number(result.nextDelayMs || settings.empty_scan_delay_ms || 1000));
+      // Mỗi vòng farm cách nhau tối thiểu 5s (cấu hình minFarmDelayMs / empty_scan_delay_ms)
+      nextDelayMs = Math.max(
+        config.minFarmDelayMs,
+        Number(farmSettings.empty_scan_delay_ms || 5000),
+        Number(result.nextDelayMs || 0)
+      );
       const line = farmCycleSummary(result, farmSettings);
       if (result.status === "ERROR") {
         status = "error";
