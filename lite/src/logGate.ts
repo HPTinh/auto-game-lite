@@ -136,6 +136,15 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /claim|puppet|pending|xong|KL /i.test(text);
   }
 
+  if (module === "KI_NGO") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /kì ngộ|ki ngo|đủ|12h|hẹn|tiến độ|\/\d/i.test(text)
+    );
+  }
+
   if (module === "MAZE") {
     return (
       lv === "ERROR" ||

@@ -15,7 +15,8 @@ Bản **tinh gọn** của Auto Best:
 - **Buff** trận pháp / phù
 - **Claim EXP**, **Thành tựu**, **Mail**
 - **World Boss**, **Đột phá**
-- Tuỳ chọn: Mê cung, Auto equip, Craft, Luyện thể, Onboarding, WC checkin
+- **PVP** (quota ngày), **Mê cung**, **Nhập Mộng**, **Khôi Lỗi**, **Kì ngộ** (reset 12h VN)
+- Tuỳ chọn: Auto equip, Craft, Luyện thể, Onboarding, WC checkin
 
 UI chỉ để: thêm account, tick feature, Start/Stop, xem log.
 

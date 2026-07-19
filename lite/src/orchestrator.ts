@@ -16,6 +16,8 @@ import {
   runMazeAuto,
   runOnboardingClaimAuto,
   runKhoiLoiAuto,
+  runKiNgoAuto,
+  msUntilNextVietnamNoon,
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
@@ -718,6 +720,60 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           "KHOI_LOI",
           "INFO",
           `KL ${result.status} · claim ${result.claimedCount}/${result.ownedCount} · drops ${result.totalDrops} · next ${hours}h`
+        );
+      }
+    } else if (featureId === "ki_ngo") {
+      // Kì ngộ: loop rpc_trigger_ki_ngo; đủ daily_count/limit → chờ mốc 12:00 VN
+      const noonMs = msUntilNextVietnamNoon();
+      const result = await runKiNgoAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        msUntilNextNoon: noonMs,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "KI_NGO"),
+      });
+
+      const used = Number.isFinite(result.used as number) ? Number(result.used) : Number(settings.daily_count || 0);
+      const limit = Number.isFinite(result.limit as number) ? Number(result.limit) : Number(settings.daily_limit || 0) || undefined;
+      const nextRunAt = new Date(Date.now() + Math.max(30_000, Number(result.nextDelayMs || 60_000))).toISOString();
+      const nextResetAt = new Date(Date.now() + noonMs).toISOString();
+
+      store.setFeature(accountId, "ki_ngo", {
+        settings: {
+          ...settings,
+          daily_count: used,
+          daily_limit: limit ?? settings.daily_limit,
+          completed_today: result.completedToday,
+          success_count: result.successCount,
+          fail_count: result.failCount,
+          next_run_at: nextRunAt,
+          next_reset_at: nextResetAt,
+          last_run_at: new Date().toISOString(),
+        },
+      });
+
+      nextDelayMs = Math.max(30_000, Number(result.nextDelayMs || Number(settings.continue_delay_seconds || 60) * 1000));
+
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Kì ngộ error";
+        sysLog(accountId, "KI_NGO", "ERROR", errMsg);
+      } else if (result.completedToday || result.status === "DONE") {
+        // Giữ WAITING + hẹn 12h VN — không tắt feature (status "done" sẽ disable)
+        const hrs = Math.ceil(nextDelayMs / 3600_000);
+        sysLog(
+          accountId,
+          "KI_NGO",
+          "SUCCESS",
+          `Kì ngộ đủ ${used}/${limit ?? "?"} · chờ ~${hrs}h đến 12:00 VN`
+        );
+      } else {
+        sysLog(
+          accountId,
+          "KI_NGO",
+          "INFO",
+          `Kì ngộ ${result.status} · ${used}/${limit ?? "?"} · ok ${result.successCount} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "auto_equip") {

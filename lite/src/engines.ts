@@ -20,3 +20,4 @@ export { runCraftAuto } from "../../lib/craftEngine";
 export { runPvpAuto } from "../../lib/pvpEngine";
 export { runNhapMongAuto } from "../../lib/nhapMongEngine";
 export { runKhoiLoiAuto } from "../../lib/khoiLoiEngine";
+export { runKiNgoAuto, msUntilNextVietnamNoon } from "../../lib/kiNgoEngine";

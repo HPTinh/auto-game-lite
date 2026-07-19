@@ -107,12 +107,13 @@
 
   <script>
     const FEATURES = [
-      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","nhap_mong","khoi_loi",
+      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","nhap_mong","khoi_loi","ki_ngo",
       "auto_equip","craft","body_cult","onboarding_claim","world_cup_checkin"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
       achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", nhap_mong:"Nhập Mộng", khoi_loi:"Khôi Lỗi",
+      ki_ngo:"Kì ngộ",
       auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể", onboarding_claim:"Onboard", world_cup_checkin:"WC"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
@@ -155,6 +156,13 @@
         {k:"interval_hours",l:"Chu kỳ claim (giờ, min 2)",t:"number",min:2,max:48},
         {k:"only_with_pending",l:"Chỉ claim khi có pending",t:"bool"},
         {k:"claim_delay_ms",l:"Delay giữa puppet (ms)",t:"number",min:200,max:5000},
+      ],
+      ki_ngo: [
+        {k:"max_runs_per_check",l:"Max lần / vòng",t:"number",min:1,max:100},
+        {k:"continue_delay_seconds",l:"Hẹn lại khi chưa đủ (giây)",t:"number",min:30},
+        {k:"daily_count",l:"Đã chạy (tự đếm)",t:"number",min:0},
+        {k:"daily_limit",l:"Giới hạn ngày (tự)",t:"number",min:0},
+        {k:"completed_today",l:"Đủ ngày — chờ 12h VN",t:"bool"},
       ],
       maze: [
         {k:"tier",l:"Bậc (1-6)",t:"number",min:1,max:6},

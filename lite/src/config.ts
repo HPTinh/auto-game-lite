@@ -37,6 +37,7 @@ export type FeatureId =
   | "pvp"
   | "nhap_mong"
   | "khoi_loi"
+  | "ki_ngo"
   | "auto_equip"
   | "craft"
   | "body_cult"
@@ -55,6 +56,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   pvp: "Auto PVP",
   nhap_mong: "Nhập Mộng",
   khoi_loi: "Khôi Lỗi",
+  ki_ngo: "Kì ngộ",
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
@@ -122,6 +124,19 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** chỉ claim puppet có pending > 0 */
     only_with_pending: true,
     claim_delay_ms: 500,
+  },
+  ki_ngo: {
+    /** số lần trigger / vòng check */
+    max_runs_per_check: 30,
+    /** khi chưa đủ daily: hẹn lại sau (giây), min 30 */
+    continue_delay_seconds: 60,
+    /** delay giữa 2 lần trigger trong vòng (ms) */
+    loop_delay_ms: 400,
+    // tiến độ ngày — tự lưu (reset 12:00 VN)
+    daily_count: 0,
+    daily_limit: 0,
+    completed_today: false,
+    last_run_at: "",
   },
   buff: {
     interval_seconds: 300,
