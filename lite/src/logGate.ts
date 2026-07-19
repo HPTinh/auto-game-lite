@@ -105,8 +105,7 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
 
   if (module === "WORLD_BOSS") {
     if (lv === "ERROR" || lv === "SUCCESS" || lv === "WARN") return true;
-    // INFO: chỉ bắt đầu / claim / xong
-    return /bắt đầu|claim|nhận quà|xong|done|waiting_respawn|không có boss/i.test(text);
+    return /rank|sống|chết|check|claim|xong|atk|next|không có boss|WB /i.test(text);
   }
 
   if (module === "BUFF" || module === "CLAIM_EXP" || module === "ACHIEVEMENT" || module === "MAIL") {

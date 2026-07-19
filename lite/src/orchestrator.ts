@@ -345,18 +345,24 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = 15 * 60_000;
     } else if (featureId === "world_boss") {
+      const checkMin = Math.max(1, Math.min(24 * 60, Number(settings.check_interval_minutes || 10) || 10));
+      const maxAtk = Math.max(1, Math.min(999, Number(settings.max_attacks_per_check || 30) || 30));
+      const autoSelect = settings.auto_select_tiers !== false;
       const result = await runWorldBossAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
-        tiers: settings.tiers || "lk,tc,kd",
-        maxAttacksPerCheck: Number(settings.max_attacks_per_check || 30),
+        autoSelectTiers: autoSelect,
+        tiers: autoSelect ? undefined : settings.tiers || settings.tier || "",
+        maxAttacksPerCheck: maxAtk,
         attackDelayMs: Number(settings.attack_delay_ms || 1500),
         autoClaim: settings.auto_claim !== false,
+        checkIntervalMinutes: checkMin,
         onLog: onLog(accountId, "WORLD_BOSS"),
       });
+      // Chu kỳ check sống/chết: tối thiểu theo setting (1p+), tôn trọng nextCheckMs từ engine
       nextDelayMs = Math.max(
-        60_000,
-        Number(result.nextCheckMs || Number(settings.check_interval_minutes || 10) * 60_000)
+        checkMin * 60_000,
+        Number(result.nextCheckMs || 0)
       );
       if (result.status === "ERROR") {
         status = "error";
@@ -366,8 +372,15 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "WORLD_BOSS",
           "INFO",
-          `WB ${result.status} · atk ${result.attackCount || 0} · claim ${result.claimCount || 0}`
+          `WB ${result.status} · rank ${result.myTier || "?"} · atk ${result.attackCount || 0} · claim ${result.claimCount || 0} · +${result.claimStones || 0}LS · next ${Math.round(nextDelayMs / 60000)}p`
         );
+        if (result.claimed || (result.claimStones || 0) > 0) {
+          try {
+            await refreshAccountInfo(accountId);
+          } catch {
+            /* ignore */
+          }
+        }
       }
     } else if (featureId === "breakthrough") {
       const result = await runBreakthroughAuto({

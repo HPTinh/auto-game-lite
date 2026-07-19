@@ -101,8 +101,13 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   },
   claim_exp: { interval_minutes: 15 },
   world_boss: {
-    tiers: "lk,tc,kd",
+    /** true = tự chọn tier theo rank (rpc_wb_channels.my_tier + available) */
+    auto_select_tiers: true,
+    /** chỉ dùng khi auto_select_tiers=false — vd "lk,tc" */
+    tiers: "",
+    /** chu kỳ check boss sống/chết — phút, min 1, mặc định 10 */
     check_interval_minutes: 10,
+    /** số đòn tối đa mỗi lần check — 1..999, mặc định 30 */
     max_attacks_per_check: 30,
     attack_delay_ms: 1500,
     auto_claim: true,
