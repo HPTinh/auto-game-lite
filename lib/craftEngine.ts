@@ -1,0 +1,588 @@
+export type CraftTierCode = "lk" | "tc" | "kd" | "na" | "ht" | "lh" | "unknown";
+export type CraftStatus = "SUCCESS" | "RATE_FAILED" | "PAUSED" | "ERROR" | "SKIPPED";
+export type CraftRecoveryKind = "material" | "stamina" | "spirit" | "unknown";
+
+export interface CraftRecipe {
+  meta?: Record<string, any>;
+  category?: string;
+  output_qty?: number;
+  output_code?: string;
+  recipe_code?: string;
+  requirements?: Record<string, number>;
+  success_rate?: number;
+  output_rarity?: string;
+  [key: string]: any;
+}
+
+export interface NormalizedCraftRecipe extends CraftRecipe {
+  tierCode: CraftTierCode;
+  tierLabel: string;
+  kindLabel: string;
+  displayName: string;
+  requirementText: string;
+}
+
+export interface CraftRunSummary {
+  status: CraftStatus;
+  category: string;
+  tierCode: CraftTierCode;
+  recipeCode: string;
+  outputCode?: string;
+  times: number;
+  successCount: number;
+  failCount: number;
+  rewards: Array<{ code?: string; qty?: number; [key: string]: any }>;
+  rate?: number;
+  masteryXp?: number;
+  masteryGain?: number;
+  masteryLevel?: number;
+  nextDelayMs: number;
+  reason?: string;
+  recoveryKind?: CraftRecoveryKind;
+  recoveryAction?: string;
+  usedItems?: Array<{ itemCode: string; ok: boolean; raw?: any }>;
+  openedContainers?: number;
+  raw?: any;
+}
+
+interface CraftAnalysis {
+  ok: boolean;
+  status: CraftStatus;
+  reason?: string;
+  successCount: number;
+  failCount: number;
+  rewards: Array<{ code?: string; qty?: number; [key: string]: any }>;
+  data: any;
+}
+
+const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
+const GAME_API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
+
+const TIER_ORDER: CraftTierCode[] = ["lk", "tc", "kd", "na", "ht", "lh"];
+const TIER_LABELS: Record<string, string> = {
+  lk: "Tier 1 - Luyện Khí (lk)",
+  tc: "Tier 2 - Trúc Cơ (tc)",
+  kd: "Tier 3 - Kim Đan (kd)",
+  na: "Tier 4 - Nguyên Anh (na)",
+  ht: "Tier 5 - Hoá Thần (ht)",
+  lh: "Tier 6 - Luyện Hư (lh)",
+  unknown: "Không rõ tier",
+};
+
+const CATEGORY_LABELS: Record<string, string> = {
+  alchemy: "Luyện đan (hệ Mộc)",
+  forge: "Luyện khí",
+  array: "Trận pháp",
+  talisman: "Phù lục",
+};
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const clampNumber = (value: any, min: number, max: number, fallback: number) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+};
+
+export const getCraftTierLabel = (tier: any) => TIER_LABELS[String(tier || "unknown").toLowerCase()] || String(tier || "?");
+export const getCraftCategoryLabel = (category: any) => CATEGORY_LABELS[String(category || "alchemy")] || String(category || "alchemy");
+
+const rpc = async (accessToken: string, name: string, payload: Record<string, any>) => {
+  const res = await fetch(`${BASE_URL}/rest/v1/rpc/${name}`, {
+    method: "POST",
+    headers: {
+      apikey: GAME_API_KEY,
+      authorization: `Bearer ${accessToken}`,
+      "content-profile": "public",
+      "content-type": "application/json",
+      "x-client-info": "supabase-flutter/2.12.0",
+    },
+    body: JSON.stringify(payload),
+    credentials: "omit",
+  });
+
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const err: any = new Error(data?.message || data?.error || `RPC ${name} HTTP ${res.status}`);
+    err.data = data;
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+};
+
+export const inferCraftTier = (recipe: any): CraftTierCode => {
+  const metaTier = String(recipe?.meta?.realm_code || recipe?.meta?.tier || "").toLowerCase().trim();
+  if (TIER_ORDER.includes(metaTier as CraftTierCode)) return metaTier as CraftTierCode;
+
+  const values = [
+    recipe?.recipe_code,
+    recipe?.output_code,
+    ...Object.keys(recipe?.requirements || {}),
+  ].map(value => String(value || "").toLowerCase());
+
+  for (const tier of TIER_ORDER) {
+    const re = new RegExp(`(^|_)${tier}(_|$)`);
+    if (values.some(value => re.test(value))) return tier;
+  }
+
+  return "unknown";
+};
+
+const inferTierFromCode = (recipeCode: string, settingsTier: any): CraftTierCode => {
+  const tierFromSetting = String(settingsTier || "").toLowerCase().trim();
+  if (TIER_ORDER.includes(tierFromSetting as CraftTierCode)) return tierFromSetting as CraftTierCode;
+  return inferCraftTier({ recipe_code: recipeCode });
+};
+
+const inferKindLabel = (recipe: any) => {
+  const code = String(recipe?.recipe_code || recipe?.output_code || "").toLowerCase();
+  const meta = recipe?.meta || {};
+  if (meta.dao_khi || code.includes("dao_khi") || code.includes("dao_tinh")) return "Đạo khí";
+  if (meta.kind === "tu_vi" || code.includes("tu_vi")) return "Đan tu vi";
+  if (code.includes("linh_thu")) return "Linh thú đan";
+  if (code.includes("_realm")) return "Đan đột phá";
+  if (code.includes("_hp")) return "Đan HP";
+  if (code.includes("_mp")) return "Đan MP";
+  if (code.includes("_sta")) return "Đan thể lực";
+  if (code.includes("_spirit")) return "Đan thần hồn / linh khí";
+  if (code.includes("major")) return "Đại đan";
+  if (code.includes("minor")) return "Tiểu đan";
+  return "Khác";
+};
+
+const formatRequirements = (requirements: any) => {
+  const rows = Object.entries(requirements || {});
+  if (!rows.length) return "Không rõ nguyên liệu";
+  return rows.map(([code, qty]) => `${code} x${qty}`).join(", ");
+};
+
+export const normalizeCraftRecipe = (recipe: CraftRecipe): NormalizedCraftRecipe => {
+  const tierCode = inferCraftTier(recipe);
+  const outputCode = String(recipe?.output_code || "?");
+  const recipeCode = String(recipe?.recipe_code || "?");
+  return {
+    ...recipe,
+    tierCode,
+    tierLabel: getCraftTierLabel(tierCode),
+    kindLabel: inferKindLabel(recipe),
+    displayName: `${outputCode} · ${recipeCode}`,
+    requirementText: formatRequirements(recipe?.requirements),
+  };
+};
+
+export const filterCraftRecipes = (recipes: CraftRecipe[], tier: string, search = "") => {
+  const wantedTier = String(tier || "all").toLowerCase();
+  const keyword = String(search || "").trim().toLowerCase();
+  return (recipes || [])
+    .map(normalizeCraftRecipe)
+    .filter(recipe => wantedTier === "all" || recipe.tierCode === wantedTier)
+    .filter(recipe => {
+      if (!keyword) return true;
+      return [recipe.output_code, recipe.recipe_code, recipe.kindLabel, recipe.output_rarity, recipe.requirementText]
+        .map(value => String(value || "").toLowerCase())
+        .some(value => value.includes(keyword));
+    })
+    .sort((a, b) => {
+      const aTier = TIER_ORDER.indexOf(a.tierCode);
+      const bTier = TIER_ORDER.indexOf(b.tierCode);
+      const tierCmp = (aTier === -1 ? 99 : aTier) - (bTier === -1 ? 99 : bTier);
+      if (tierCmp) return tierCmp;
+      return String(a.recipe_code || "").localeCompare(String(b.recipe_code || ""));
+    });
+};
+
+export const listCraftRecipes = async ({
+  characterId,
+  accessToken,
+  category = "alchemy",
+}: {
+  characterId?: string;
+  accessToken: string;
+  category?: string;
+}) => {
+  // Server hiện chỉ cần p_category theo Network; characterId giữ lại để sau này nếu RPC đổi schema vẫn dễ mở rộng.
+  const data = await rpc(accessToken, "rpc_list_recipes", { p_category: category });
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.recipes) ? data.recipes : Array.isArray(data?.items) ? data.items : [];
+  return rows.map(normalizeCraftRecipe);
+};
+
+const reasonOf = (data: any) => String(data?.reason || data?.message || data?.error || data?.code || data?.details || "").toLowerCase();
+
+const hasAny = (text: string, keywords: string[]) => keywords.some(keyword => text.includes(keyword));
+
+const isMaterialReason = (reason: string) => hasAny(reason, [
+  "missing_material",
+  "not_enough_material",
+  "insufficient_material",
+  "material_not_enough",
+  "no_material",
+  "ingredient",
+  "missing_ingredient",
+  "not_enough_item",
+  "item_not_enough",
+  "nguyen_lieu",
+  "nguyên liệu",
+  "thieu_nguyen_lieu",
+  "thiếu nguyên liệu",
+]);
+
+const isSpiritReason = (reason: string) => hasAny(reason, [
+  "spirit",
+  "soul",
+  "than_hon",
+  "thần hồn",
+  "shenhun",
+  "linh_khi",
+  "linh khí",
+]);
+
+const isStaminaReason = (reason: string) => hasAny(reason, [
+  "stamina",
+  "sta",
+  "the_luc",
+  "thể lực",
+  "energy",
+  "not_enough_resources",
+  "insufficient_resources",
+  "resource_not_enough",
+  "resources_not_enough",
+]);
+
+const recoveryKindsForReason = (reason: string): CraftRecoveryKind[] => {
+  const kinds: CraftRecoveryKind[] = [];
+  if (isStaminaReason(reason)) kinds.push("stamina");
+  if (isSpiritReason(reason)) kinds.push("spirit");
+  // Một số server chỉ trả not_enough_resources, không nói rõ là thể lực hay thần hồn.
+  // Thử thể lực trước, rồi thần hồn nếu vẫn chưa craft được.
+  if (hasAny(reason, ["not_enough_resources", "insufficient_resources", "resource_not_enough", "resources_not_enough"]) && !kinds.includes("spirit")) {
+    kinds.push("spirit");
+  }
+  return kinds.length ? kinds : ["unknown"];
+};
+
+const recoveryItemCode = (kind: CraftRecoveryKind, tier: CraftTierCode, settings: Record<string, any>) => {
+  const safeTier = TIER_ORDER.includes(tier) ? tier : "lk";
+  if (kind === "stamina") return String(settings.stamina_item_code || settings.recover_stamina_item_code || `pill_${safeTier}_sta`);
+  if (kind === "spirit") return String(settings.spirit_item_code || settings.soul_item_code || settings.recover_spirit_item_code || `pill_${safeTier}_spirit`);
+  return "";
+};
+
+const analyzeCraftData = (data: any): CraftAnalysis => {
+  const successCount = Number(data?.success ?? data?.success_count ?? 0) || 0;
+  const failCount = Number(data?.fail ?? data?.fail_count ?? 0) || 0;
+  const rewards = Array.isArray(data?.rewards) ? data.rewards : [];
+
+  if (data?.ok !== false && successCount > 0) {
+    return { ok: true, status: "SUCCESS", successCount, failCount, rewards, data };
+  }
+
+  if (data?.ok !== false && successCount <= 0 && failCount > 0) {
+    return {
+      ok: true,
+      status: "RATE_FAILED",
+      reason: "craft_rate_failed",
+      successCount,
+      failCount,
+      rewards,
+      data,
+    };
+  }
+
+  return {
+    ok: false,
+    status: "PAUSED",
+    reason: reasonOf(data) || "craft_no_success",
+    successCount,
+    failCount,
+    rewards,
+    data,
+  };
+};
+
+const summaryFromAnalysis = ({
+  analysis,
+  status,
+  category,
+  tierCode,
+  recipeCode,
+  times,
+  nextDelayMs,
+  reason,
+  recoveryKind,
+  recoveryAction,
+  usedItems = [],
+  openedContainers = 0,
+}: {
+  analysis: CraftAnalysis;
+  status?: CraftStatus;
+  category: string;
+  tierCode: CraftTierCode;
+  recipeCode: string;
+  times: number;
+  nextDelayMs: number;
+  reason?: string;
+  recoveryKind?: CraftRecoveryKind;
+  recoveryAction?: string;
+  usedItems?: Array<{ itemCode: string; ok: boolean; raw?: any }>;
+  openedContainers?: number;
+}): CraftRunSummary => {
+  const data = analysis.data || {};
+  return {
+    status: status || analysis.status,
+    category: String(data?.category || category),
+    tierCode,
+    recipeCode: String(data?.recipe_code || recipeCode),
+    outputCode: analysis.rewards?.[0]?.code,
+    times,
+    successCount: analysis.successCount,
+    failCount: analysis.failCount,
+    rewards: analysis.rewards,
+    rate: Number(data?.rate ?? data?.success_rate ?? 0) || undefined,
+    masteryXp: Number(data?.mastery_xp ?? 0) || undefined,
+    masteryGain: Number(data?.mastery_gain ?? 0) || undefined,
+    masteryLevel: Number(data?.mastery_level ?? 0) || undefined,
+    nextDelayMs,
+    reason: reason || analysis.reason,
+    recoveryKind,
+    recoveryAction,
+    usedItems,
+    openedContainers,
+    raw: data,
+  };
+};
+
+export const runCraftAuto = async ({
+  characterId,
+  accessToken,
+  settings = {},
+  onLog,
+  shouldStop,
+}: {
+  characterId: string;
+  accessToken: string;
+  settings?: Record<string, any>;
+  onLog?: (level: "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR", message: string, meta?: Record<string, any>) => void;
+  shouldStop?: () => boolean;
+}): Promise<CraftRunSummary> => {
+  const category = String(settings.category || settings.craft_category || "alchemy");
+  const recipeCode = String(settings.recipe_code || settings.selected_recipe_code || "").trim();
+  const tierCode = inferTierFromCode(recipeCode, settings.tier || settings.realm_code || settings.selected_recipe_tier);
+  const times = clampNumber(settings.times_per_run ?? settings.p_times ?? 1, 1, 50, 1);
+  const intervalSeconds = clampNumber(settings.interval_seconds ?? 20, 5, 24 * 60 * 60, 20);
+  const pauseMinutes = clampNumber(settings.pause_on_fail_minutes ?? 30, 1, 24 * 60, 30);
+  const intervalMs = intervalSeconds * 1000;
+  const pauseMs = pauseMinutes * 60_000;
+  const autoOpenContainers = settings.auto_open_containers !== false;
+  const autoUseRecoveryItems = settings.auto_use_recovery_items !== false;
+  const retryDelayMs = clampNumber(settings.retry_delay_ms ?? 700, 200, 5000, 700);
+
+  if (!recipeCode) {
+    onLog?.("WARN", "Auto Craft chưa chọn recipe_code.", { category, tierCode });
+    return {
+      status: "SKIPPED",
+      category,
+      tierCode,
+      recipeCode: "",
+      times,
+      successCount: 0,
+      failCount: 0,
+      rewards: [],
+      nextDelayMs: intervalMs,
+      reason: "missing_recipe_code",
+    };
+  }
+
+  if (shouldStop?.()) {
+    return {
+      status: "SKIPPED",
+      category,
+      tierCode,
+      recipeCode,
+      times,
+      successCount: 0,
+      failCount: 0,
+      rewards: [],
+      nextDelayMs: intervalMs,
+      reason: "stopped",
+    };
+  }
+
+  const usedItems: Array<{ itemCode: string; ok: boolean; raw?: any }> = [];
+  let openedContainers = 0;
+
+  const craftOnce = async () => {
+    const data = await rpc(accessToken, "rpc_craft_manual", {
+      p_character_id: characterId,
+      p_recipe_code: recipeCode,
+      p_times: times,
+    });
+    return analyzeCraftData(data);
+  };
+
+  const openContainers = async () => {
+    onLog?.("WARN", `Craft thiếu nguyên liệu cho ${recipeCode}, mở toàn bộ rương rồi thử lại.`, { recipeCode });
+    const opened = await rpc(accessToken, "rpc_open_all_containers", { p_character_id: characterId });
+    openedContainers = Number(opened?.opened || opened?.count || opened?.opened_count || 0) || 0;
+    onLog?.("INFO", `Mở rương xong: opened=${openedContainers}.`, { opened });
+    await sleep(retryDelayMs);
+    return opened;
+  };
+
+  const useRecoveryItem = async (kind: CraftRecoveryKind) => {
+    const itemCode = recoveryItemCode(kind, tierCode, settings);
+    if (!itemCode) return { ok: false, reason: "missing_recovery_item_code" };
+    onLog?.("WARN", `Craft thiếu ${kind === "spirit" ? "thần hồn/linh khí" : "thể lực"}, dùng ${itemCode} rồi thử lại.`, { recipeCode, itemCode, kind });
+    let used: any;
+    try {
+      used = await rpc(accessToken, "rpc_use_item", { p_character_id: characterId, p_item_code: itemCode });
+    } catch (err: any) {
+      used = err?.data || { ok: false, reason: err?.message || "use_item_error" };
+    }
+    const ok = used?.ok !== false;
+    usedItems.push({ itemCode, ok, raw: used });
+    if (!ok) onLog?.("WARN", `Dùng ${itemCode} thất bại: ${reasonOf(used) || "unknown"}.`, { used });
+    else onLog?.("SUCCESS", `Đã dùng ${itemCode}, chờ server cập nhật rồi craft lại.`, { used });
+    await sleep(retryDelayMs);
+    return used;
+  };
+
+  onLog?.("INFO", `Craft ${recipeCode} x${times} (${getCraftCategoryLabel(category)}).`, { recipeCode, times, category, tierCode });
+
+  try {
+    let analysis = await craftOnce();
+
+    if (analysis.status === "SUCCESS") {
+      onLog?.("SUCCESS", `Craft OK ${recipeCode}: success=${analysis.successCount}, fail=${analysis.failCount}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data });
+      return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, usedItems, openedContainers });
+    }
+
+    if (analysis.status === "RATE_FAILED") {
+      onLog?.("WARN", `Craft trượt do tỉ lệ ${recipeCode}: success=0, fail=${analysis.failCount}. Không pause, chờ vòng tiếp theo.`, { recipeCode, raw: analysis.data });
+      return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed", usedItems, openedContainers });
+    }
+
+    let reason = analysis.reason || "craft_no_success";
+
+    if (autoOpenContainers && isMaterialReason(reason)) {
+      await openContainers();
+      analysis = await craftOnce();
+      if (analysis.status === "SUCCESS") {
+        onLog?.("SUCCESS", `Craft OK sau khi mở rương ${recipeCode}: success=${analysis.successCount}, fail=${analysis.failCount}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data });
+        return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, recoveryKind: "material", recoveryAction: "open_containers", usedItems, openedContainers });
+      }
+      if (analysis.status === "RATE_FAILED") {
+        onLog?.("WARN", `Mở rương xong nhưng craft trượt do tỉ lệ ${recipeCode}; không pause.`, { recipeCode, raw: analysis.data });
+        return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed_after_open_containers", recoveryKind: "material", recoveryAction: "open_containers", usedItems, openedContainers });
+      }
+      reason = analysis.reason || reason;
+    }
+
+    if (autoUseRecoveryItems && (isStaminaReason(reason) || isSpiritReason(reason))) {
+      const kinds = recoveryKindsForReason(reason).filter(kind => kind === "stamina" || kind === "spirit");
+      for (const kind of kinds) {
+        if (shouldStop?.()) break;
+        const used = await useRecoveryItem(kind);
+        if (used?.ok === false) continue;
+        analysis = await craftOnce();
+        if (analysis.status === "SUCCESS") {
+          onLog?.("SUCCESS", `Craft OK sau khi hồi ${kind === "spirit" ? "thần hồn/linh khí" : "thể lực"} ${recipeCode}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data });
+          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, recoveryKind: kind, recoveryAction: "use_item", usedItems, openedContainers });
+        }
+        if (analysis.status === "RATE_FAILED") {
+          onLog?.("WARN", `Hồi ${kind === "spirit" ? "thần hồn/linh khí" : "thể lực"} xong nhưng craft trượt do tỉ lệ; không pause.`, { recipeCode, raw: analysis.data });
+          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed_after_recovery", recoveryKind: kind, recoveryAction: "use_item", usedItems, openedContainers });
+        }
+        reason = analysis.reason || reason;
+
+        if (autoOpenContainers && isMaterialReason(reason)) {
+          await openContainers();
+          analysis = await craftOnce();
+          if (analysis.status === "SUCCESS") {
+            onLog?.("SUCCESS", `Craft OK sau khi hồi và mở rương ${recipeCode}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data });
+            return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, recoveryKind: "material", recoveryAction: "use_item_then_open_containers", usedItems, openedContainers });
+          }
+          if (analysis.status === "RATE_FAILED") {
+            onLog?.("WARN", `Hồi/mở rương xong nhưng craft trượt do tỉ lệ; không pause.`, { recipeCode, raw: analysis.data });
+            return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed_after_recovery", recoveryKind: "material", recoveryAction: "use_item_then_open_containers", usedItems, openedContainers });
+          }
+          reason = analysis.reason || reason;
+        }
+      }
+    }
+
+    const recoveryKind: CraftRecoveryKind = isMaterialReason(reason) ? "material" : isSpiritReason(reason) ? "spirit" : isStaminaReason(reason) ? "stamina" : "unknown";
+    onLog?.("WARN", `Craft pause ${Math.ceil(pauseMs / 60000)} phút ${recipeCode}: ${reason}.`, { recipeCode, reason, raw: analysis.data, usedItems, openedContainers });
+    return summaryFromAnalysis({
+      analysis,
+      status: "PAUSED",
+      category,
+      tierCode,
+      recipeCode,
+      times,
+      nextDelayMs: pauseMs,
+      reason,
+      recoveryKind,
+      usedItems,
+      openedContainers,
+    });
+  } catch (error: any) {
+    const raw = error?.data;
+    const reason = reasonOf(raw) || String(error.message || "craft_error").toLowerCase();
+
+    // HTTP/RPC lỗi vẫn có thể là thiếu nguyên liệu/thể lực/thần hồn. Xử lý như response ok=false.
+    try {
+      if (autoOpenContainers && isMaterialReason(reason)) {
+        await openContainers();
+        const analysis = await craftOnce();
+        if (analysis.status === "SUCCESS" || analysis.status === "RATE_FAILED") {
+          const isRate = analysis.status === "RATE_FAILED";
+          onLog?.(isRate ? "WARN" : "SUCCESS", isRate ? `Mở rương xong nhưng craft trượt do tỉ lệ ${recipeCode}; không pause.` : `Craft OK sau khi mở rương ${recipeCode}.`, { recipeCode, raw: analysis.data });
+          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: isRate ? "craft_rate_failed_after_open_containers" : undefined, recoveryKind: "material", recoveryAction: "open_containers", usedItems, openedContainers });
+        }
+      }
+
+      if (autoUseRecoveryItems && (isStaminaReason(reason) || isSpiritReason(reason))) {
+        const fallbackAnalysis = analyzeCraftData(raw || { ok: false, reason });
+        for (const kind of recoveryKindsForReason(reason).filter(kind => kind === "stamina" || kind === "spirit")) {
+          const used = await useRecoveryItem(kind);
+          if (used?.ok === false) continue;
+          const analysis = await craftOnce();
+          if (analysis.status === "SUCCESS" || analysis.status === "RATE_FAILED") {
+            const isRate = analysis.status === "RATE_FAILED";
+            onLog?.(isRate ? "WARN" : "SUCCESS", isRate ? `Hồi ${kind} xong nhưng craft trượt do tỉ lệ; không pause.` : `Craft OK sau khi hồi ${kind} ${recipeCode}.`, { recipeCode, raw: analysis.data });
+            return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: isRate ? "craft_rate_failed_after_recovery" : undefined, recoveryKind: kind, recoveryAction: "use_item", usedItems, openedContainers });
+          }
+        }
+        onLog?.("WARN", `Craft pause ${Math.ceil(pauseMs / 60000)} phút ${recipeCode}: ${reason}.`, { recipeCode, reason, raw, usedItems });
+        return summaryFromAnalysis({ analysis: fallbackAnalysis, status: "PAUSED", category, tierCode, recipeCode, times, nextDelayMs: pauseMs, reason, recoveryKind: isSpiritReason(reason) ? "spirit" : "stamina", usedItems, openedContainers });
+      }
+    } catch (recoverError: any) {
+      onLog?.("WARN", `Phục hồi Craft thất bại ${recipeCode}: ${recoverError.message || "unknown"}.`, recoverError?.data || { message: recoverError.message });
+    }
+
+    onLog?.("ERROR", `Craft lỗi ${recipeCode}: ${error.message || "unknown"}.`, raw || { message: error.message });
+    return {
+      status: "ERROR",
+      category,
+      tierCode,
+      recipeCode,
+      times,
+      successCount: 0,
+      failCount: 1,
+      rewards: [],
+      nextDelayMs: pauseMs,
+      reason: error.message || "craft_error",
+      recoveryKind: isMaterialReason(reason) ? "material" : isSpiritReason(reason) ? "spirit" : isStaminaReason(reason) ? "stamina" : "unknown",
+      usedItems,
+      openedContainers,
+      raw,
+    };
+  }
+};

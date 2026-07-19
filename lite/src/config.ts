@@ -1,0 +1,135 @@
+import path from "path";
+
+const num = (v: string | undefined, fallback: number) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+export const config = {
+  port: num(process.env.PORT, 3000),
+  apiKey: String(process.env.LITE_API_KEY || "").trim(),
+  selfPingMinutes: Math.max(0, num(process.env.SELF_PING_MINUTES, 10)),
+  publicUrl: String(process.env.PUBLIC_URL || "").replace(/\/$/, ""),
+  maxLogs: Math.max(20, num(process.env.MAX_LOGS_PER_ACCOUNT, 80)),
+  minFarmDelayMs: Math.max(300, num(process.env.MIN_FARM_DELAY_MS, 800)),
+  /** Render free disk mất khi redeploy — có thể trỏ volume path nếu sau này gắn disk */
+  dataDir: process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : path.join(process.cwd(), "data"),
+  accountsFile: process.env.DATA_DIR
+    ? path.join(path.resolve(process.env.DATA_DIR), "accounts.json")
+    : path.join(process.cwd(), "data", "accounts.json"),
+  gameBaseUrl: "https://jeassefmlprfnlszgvbs.supabase.co",
+  gameApiKey: "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB",
+};
+
+export type FeatureId =
+  | "farm"
+  | "buff"
+  | "claim_exp"
+  | "world_boss"
+  | "breakthrough"
+  | "achievement"
+  | "mail"
+  | "maze"
+  | "auto_equip"
+  | "craft"
+  | "body_cult"
+  | "onboarding_claim"
+  | "world_cup_checkin";
+
+export const FEATURE_LABELS: Record<FeatureId, string> = {
+  farm: "Farm quái",
+  buff: "Buff",
+  claim_exp: "Claim EXP",
+  world_boss: "World Boss",
+  breakthrough: "Đột phá",
+  achievement: "Thành tựu",
+  mail: "Nhận mail",
+  maze: "Mê cung",
+  auto_equip: "Auto trang bị",
+  craft: "Chế tạo",
+  body_cult: "Luyện thể",
+  onboarding_claim: "Onboarding",
+  world_cup_checkin: "World Cup checkin",
+};
+
+/** Setting mặc định tối ưu treo Render free */
+export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>> => ({
+  farm: {
+    mode: "boss",
+    farm_realm_tier_override: "auto",
+    from_channel: 3,
+    to_channel: 6,
+    priority: "boss_elite",
+    boss_priority_mode: true,
+    boss_priority_fast: true,
+    smart_rebirth_farm: true,
+    attack_delay_ms: 5000,
+    empty_scan_delay_ms: 1000,
+    skill_slot: 0,
+    farm_log_mode: "summary",
+    summary_log_interval_seconds: 1800,
+    max_available_base_codes: 2,
+    auto_use_mp_potion: true,
+    mp_potion_item_code: "pill_lk_mp",
+    auto_buy_mp_potion: false,
+    smart_stop_when_quest_done: false,
+    mob_cache_max_age_ms: 3000,
+    no_mob_before_rotate: 1,
+  },
+  buff: {
+    interval_seconds: 300,
+    enable_formation_buff: true,
+    formation_item_code: "formation_lk_dragon",
+    enable_talisman_buff: true,
+    talisman_item_code: "talisman_lk_crit",
+  },
+  claim_exp: { interval_minutes: 15 },
+  world_boss: {
+    tiers: "lk,tc,kd",
+    check_interval_minutes: 10,
+    max_attacks_per_check: 30,
+    attack_delay_ms: 1500,
+    auto_claim: true,
+  },
+  breakthrough: {
+    interval_seconds: 90,
+    full_exp_threshold_percent: 99.99,
+    pill_item_codes: "pill_lk_minor\npill_lk_major",
+    auto_buy_pill: true,
+    shop_code: "alchemy",
+    buy_qty: 1,
+    pause_on_fail_minutes: 30,
+  },
+  achievement: { interval_minutes: 60 },
+  mail: { claim_mail: true },
+  maze: {
+    tier: 1,
+    run_count: 1,
+    auto_boss: true,
+    auto_claim_final: true,
+    skip_monster: true,
+    skip_trap: true,
+    skip_fire: true,
+    skip_merchant: true,
+    max_passes: 5,
+  },
+  auto_equip: {
+    interval_seconds: 600,
+    weight_preset: "highest_stats",
+    auto_equip: true,
+    allow_zero_score: true,
+  },
+  craft: {
+    mode: "manual",
+    category: "alchemy",
+    tier: "lk",
+    recipe_code: "",
+    times_per_run: 1,
+    interval_seconds: 60,
+  },
+  body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
+  onboarding_claim: {},
+  world_cup_checkin: { reset_at_vn_midnight: true },
+});

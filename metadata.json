@@ -1,0 +1,6 @@
+{
+  "name": "Auto Game Dashboard",
+  "description": "Giao diện quản lý đa tài khoản và cấu hình tính năng auto game, mô phỏng bố cục 360auto.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

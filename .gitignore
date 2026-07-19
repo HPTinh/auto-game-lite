@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+*.tsbuildinfo
+
+# Lite runtime data (accounts, tokens)
+lite/data/
+data/
+
+# Local caches / large archives (optional)
+*.zip

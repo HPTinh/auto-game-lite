@@ -1,0 +1,27 @@
+# Deploy bản LITE lên Render free
+# Dashboard Render → New → Blueprint → chọn repo chứa file này
+# Root directory khi deploy thủ công: để trống (repo root = Auto Best)
+# Build/Start dùng thư mục lite/
+
+services:
+  - type: web
+    name: auto-game-lite
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: cd lite && npm install
+    startCommand: cd lite && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LITE_API_KEY
+        generateValue: true
+      - key: SELF_PING_MINUTES
+        value: "10"
+      - key: PUBLIC_URL
+        sync: false
+      - key: MAX_LOGS_PER_ACCOUNT
+        value: "60"
+      - key: MIN_FARM_DELAY_MS
+        value: "800"
