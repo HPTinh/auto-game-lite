@@ -3,6 +3,9 @@ import { store } from "./store";
 
 const pickFirst = (...values: any[]) => values.find((v) => v !== undefined && v !== null && v !== "");
 
+const isPlainObject = (value: any): value is Record<string, any> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
 const realmLabelMap: Record<string, string> = {
   luyen_khi: "Luyện Khí",
   truc_co: "Trúc Cơ",
@@ -13,6 +16,148 @@ const realmLabelMap: Record<string, string> = {
   hop_the: "Hợp Thể",
   dai_thua: "Đại Thừa",
 };
+
+function getHomeFinalStats(snapshot: any): Record<string, any> {
+  const candidates = [
+    snapshot?.stats?.final,
+    snapshot?.final,
+    snapshot?.final_stats,
+    snapshot?.finalStats,
+    snapshot?.stats?.final_stats,
+    snapshot?.stats?.finalStats,
+  ];
+  return (candidates.find(isPlainObject) || {}) as Record<string, any>;
+}
+
+function pickCombatStat(source: any, stat: "atk" | "def"): any {
+  if (!source || typeof source !== "object") return undefined;
+  if (stat === "atk") {
+    return pickFirst(
+      source?.atk,
+      source?.attack,
+      source?.attack_power,
+      source?.attackPower,
+      source?.total_atk,
+      source?.totalAtk,
+      source?.final_atk,
+      source?.finalAtk,
+      source?.battle_atk,
+      source?.battleAtk,
+      source?.stats?.atk,
+      source?.stats?.attack,
+      source?.stats?.attack_power,
+      source?.combat?.atk,
+      source?.combat?.attack,
+      source?.combat_stats?.atk,
+      source?.combatStats?.atk,
+      source?.attributes?.atk,
+      source?.attributes?.attack
+    );
+  }
+  return pickFirst(
+    source?.def,
+    source?.defense,
+    source?.defence,
+    source?.defense_power,
+    source?.defensePower,
+    source?.total_def,
+    source?.totalDef,
+    source?.final_def,
+    source?.finalDef,
+    source?.battle_def,
+    source?.battleDef,
+    source?.stats?.def,
+    source?.stats?.defense,
+    source?.stats?.defence,
+    source?.combat?.def,
+    source?.combat?.defense,
+    source?.combat_stats?.def,
+    source?.combatStats?.def,
+    source?.attributes?.def,
+    source?.attributes?.defense
+  );
+}
+
+function extractCombatStats(snapshot: any, character: any = {}, fallback: { atk?: any; def?: any } = {}) {
+  const finalStats = getHomeFinalStats(snapshot);
+  const atk = pickFirst(
+    finalStats?.atk,
+    finalStats?.attack,
+    finalStats?.attack_power,
+    pickCombatStat(finalStats, "atk"),
+    pickCombatStat(character, "atk"),
+    pickCombatStat(snapshot?.character, "atk"),
+    pickCombatStat(snapshot?.character_info, "atk"),
+    pickCombatStat(snapshot?.profile, "atk"),
+    fallback.atk
+  );
+  const def = pickFirst(
+    finalStats?.def,
+    finalStats?.defense,
+    finalStats?.defence,
+    finalStats?.defense_power,
+    pickCombatStat(finalStats, "def"),
+    pickCombatStat(character, "def"),
+    pickCombatStat(snapshot?.character, "def"),
+    pickCombatStat(snapshot?.character_info, "def"),
+    pickCombatStat(snapshot?.profile, "def"),
+    fallback.def
+  );
+  return { atk, def };
+}
+
+/** Sức mạnh / combat power — quét nhiều field giống game */
+function extractPower(snapshot: any, character: any = {}, fallback?: any): any {
+  const finalStats = getHomeFinalStats(snapshot);
+  const base = snapshot?.stats?.base || {};
+  return pickFirst(
+    snapshot?.power_rating,
+    snapshot?.powerRating,
+    snapshot?.combat_power,
+    snapshot?.combatPower,
+    snapshot?.battle_power,
+    snapshot?.battlePower,
+    snapshot?.total_power,
+    snapshot?.totalPower,
+    snapshot?.force,
+    snapshot?.cp,
+    finalStats?.power,
+    finalStats?.power_rating,
+    finalStats?.combat_power,
+    finalStats?.battle_power,
+    base?.power,
+    base?.power_rating,
+    base?.combat_power,
+    character?.power_rating,
+    character?.powerRating,
+    character?.combat_power,
+    character?.battle_power,
+    character?.power,
+    snapshot?.character?.power_rating,
+    snapshot?.character?.combat_power,
+    snapshot?.profile?.power_rating,
+    fallback
+  );
+}
+
+function extractVip(snapshot: any, character: any = {}, fallback?: any): any {
+  return pickFirst(
+    snapshot?.vip_level,
+    snapshot?.vip,
+    snapshot?.vipLevel,
+    character?.vip_level,
+    character?.vip,
+    character?.vipLevel,
+    snapshot?.account?.vip_level,
+    snapshot?.account?.vip,
+    snapshot?.profile?.vip_level,
+    snapshot?.profile?.vip,
+    snapshot?.stats?.vip_level,
+    snapshot?.stats?.vip,
+    snapshot?.user?.vip_level,
+    fallback
+  );
+}
 
 function parseJwtPayload(token?: string): any | null {
   if (!token) return null;
@@ -176,16 +321,26 @@ export async function refreshAccountInfo(accountId: string) {
         acc.gold,
         0
       );
-      patch.level = pickFirst(snapChar?.level_reach, snapChar?.level, snapData?.level, acc.level);
-      patch.vipLevel = pickFirst(snapData?.vip_level, snapData?.vip, snapChar?.vip_level, snapChar?.vip, acc.vipLevel);
-      patch.hp = pickFirst(snapChar?.hp, snapData?.hp, acc.hp);
+      patch.level = pickFirst(
+        snapChar?.level_reach,
+        snapChar?.level,
+        snapChar?.rank,
+        snapData?.level,
+        snapData?.level_reach,
+        acc.level
+      );
+      // VIP — nhiều path như bản local
+      patch.vipLevel = extractVip(snapData, snapChar, acc.vipLevel);
+      patch.hp = pickFirst(snapChar?.hp, snapData?.hp, snapData?.current_hp, acc.hp);
       patch.maxHp = pickFirst(snapChar?.max_hp, snapData?.max_hp, acc.maxHp);
-      patch.mp = pickFirst(snapChar?.mp, snapData?.mp, acc.mp);
+      patch.mp = pickFirst(snapChar?.mp, snapData?.mp, snapData?.current_mp, acc.mp);
       patch.maxMp = pickFirst(snapChar?.max_mp, snapData?.max_mp, acc.maxMp);
 
-      const finalStats = snapData?.stats?.final || snapData?.final || {};
-      patch.atk = pickFirst(finalStats?.atk, finalStats?.attack, snapChar?.atk, acc.atk);
-      patch.def = pickFirst(finalStats?.def, finalStats?.defense, snapChar?.def, acc.def);
+      // ATK / DEF / Power (sức mạnh)
+      const combat = extractCombatStats(snapData, snapChar, { atk: acc.atk, def: acc.def });
+      patch.atk = combat.atk;
+      patch.def = combat.def;
+      patch.power = extractPower(snapData, snapChar, acc.power);
 
       const realmName = pickFirst(snapChar?.realm_name, snapData?.stats?.base?.realm_name, snapData?.realm_name);
       const realmCode = pickFirst(snapChar?.realm_code, snapData?.realm_code, acc.realmCode);
@@ -193,7 +348,7 @@ export async function refreshAccountInfo(accountId: string) {
       patch.realmLabel = realmName || (realmCode ? realmLabelMap[String(realmCode)] || realmCode : acc.realmLabel);
     }
 
-    // rank
+    // rank + dao cơ + score
     try {
       const rank = await gameFetch(`${config.gameBaseUrl}/rest/v1/rpc/rpc_get_rebirth_quest_progress`, {
         method: "POST",
@@ -211,10 +366,16 @@ export async function refreshAccountInfo(accountId: string) {
         patch.rankLabel = pickFirst(q?.rank_label, rank.data?.rank_label, acc.rankLabel);
         patch.totalScore = pickFirst(q?.total_score, rank.data?.total_score, acc.totalScore);
         patch.realmCode = pickFirst(rank.data?.realm_code, patch.realmCode, acc.realmCode);
-        if (rank.data?.tokens != null) {
-          /* ignore tokens detail to save RAM */
-        }
-        // EXP
+        patch.daoCoTotal = pickFirst(rank.data?.dao_co?.total, rank.data?.dao_co_total, acc.daoCoTotal);
+        // VIP fallback từ rank response nếu snapshot thiếu
+        patch.vipLevel = pickFirst(patch.vipLevel, rank.data?.vip_level, rank.data?.vip, acc.vipLevel);
+        patch.power = pickFirst(
+          patch.power,
+          rank.data?.power_rating,
+          rank.data?.combat_power,
+          rank.data?.power,
+          acc.power
+        );
         patch.expCurrent = pickFirst(
           rank.data?.exp_current,
           rank.data?.current_exp,
@@ -229,12 +390,17 @@ export async function refreshAccountInfo(accountId: string) {
 
     if (!acc.running) patch.state = "READY";
     store.update(accountId, patch);
-    // chỉ log 1 dòng khi check thủ công / login — rate-limit trong store dedupe
+
+    const fmt = (x: any) => {
+      if (x === undefined || x === null || x === "") return "?";
+      const n = Number(x);
+      return Number.isFinite(n) ? n.toLocaleString("en-US") : String(x);
+    };
     store.addLog(
       accountId,
       "INFO",
       "SUCCESS",
-      `OK · ${characterNameOr(accountId, patch)} · Lv ${patch.level ?? "?"} · Rank ${patch.rankLabel ?? "?"} · LS ${patch.spiritStones ?? "?"}`
+      `OK · ${characterNameOr(accountId, patch)} · VIP ${patch.vipLevel ?? "?"} · Power ${fmt(patch.power)} · ATK ${fmt(patch.atk)} · DEF ${fmt(patch.def)} · Rank ${patch.rankLabel ?? "?"} · LS ${fmt(patch.spiritStones)}`
     );
     return true;
   } catch (e: any) {

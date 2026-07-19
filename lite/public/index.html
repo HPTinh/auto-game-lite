@@ -300,7 +300,8 @@
             <td>
               <div class="name">${esc(acc.characterName || acc.email)}</div>
               <div class="mu" style="font-size:11px">${esc(acc.email)}</div>
-              <div class="mu" style="font-size:11px">Lv ${v(acc.level)} · Rank ${v(acc.rankLabel)} · LS ${v(acc.spiritStones)}</div>
+              <div class="mu" style="font-size:11px">Lv ${v(acc.level)} · VIP ${v(acc.vipLevel)} · Rank ${v(acc.rankLabel)}</div>
+              <div class="mu" style="font-size:11px">Power ${fmtNum(acc.power)} · ATK ${fmtNum(acc.atk)} · DEF ${fmtNum(acc.def)} · LS ${fmtNum(acc.spiritStones)}</div>
             </td>
             <td>
               <div class="feats">
@@ -344,6 +345,11 @@
 
     function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]))}
     function v(x){return (x===undefined||x===null||x==="")?"?":x}
+    function fmtNum(x){
+      if (x===undefined||x===null||x==="") return "?";
+      const n=Number(x);
+      return Number.isFinite(n)?n.toLocaleString("en-US"):String(x);
+    }
 
     function openModal(accId, featureId) {
       const acc = accounts.find(a => a.id === accId);

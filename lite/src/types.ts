@@ -45,6 +45,9 @@ export interface Account {
   vipLevel?: number | string;
   gold?: number;
   spiritStones?: number;
+  /** Sức mạnh / combat power */
+  power?: number | string;
+  daoCoTotal?: number | string;
   hp?: number | string;
   maxHp?: number | string;
   mp?: number | string;
@@ -84,6 +87,8 @@ export interface PublicAccount {
   vipLevel?: number | string;
   gold?: number;
   spiritStones?: number;
+  power?: number | string;
+  daoCoTotal?: number | string;
   expCurrent?: number | string;
   expMax?: number | string;
   atk?: number | string;

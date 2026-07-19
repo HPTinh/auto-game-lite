@@ -139,6 +139,8 @@ class Store {
       vipLevel: acc.vipLevel,
       gold: acc.gold,
       spiritStones: acc.spiritStones,
+      power: acc.power,
+      daoCoTotal: acc.daoCoTotal,
       expCurrent: acc.expCurrent,
       expMax: acc.expMax,
       atk: acc.atk,
