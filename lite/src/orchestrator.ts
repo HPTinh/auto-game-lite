@@ -15,9 +15,84 @@ import {
   runMailClaimAll,
   runMazeAuto,
   runOnboardingClaimAuto,
+  runPvpAuto,
   runWorldBossAuto,
   runWorldCupCheckinAuto,
 } from "./engines";
+
+/** Map UI farm settings → engine farmEngine */
+function buildFarmEngineSettings(settings: Record<string, any>): Record<string, any> {
+  const multi = settings.multi_channel === true || settings.multi_channel === "true";
+  const channel = Math.max(1, Math.floor(Number(settings.channel || settings.from_channel || 3)) || 3);
+  const from = multi
+    ? Math.max(1, Math.floor(Number(settings.from_channel || channel)) || channel)
+    : channel;
+  const to = multi
+    ? Math.max(from, Math.floor(Number(settings.to_channel || from)) || from)
+    : channel;
+
+  // Ưu tiên mob tinh gọn
+  const order = String(settings.target_order || settings.priority || "boss_elite").toLowerCase();
+  let mode = "boss";
+  let priority = "boss_elite";
+  let boss_priority_mode = true;
+  let boss_priority_fast = true;
+  let absolute_boss_only = false;
+
+  if (order === "boss" || order === "boss_only") {
+    mode = "boss";
+    priority = "boss";
+    boss_priority_mode = true;
+    boss_priority_fast = true;
+    absolute_boss_only = true;
+  } else if (order === "boss_elite" || order === "boss_elite_fast") {
+    mode = "boss";
+    priority = "boss_elite";
+    boss_priority_mode = true;
+    boss_priority_fast = true;
+  } else if (order === "boss_elite_normal" || order === "ben") {
+    mode = "all";
+    priority = "boss_elite_normal";
+    boss_priority_mode = false;
+    boss_priority_fast = false;
+  } else if (order === "elite") {
+    mode = "elite";
+    priority = "elite";
+    boss_priority_mode = false;
+    boss_priority_fast = false;
+  } else if (order === "normal") {
+    mode = "normal";
+    priority = "normal";
+    boss_priority_mode = false;
+    boss_priority_fast = false;
+  } else if (order === "elite_normal") {
+    mode = "all";
+    priority = "elite_normal";
+    boss_priority_mode = false;
+    boss_priority_fast = false;
+  } else if (order === "smart") {
+    mode = "smart";
+    priority = "boss_elite_normal";
+    boss_priority_mode = false;
+    boss_priority_fast = false;
+  }
+
+  return {
+    ...settings,
+    multi_channel: multi,
+    channel,
+    from_channel: from,
+    to_channel: to,
+    mode,
+    priority,
+    boss_priority_mode,
+    boss_priority_fast,
+    absolute_boss_only,
+    farm_log_mode: "summary",
+    summary_log_interval_seconds: Math.max(1800, Number(settings.summary_log_interval_seconds || 3600)),
+    smart_rebirth_farm: settings.smart_rebirth_farm !== false,
+  };
+}
 
 type TimerMap = Map<string, NodeJS.Timeout>;
 
@@ -95,7 +170,7 @@ function sysLog(accountId: string, module: string, level: any, message: string, 
 }
 
 /** Tóm tắt 1 dòng sau mỗi vòng farm — thay cho spam engine */
-function farmCycleSummary(result: any): string {
+function farmCycleSummary(result: any, farmSettings?: Record<string, any>): string {
   const atk = result?.attackCount ?? 0;
   const kill = result?.killedCount ?? result?.observedKilledCount ?? 0;
   const boss = result?.killedBossCount ?? 0;
@@ -103,7 +178,10 @@ function farmCycleSummary(result: any): string {
   const st = result?.status || "?";
   const mode = result?.effectiveMode || result?.mode || "?";
   const wait = Math.round(Number(result?.nextDelayMs || 0) / 1000);
-  return `Farm ${st} · ${mode} · atk ${atk} · kill ${kill} (B${boss}/E${elite}) · next ${wait}s`;
+  const ch = farmSettings?.multi_channel
+    ? `c${farmSettings.from_channel}-${farmSettings.to_channel}`
+    : `c${farmSettings?.channel ?? farmSettings?.from_channel ?? "?"}`;
+  return `Farm ${st} · ${mode} · ${ch} · atk ${atk} · kill ${kill} (B${boss}/E${elite}) · next ${wait}s`;
 }
 
 async function runFeatureOnce(accountId: string, featureId: FeatureId, token: number) {
@@ -132,24 +210,16 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     let errMsg = "";
 
     if (featureId === "farm") {
+      const farmSettings = buildFarmEngineSettings(settings);
       const result = await runFarmAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
-        settings: {
-          ...settings,
-          mode: settings.boss_priority_mode !== false ? "boss" : settings.mode,
-          boss_priority_mode: settings.boss_priority_mode !== false,
-          boss_priority_fast: settings.boss_priority_fast !== false,
-          smart_rebirth_farm: settings.smart_rebirth_farm !== false,
-          farm_log_mode: "summary",
-          // engine summary mặc định dài — lite tự log 1 dòng
-          summary_log_interval_seconds: Math.max(1800, Number(settings.summary_log_interval_seconds || 3600)),
-        },
+        settings: farmSettings,
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "FARM"),
       });
       nextDelayMs = Math.max(config.minFarmDelayMs, Number(result.nextDelayMs || settings.empty_scan_delay_ms || 1000));
-      const line = farmCycleSummary(result);
+      const line = farmCycleSummary(result, farmSettings);
       if (result.status === "ERROR") {
         status = "error";
         errMsg = (result.errors || []).slice(0, 1).join("; ") || "Farm error";
@@ -300,6 +370,39 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       sysLog(accountId, "MAZE", "SUCCESS", `Mê cung tier ${tier}: ${okRuns}/${runCount} lượt`, true);
       nextDelayMs = Math.max(60_000, Number(settings.repeat_interval_minutes || 60) * 60_000);
       if (settings.stop_after_batch === true) status = "done";
+    } else if (featureId === "pvp") {
+      const huntList = Array.isArray(settings.hunt_list) ? settings.hunt_list : [];
+      const result = await runPvpAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        huntList,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "PVP"),
+      });
+      // lưu hunt list lại vào feature settings
+      store.setFeature(accountId, "pvp", {
+        settings: {
+          ...settings,
+          hunt_list: result.huntList || huntList,
+        },
+      });
+      nextDelayMs = Math.max(60_000, Number(settings.interval_minutes || 30) * 60_000);
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "PVP error";
+      } else if (result.status === "NO_ATTACKS") {
+        // hết lượt — chờ lâu hơn
+        nextDelayMs = Math.max(nextDelayMs, 60 * 60_000);
+        sysLog(accountId, "PVP", "WARN", `Hết lượt PVP · ${result.wins}W/${result.losses}L`);
+      } else {
+        sysLog(
+          accountId,
+          "PVP",
+          "INFO",
+          `PVP ${result.wins}W/${result.losses}L · hunt ${result.huntCount} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      }
     } else if (featureId === "auto_equip") {
       await runAutoEquipCheck({
         characterId: runtime.characterId,

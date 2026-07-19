@@ -120,6 +120,10 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     return lv === "WARN";
   }
 
+  if (module === "PVP") {
+    return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /xong|win|loss|hết lượt/i.test(text);
+  }
+
   if (module === "MAZE" || module === "CRAFT" || module === "AUTO_EQUIP") {
     return lv !== "INFO" || /bắt đầu|xong|hoàn tất|thành công|fail|lỗi/i.test(text);
   }

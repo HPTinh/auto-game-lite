@@ -33,6 +33,7 @@ export type FeatureId =
   | "achievement"
   | "mail"
   | "maze"
+  | "pvp"
   | "auto_equip"
   | "craft"
   | "body_cult"
@@ -48,6 +49,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   achievement: "Thành tựu",
   mail: "Nhận mail",
   maze: "Mê cung",
+  pvp: "Auto PVP",
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
@@ -58,17 +60,17 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
 /** Setting mặc định tối ưu treo Render free */
 export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>> => ({
   farm: {
-    mode: "boss",
-    farm_realm_tier_override: "auto",
+    // Đơn kênh mặc định — tick multi_channel để farm dải kênh
+    multi_channel: false,
+    channel: 3,
     from_channel: 3,
     to_channel: 6,
-    priority: "boss_elite",
-    boss_priority_mode: true,
-    boss_priority_fast: true,
+    // boss_elite | boss_elite_normal | boss | elite | normal | elite_normal
+    target_order: "boss_elite",
+    farm_realm_tier_override: "auto",
     smart_rebirth_farm: true,
     attack_delay_ms: 5000,
     empty_scan_delay_ms: 1000,
-    skill_slot: 0,
     farm_log_mode: "summary",
     summary_log_interval_seconds: 1800,
     max_available_base_codes: 2,
@@ -78,6 +80,16 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     smart_stop_when_quest_done: false,
     mob_cache_max_age_ms: 3000,
     no_mob_before_rotate: 1,
+  },
+  pvp: {
+    max_attacks: 10,
+    delay_ms: 1500,
+    interval_minutes: 30,
+    hunt_on_win: true,
+    prefer_hunt: true,
+    prefer_weaker: true,
+    max_hunt: 15,
+    hunt_list: [],
   },
   buff: {
     interval_seconds: 300,

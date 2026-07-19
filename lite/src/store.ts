@@ -9,7 +9,7 @@ const ensureDir = (dir: string) => {
 
 const uid = () => `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-function defaultFeatures(enabled: FeatureId[] = ["farm", "buff", "claim_exp", "breakthrough", "world_boss", "achievement", "mail"]): Account["features"] {
+function defaultFeatures(enabled: FeatureId[] = ["farm", "buff", "claim_exp", "breakthrough", "world_boss", "achievement", "mail", "pvp"]): Account["features"] {
   const defaults = defaultFeatureSettings();
   const features: Account["features"] = {};
   (Object.keys(defaults) as FeatureId[]).forEach((id) => {
@@ -44,6 +44,20 @@ class Store {
         acc.state = acc.state === "ERROR" ? "ERROR" : acc.wantRunning ? "IDLE" : "IDLE";
         acc.activeTask = undefined;
         if (!acc.features) acc.features = defaultFeatures();
+        else {
+          // merge feature mới (pvp, setting farm mới) mà không ghi đè enabled user đã chọn
+          const defaults = defaultFeatures([]);
+          for (const [fid, def] of Object.entries(defaults)) {
+            if (!acc.features[fid as FeatureId]) {
+              acc.features[fid as FeatureId] = def;
+            } else {
+              acc.features[fid as FeatureId]!.settings = {
+                ...def.settings,
+                ...(acc.features[fid as FeatureId]!.settings || {}),
+              };
+            }
+          }
+        }
         if (!Array.isArray(acc.logs)) acc.logs = [];
         this.accounts.set(acc.id, acc);
       }

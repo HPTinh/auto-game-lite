@@ -100,27 +100,38 @@
 
   <script>
     const FEATURES = [
-      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze",
+      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp",
       "auto_equip","craft","body_cult","onboarding_claim","world_cup_checkin"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
-      achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", auto_equip:"Equip", craft:"Craft",
+      achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", auto_equip:"Equip", craft:"Craft",
       body_cult:"Luyện thể", onboarding_claim:"Onboard", world_cup_checkin:"WC"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
 
     const FIELDS = {
       farm: [
-        {k:"mode",l:"Mode",t:"select",o:["boss","smart","elite","all","normal"]},
-        {k:"farm_realm_tier_override",l:"Map",t:"select",o:["auto","lk","tc","kd","na","ht","lh"]},
-        {k:"from_channel",l:"Kênh từ",t:"number",min:1},
-        {k:"to_channel",l:"Kênh đến",t:"number",min:1},
-        {k:"attack_delay_ms",l:"Delay ms",t:"number",min:500},
-        {k:"boss_priority_mode",l:"Ưu tiên Boss",t:"bool"},
-        {k:"boss_priority_fast",l:"Boss nhanh",t:"bool"},
+        {k:"target_order",l:"Ưu tiên đánh",t:"select",o:[
+          "boss_elite","boss_elite_normal","boss","elite","normal","elite_normal","smart"
+        ], hint:"boss→elite | +normal | chỉ boss | elite | normal | elite→normal | smart quest"},
+        {k:"multi_channel",l:"Farm đa kênh",t:"bool"},
+        {k:"channel",l:"Kênh (đơn)",t:"number",min:1,max:99},
+        {k:"from_channel",l:"Kênh từ (đa)",t:"number",min:1,max:99},
+        {k:"to_channel",l:"Kênh đến (đa)",t:"number",min:1,max:99},
+        {k:"farm_realm_tier_override",l:"Map / cảnh giới",t:"select",o:["auto","lk","tc","kd","na","ht","lh"]},
+        {k:"smart_rebirth_farm",l:"Theo nhiệm vụ trùng sinh",t:"bool"},
         {k:"auto_use_mp_potion",l:"Uống MP",t:"bool"},
         {k:"mp_potion_item_code",l:"Mã bình MP",t:"text"},
+      ],
+      pvp: [
+        {k:"max_attacks",l:"Số trận / lần chạy",t:"number",min:1,max:50},
+        {k:"interval_minutes",l:"Lặp sau (phút)",t:"number",min:5},
+        {k:"delay_ms",l:"Delay giữa trận (ms)",t:"number",min:400},
+        {k:"hunt_on_win",l:"Thắng → lưu ID bem dí",t:"bool"},
+        {k:"prefer_hunt",l:"Ưu tiên list bem dí",t:"bool"},
+        {k:"prefer_weaker",l:"Ưu tiên địch yếu hơn",t:"bool"},
+        {k:"max_hunt",l:"Tối đa ID hunt",t:"number",min:1,max:50},
       ],
       maze: [
         {k:"tier",l:"Bậc (1-6)",t:"number",min:1,max:6},
@@ -288,7 +299,16 @@
         return `<div class="f chk"><input type="checkbox" data-k="${f.k}" ${on?"checked":""}/><label>${esc(f.l)}</label></div>`;
       }
       if (f.t === "select") {
-        return `<div class="f"><label>${esc(f.l)}</label><select data-k="${f.k}">${(f.o||[]).map(o=>`<option value="${esc(o)}" ${String(val)===String(o)?"selected":""}>${esc(o)}</option>`).join("")}</select></div>`;
+        const labels = {
+          boss_elite: "Boss → Elite",
+          boss_elite_normal: "Boss → Elite → Normal",
+          boss: "Chỉ Boss",
+          elite: "Chỉ Elite",
+          normal: "Chỉ Normal",
+          elite_normal: "Elite → Normal",
+          smart: "Smart (nhiệm vụ)",
+        };
+        return `<div class="f"><label>${esc(f.l)}</label><select data-k="${f.k}">${(f.o||[]).map(o=>`<option value="${esc(o)}" ${String(val)===String(o)?"selected":""}>${esc(labels[o]||o)}</option>`).join("")}</select>${f.hint?`<div class="mu" style="font-size:10px;margin-top:2px">${esc(f.hint)}</div>`:""}</div>`;
       }
       if (f.t === "textarea") {
         return `<div class="f"><label>${esc(f.l)}</label><textarea rows="2" data-k="${f.k}">${esc(val??"")}</textarea></div>`;
