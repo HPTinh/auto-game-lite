@@ -228,7 +228,9 @@ function deepFindNumber(obj: any, includes: string[], excludes: string[] = []): 
 }
 
 function extractNextCheckMs(data: any, fallbackMs?: number) {
-  const directMs = deepFindNumber(data, ["next_check_ms", "nextcheckms", "wait_ms", "cooldown_ms", "respawn_ms"], []);
+  // Chỉ dùng cho respawn/claim — KHÔNG dùng cho delay giữa 2 đòn attack
+  const directMs = deepFindNumber(data, ["next_check_ms", "nextcheckms", "wait_ms", "respawn_ms"], []);
+  // bỏ cooldown_ms — tránh nhầm CD đòn (3s) thành chờ tối thiểu 60s
   if (directMs !== null && directMs > 0) return Math.max(60_000, directMs);
 
   const seconds = deepFindNumber(data, [
@@ -547,19 +549,25 @@ function pickTiersToFight(
   return { fight, skipped };
 }
 
-/** Cooldown giữa 2 đòn từ response (game: cooldown_sec=3 → 3000ms) + buffer chống FAIL */
+/**
+ * Cooldown giữa 2 đòn attack (khi boss còn sống).
+ * Game: cooldown_sec / atk_speed_sec ≈ 3.
+ * BUG cũ: đọc nhầm field `cooldown` (có thể là số lớn) ×1000 → "next 2p".
+ * Chỉ tin *_sec, clamp 2–5 giây.
+ */
 function attackCooldownMs(attack: any, fallbackMs: number): number {
-  const cool = Number(attack?.cooldown_sec);
-  const speed = Number(attack?.atk_speed_sec);
-  let sec = 0;
-  if (Number.isFinite(cool) && cool > 0) sec = cool;
-  else if (Number.isFinite(speed) && speed > 0) sec = speed;
-  else {
-    const cd = Number(attack?.cooldown ?? attack?.atk_speed);
-    if (Number.isFinite(cd) && cd > 0) sec = cd;
+  let sec = Number(attack?.cooldown_sec);
+  if (!Number.isFinite(sec) || sec <= 0) sec = Number(attack?.atk_speed_sec);
+  if (!Number.isFinite(sec) || sec <= 0) {
+    // fallback ms → đổi ra giây
+    const fb = Number(fallbackMs);
+    sec = Number.isFinite(fb) && fb >= 500 ? fb / 1000 : 3;
   }
-  if (sec > 0) return Math.max(500, Math.round(sec * 1000) + CD_BUFFER_MS);
-  return Math.max(500, (fallbackMs || 3000) + CD_BUFFER_MS);
+  // Nếu lỡ nhận ms (vd 3000) thay vì giây
+  if (sec > 60) sec = sec / 1000;
+  // Attack cycle chỉ 2–5s — không bao giờ 2 phút
+  sec = Math.min(5, Math.max(2, sec));
+  return Math.round(sec * 1000) + CD_BUFFER_MS;
 }
 
 function isBossKilledByAttack(attack: any): boolean {
@@ -903,13 +911,16 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
 
     summary.tierResults.push(tierResult);
     summary.status = "DONE";
-    summary.nextCheckMs = Math.max(hitDelayMs, lastPeriodMs);
-    summary.nextCheckReason = "tick_continue";
+    // Boss còn sống: luôn ~3s (clamp), không bao giờ 2 phút
+    const nextAtk = Math.min(5_000, Math.max(2_500, lastPeriodMs || hitDelayMs));
+    summary.nextCheckMs = nextAtk;
+    summary.nextCheckReason = "tick_3s";
+    if (summary.lastHit) summary.lastHit.nextMs = nextAtk;
   } catch (e: any) {
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
-    summary.nextCheckMs = hitDelayMs;
-    summary.lastHit = { ok: false, tier: "?", error: e?.message || String(e) };
+    summary.nextCheckMs = 3_000;
+    summary.lastHit = { ok: false, tier: "?", error: e?.message || String(e), nextMs: 3_000 };
     onLog?.("ERROR", `WB fail: ${e?.message || e}`);
   }
 

@@ -402,9 +402,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       }
       if (result) {
         nextDelayMs = Math.max(HIT_MS, Number(result.nextCheckMs || HIT_MS));
-        // Khi chờ hồi: không ngủ im cả giờ — recheck 60–90s (engine đã clamp)
         if (result.status === "WAITING_RESPAWN") {
-          nextDelayMs = Math.min(nextDelayMs, 90_000);
+          // Chờ boss hồi: recheck 60–90s
+          nextDelayMs = Math.min(Math.max(60_000, nextDelayMs), 90_000);
+        } else if (result.lastHit || (result.attackCount || 0) > 0) {
+          // Boss còn sống / vừa hit: LUÔN ~3s — chặn bug "next 2p"
+          nextDelayMs = Math.min(5_000, Math.max(HIT_MS, Number(result.lastHit?.nextMs || result.nextCheckMs || HIT_MS)));
         }
         const nextLabel =
           nextDelayMs >= 3600_000
