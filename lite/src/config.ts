@@ -118,18 +118,21 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     daily_target: 20,
     /** Dừng nếu N trận liên tiếp không win (mặc định 10) */
     max_no_win_streak: 10,
+    /** Giữ tối đa N người đã WIN để đánh loanh quanh (2–3) */
+    max_hunt: 3,
     delay_ms: 1500,
     max_fights_per_tick: 10,
-    prefer_hunt: true,
     min_level: 1,
     max_level: 99,
     board_limit: 20,
-    // tự lưu tiến độ: daily_completed = số WIN trong ngày
+    // tự lưu: daily_completed = WIN; hunt = farm 2–3; skip = thua hôm nay
     daily_completed: 0,
     lose_streak: 0,
     daily_date: "",
     daily_locked: false,
     hunt_list: [],
+    skip_list: [],
+    hunt_rotate: 0,
     last_board_code: "",
   },
   nhap_mong: {

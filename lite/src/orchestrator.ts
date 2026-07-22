@@ -588,7 +588,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           lose_streak: result.loseStreak ?? 0,
           daily_date: result.dailyDate,
           daily_locked: result.dailyLocked,
-          hunt_list: result.huntList || settings.hunt_list || [],
+          hunt_list: result.huntList || [],
+          skip_list: result.skipList || [],
+          hunt_rotate: result.huntRotate ?? settings.hunt_rotate ?? 0,
           board_code: settings.board_code || "auto",
           last_board_code: result.boardCode || settings.last_board_code || "",
         },
@@ -603,7 +605,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "BUFF_PVP",
           "SUCCESS",
-          `Buff PVP đủ ${result.dailyCompleted}/${result.dailyTarget} WIN · hunt ${result.huntList?.length || 0} · chờ 00:00 VN`
+          `Buff PVP đủ ${result.dailyCompleted}/${result.dailyTarget} WIN · farm ${result.huntList?.length || 0} · chờ 00:00 VN`
         );
       } else if (result.status === "NO_WIN") {
         sysLog(
@@ -617,7 +619,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "BUFF_PVP",
           "INFO",
-          `Buff PVP ${result.status} · batch ${result.wins}W/${result.losses}L · tổng WIN ${result.dailyCompleted}/${result.dailyTarget} · streak ${result.loseStreak}`
+          `Buff PVP ${result.status} · ${result.wins}W/${result.losses}L · WIN ${result.dailyCompleted}/${result.dailyTarget} · farm ${result.huntList?.length || 0} · skip ${result.skipList?.length || 0}`
         );
       }
     } else if (featureId === "pvp") {

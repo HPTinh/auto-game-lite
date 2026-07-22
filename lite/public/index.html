@@ -156,10 +156,10 @@
       rank_challenge: [
         {k:"board_code",l:"Board (auto/lk/tc/kd/na/ht/lh)",t:"select",o:["auto","lk","tc","kd","na","ht","lh"]},
         {k:"daily_target",l:"Số lần WIN muốn đạt / ngày",t:"number",min:1,max:200},
+        {k:"max_hunt",l:"Giữ tối đa N người WIN (farm vòng)",t:"number",min:1,max:5},
         {k:"max_no_win_streak",l:"Dừng nếu N trận liên tiếp không WIN",t:"number",min:3,max:50},
         {k:"max_fights_per_tick",l:"Số trận / lần check",t:"number",min:1,max:30},
         {k:"delay_ms",l:"Delay giữa trận (ms)",t:"number",min:500},
-        {k:"prefer_hunt",l:"Ưu tiên ID đã thắng",t:"bool"},
         {k:"daily_completed",l:"Đã WIN hôm nay (tự đếm)",t:"number",min:0},
         {k:"lose_streak",l:"Chuỗi thua hiện tại (tự)",t:"number",min:0},
         {k:"daily_date",l:"Ngày đếm (tự)",t:"text"},
