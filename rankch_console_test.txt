@@ -1,0 +1,223 @@
+// =============================================================================
+// RANK CHALLENGE — F12 CONSOLE TEST
+// Copy TOÀN BỘ file (Ctrl+A) → dán Console game play.samsaragame.online → Enter
+// Chỉ có comment // — KHÔNG dán dòng === (sẽ lỗi SyntaxError)
+//
+// 1) Network filter: rpc_sect_rank → copy Bearer + p_character_id
+// 2) Sửa 3 dòng CONFIG bên dưới
+// 3) Dán → xem leaderboard + challenge vài slot
+// =============================================================================
+
+(async () => {
+  // ---------- CONFIG ----------
+  const ACCESS_TOKEN = "PASTE_BEARER_TOKEN_HERE";
+  const CHARACTER_ID = "PASTE_CHARACTER_UUID_HERE";
+  const BOARD_CODE = "lk"; // lk | tc | kd | na | ht | lh
+  // ----------------------------
+
+  const MAX_FIGHTS = 3; // số trận thử trong 1 lần dán
+  const DELAY_MS = 1500;
+  const API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
+  const BASE = "https://jeassefmlprfnlszgvbs.supabase.co";
+
+  if (!ACCESS_TOKEN || ACCESS_TOKEN.indexOf("PASTE_") === 0) {
+    console.error("[RankCh] Chua dien ACCESS_TOKEN");
+    return;
+  }
+  if (!CHARACTER_ID || CHARACTER_ID.indexOf("PASTE_") === 0) {
+    console.error("[RankCh] Chua dien CHARACTER_ID");
+    return;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function rpc(name, body) {
+    const t0 = performance.now();
+    const res = await fetch(BASE + "/rest/v1/rpc/" + name, {
+      method: "POST",
+      headers: {
+        apikey: API_KEY,
+        authorization: "Bearer " + ACCESS_TOKEN,
+        "content-profile": "public",
+        "content-type": "application/json",
+        "x-client-info": "rankch-console-test/1.0",
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (e) {
+      data = { raw: text };
+    }
+    const ms = Math.round(performance.now() - t0);
+    const ok = res.ok && !(data && data.ok === false);
+    return { ok: ok, status: res.status, data: data, ms: ms, text: text };
+  }
+
+  console.log("%c[RankCh] 1) leaderboard...", "color:#6db3ff;font-weight:bold");
+  const lb = await rpc("rpc_sect_rank_leaderboard", {
+    p_character_id: CHARACTER_ID,
+    p_min_level: 1,
+    p_max_level: 20,
+    p_limit: 20,
+  });
+
+  if (!lb.ok) {
+    console.error("[RankCh] leaderboard FAIL", lb.status, lb.data || lb.text);
+    console.warn("Token het han? Login lai game, copy Bearer moi.");
+    return;
+  }
+
+  const rows = Array.isArray(lb.data)
+    ? lb.data
+    : Array.isArray(lb.data && lb.data.rows)
+      ? lb.data.rows
+      : Array.isArray(lb.data && lb.data.leaderboard)
+        ? lb.data.leaderboard
+        : Array.isArray(lb.data && lb.data.items)
+          ? lb.data.items
+          : [];
+
+  console.log("[RankCh] net=" + lb.ms + "ms · rows=" + rows.length);
+  console.table(
+    rows.map(function (r) {
+      return {
+        slot: r.slot,
+        name: r.name,
+        character_id: r.character_id,
+        atk: r.atk,
+        def: r.def,
+        hp_max: r.hp_max,
+        realm_level: r.realm_level,
+        vip: r.vip_level,
+      };
+    })
+  );
+
+  if (!rows.length) {
+    console.warn("[RankCh] Bang trong — khong challenge duoc");
+    return;
+  }
+
+  // Chon doi thu: khong phai minh, uu tien atk thap
+  const self = String(CHARACTER_ID);
+  const candidates = rows
+    .filter(function (r) {
+      return r && r.character_id && String(r.character_id) !== self && Number(r.slot) >= 1;
+    })
+    .slice()
+    .sort(function (a, b) {
+      return Number(a.atk || 0) - Number(b.atk || 0);
+    });
+
+  if (!candidates.length) {
+    console.warn("[RankCh] Khong co target (chi co minh?)");
+    return;
+  }
+
+  console.log(
+    "%c[RankCh] 2) challenge board=" + BOARD_CODE + " · max " + MAX_FIGHTS + " tran",
+    "color:#6db3ff;font-weight:bold"
+  );
+
+  const hunt = [];
+  const results = [];
+  let remaining = null;
+
+  for (let i = 0; i < Math.min(MAX_FIGHTS, candidates.length); i++) {
+    const t = candidates[i];
+    const slot = Number(t.slot);
+    console.log(
+      "[RankCh] → slot " + slot + " · " + (t.name || "?") + " · id " + String(t.character_id).slice(0, 8) + "… · atk " + t.atk
+    );
+
+    const ch = await rpc("rpc_sect_rank_challenge", {
+      p_character_id: CHARACTER_ID,
+      p_board_code: BOARD_CODE,
+      p_target_slot: slot,
+    });
+
+    if (!ch.ok) {
+      console.error("[RankCh] challenge FAIL", ch.status, ch.data || ch.text);
+      results.push({
+        n: i + 1,
+        slot: slot,
+        ok: false,
+        win: false,
+        name: t.name,
+        remaining_today: null,
+        err: String((ch.data && (ch.data.error || ch.data.reason || ch.data.message)) || ch.status).slice(0, 80),
+      });
+      // het luot?
+      const errStr = JSON.stringify(ch.data || {}).toLowerCase();
+      if (errStr.indexOf("remaining") >= 0 || errStr.indexOf("limit") >= 0 || errStr.indexOf("daily") >= 0) {
+        console.warn("[RankCh] Co the het luot hom nay — dung");
+        break;
+      }
+      await sleep(DELAY_MS);
+      continue;
+    }
+
+    const d = ch.data || {};
+    const win = d.win === true || (d.battle && d.battle.winner === "attacker");
+    remaining = d.remaining_today != null ? Number(d.remaining_today) : remaining;
+    const defId = d.defender && d.defender.character_id ? d.defender.character_id : t.character_id;
+    const defName = d.defender && d.defender.name ? d.defender.name : t.name;
+
+    if (win) {
+      hunt.push({ id: defId, name: defName, slot: d.target_slot != null ? d.target_slot : slot });
+      console.log(
+        "%c[RankCh] WIN slot " +
+          slot +
+          " · " +
+          defName +
+          " · remaining_today=" +
+          remaining +
+          " · rank_changed=" +
+          d.rank_changed,
+        "color:#3dd68c;font-weight:bold"
+      );
+    } else {
+      console.log(
+        "%c[RankCh] LOSE slot " + slot + " · " + defName + " · remaining_today=" + remaining,
+        "color:#f5a524"
+      );
+    }
+
+    results.push({
+      n: i + 1,
+      slot: slot,
+      ok: true,
+      win: win,
+      name: defName,
+      defender_id: defId,
+      remaining_today: remaining,
+      rank_changed: d.rank_changed,
+      used_pk_token: d.used_pk_token,
+      err: "",
+    });
+
+    if (remaining === 0) {
+      console.log("[RankCh] remaining_today=0 — het luot hom nay");
+      break;
+    }
+    if (i + 1 < Math.min(MAX_FIGHTS, candidates.length)) await sleep(DELAY_MS);
+  }
+
+  console.log("%c[RankCh] SUMMARY", "color:#6db3ff;font-weight:bold");
+  console.table(results);
+  console.log("[RankCh] remaining_today cuoi =", remaining);
+  console.log("[RankCh] hunt (thang → luu id danh lai):", hunt);
+
+  console.log(`
+===== DOC KET QUA =====
+• leaderboard OK + co rows → API bang xep hang chay
+• challenge WIN + remaining_today giam (20→19→…) → API danh chay
+• WIN → luu defender_id (hunt) de tool uu tien danh lai
+• remaining_today=0 → dung, cho 00:00 VN
+• FAIL 401 → token het han, copy Bearer moi
+• FAIL board/slot → doi BOARD_CODE (lk/tc/kd…) cho dung canh gioi
+`);
+})();
