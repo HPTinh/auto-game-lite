@@ -154,6 +154,11 @@ function onLog(accountId: string, module: string) {
   return (level: any, message: string) => {
     const lv = String(level || "INFO").toUpperCase() as any;
     const text = String(message || "");
+    // TEMP debug WB: HIT/dame luôn force, không rate-limit
+    if (module === "WORLD_BOSS" && (/^HIT |dame|HP boss/i.test(text) || lv === "SUCCESS" || lv === "WARN")) {
+      store.addLog(accountId, module, lv, text, { force: true });
+      return;
+    }
     if (!shouldAcceptEngineLog(module, lv, text)) return;
     const gated = logGate.allow(accountId, module, lv, text);
     if (!gated) return;
@@ -400,16 +405,21 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         status = "error";
         errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
       } else {
-        // log thưa: chỉ mỗi vài tick hoặc khi claim
-        if (result.claimed || result.status === "WAITING_RESPAWN" || (result.attackCount || 0) > 0) {
-          const gated = logGate.allow(
+        // TEMP: force log mỗi tick hit (dame / HP) — không rate-limit
+        const hit = (result as any).lastHit;
+        if (hit) {
+          const line = hit.ok
+            ? `HIT ${hit.tier} · dame -${Number.isFinite(hit.damage) ? Number(hit.damage).toLocaleString() : "?"} · HP boss còn ${Number.isFinite(hit.hpAfter) ? Number(hit.hpAfter).toLocaleString() : "?"} · next ${nextLabel}`
+            : `HIT FAIL ${hit.tier || "?"} · ${hit.error || "?"} · next ${nextLabel}`;
+          store.addLog(accountId, "WORLD_BOSS", hit.ok ? "SUCCESS" : "WARN", line, { force: true });
+        } else if (result.status === "WAITING_RESPAWN") {
+          store.addLog(
             accountId,
             "WORLD_BOSS",
             "INFO",
-            `WB tick · ${result.status} · atk ${result.attackCount || 0} · next ${nextLabel}`,
-            { minIntervalMs: result.status === "WAITING_RESPAWN" ? 30_000 : 12_000 }
+            `WB chờ boss · next ${nextLabel}`,
+            { force: true }
           );
-          if (gated) store.addLog(accountId, "WORLD_BOSS", "INFO", gated);
         }
         if (result.claimed || (result.claimStones || 0) > 0) {
           try {

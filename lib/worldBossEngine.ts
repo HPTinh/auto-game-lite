@@ -51,6 +51,17 @@ export interface WorldBossRunSummary {
   nextCheckReason?: string;
   tierResults: WorldBossTierResult[];
   errors: string[];
+  /** hit vừa rồi — để UI/orchestrator force log */
+  lastHit?: {
+    ok: boolean;
+    tier: string;
+    damage?: number;
+    hpAfter?: number;
+    netMs?: number;
+    nextMs?: number;
+    killed?: boolean;
+    error?: string;
+  };
 }
 
 export interface WorldBossAutoOptions {
@@ -77,6 +88,13 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, Math.ma
 
 /** Buffer ms thêm vào CD server — tránh FAIL cooldown (F12 gap~2850 vẫn fail) */
 const CD_BUFFER_MS = 120;
+
+/** Cache channels theo character — tránh gọi channels mỗi tick (~3s) khi đang đánh */
+const channelsCache = new Map<
+  string,
+  { at: number; myTier?: string; channels: WorldBossChannelInfo[]; tier: string; channel?: WorldBossChannelInfo }
+>();
+const CHANNELS_CACHE_MS = 45_000;
 
 function clamp(n: number, min: number, max: number, fallback: number) {
   const v = Number(n);
@@ -699,42 +717,67 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
   };
 
   try {
-    onLog?.("INFO", "WB: channels once (HP + window_open)...");
-    const first = await fetchChannels(options.characterId, options.accessToken);
-    summary.myTier = first.myTier;
-    summary.channels = first.channels;
+    const cacheKey = String(options.characterId);
+    const cached = channelsCache.get(cacheKey);
+    const cacheOk = cached && Date.now() - cached.at < CHANNELS_CACHE_MS && cached.channel && canFightChannel(cached.channel);
 
-    const { fight } = pickTiersToFight(first.channels, first.myTier, options);
-    const tier =
-      fight[0] ||
-      first.channels.find((c) => c.available === true)?.tier ||
-      first.myTier ||
-      "lk";
-    summary.tiers = [tier];
-    tierResult.tier = tier;
-    tierResult.channel = first.channels.find((c) => c.tier === tier);
+    let tier: string;
+    let ch0: WorldBossChannelInfo | undefined;
 
-    const ch0 = tierResult.channel;
-    onLog?.(
-      "INFO",
-      `WB tier=${tier} my=${first.myTier || "?"} · open=${ch0?.window_open ?? "?"} · hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"} · cd_fallback ${hitDelayMs}ms · max ${maxAttacks}`
-    );
+    if (cacheOk && cached) {
+      // Đang đánh: skip channels → mượt hơn F12 (chỉ attack)
+      tier = cached.tier;
+      ch0 = cached.channel;
+      summary.myTier = cached.myTier;
+      summary.channels = cached.channels;
+      summary.tiers = [tier];
+      tierResult.tier = tier;
+      tierResult.channel = ch0;
+    } else {
+      onLog?.("INFO", "WB: channels check...");
+      const first = await fetchChannels(options.characterId, options.accessToken);
+      summary.myTier = first.myTier;
+      summary.channels = first.channels;
 
-    if (!canFightChannel(ch0)) {
-      // Cửa đóng: claim quà treo rồi chờ
-      await tryClaimTier(options, "", tierResult, "closed_at_start");
-      summary.claimed = summary.claimed || tierResult.claimed;
-      summary.claimCount += tierResult.claimCount;
-      summary.claimStones += tierResult.claimStones;
-      tierResult.status = "WAITING_RESPAWN";
-      summary.tierResults.push(tierResult);
-      scheduleWhenClosed(ch0);
-      summary.finishedAt = new Date().toISOString();
-      return summary;
+      const { fight } = pickTiersToFight(first.channels, first.myTier, options);
+      tier =
+        fight[0] ||
+        first.channels.find((c) => c.available === true)?.tier ||
+        first.myTier ||
+        "lk";
+      summary.tiers = [tier];
+      tierResult.tier = tier;
+      tierResult.channel = first.channels.find((c) => c.tier === tier);
+      ch0 = tierResult.channel;
+
+      onLog?.(
+        "INFO",
+        `WB tier=${tier} open=${ch0?.window_open ?? "?"} hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"}`
+      );
+
+      if (!canFightChannel(ch0)) {
+        channelsCache.delete(cacheKey);
+        await tryClaimTier(options, "", tierResult, "closed_at_start");
+        summary.claimed = summary.claimed || tierResult.claimed;
+        summary.claimCount += tierResult.claimCount;
+        summary.claimStones += tierResult.claimStones;
+        tierResult.status = "WAITING_RESPAWN";
+        summary.tierResults.push(tierResult);
+        scheduleWhenClosed(ch0);
+        summary.finishedAt = new Date().toISOString();
+        return summary;
+      }
+
+      channelsCache.set(cacheKey, {
+        at: Date.now(),
+        myTier: first.myTier,
+        channels: first.channels,
+        tier,
+        channel: ch0,
+      });
     }
 
-    // Cửa mở: 1 tick = N attack (thường N=1). Không sleep trong engine khi N=1 —
-    // orchestrator hẹn nextCheckMs rồi gọi lại (tách lẻ với farm).
+    // 1 tick = 1 attack (orchestrator). Log mỗi hit: dmg + hp còn.
     let okHits = 0;
     let failHits = 0;
     let lastPeriodMs = hitDelayMs + CD_BUFFER_MS;
@@ -759,9 +802,20 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         const hpAfterAtk = Number(attack?.hp_after);
         lastPeriodMs = attackCooldownMs(attack, hitDelayMs);
 
+        summary.lastHit = {
+          ok: true,
+          tier,
+          damage: Number.isFinite(dmg) ? dmg : undefined,
+          hpAfter: Number.isFinite(hpAfterAtk) ? hpAfterAtk : undefined,
+          netMs: elapsed,
+          nextMs: lastPeriodMs,
+          killed: isBossKilledByAttack(attack),
+        };
+
+        // TEMP debug: luôn log dame + HP boss (SUCCESS để qua filter)
         onLog?.(
-          "INFO",
-          `WB ${tier} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · next ${lastPeriodMs}ms`
+          "SUCCESS",
+          `HIT ${tier} · dame -${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · HP boss còn ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · next ${lastPeriodMs}ms`
         );
 
         if (
@@ -770,6 +824,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           attack?.claimable === true ||
           (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0)
         ) {
+          channelsCache.delete(cacheKey);
           onLog?.("SUCCESS", `WB ${tier}: KILL · claim`);
           await tryClaimTier(options, tier, tierResult, "killed");
           summary.claimed = summary.claimed || tierResult.claimed;
@@ -787,7 +842,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           return summary;
         }
 
-        // N>1: chờ trong engine; N=1: orchestrator hẹn lại
         if (attempt < maxAttacks) await sleepUntilCycle(t0, lastPeriodMs);
       } catch (error: any) {
         const elapsed = Date.now() - t0;
@@ -800,13 +854,26 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
 
         if (isCd) {
           lastPeriodMs = Math.min(5000, Math.max(lastPeriodMs, hitDelayMs + CD_BUFFER_MS) + 80);
+          // CD fail: xóa cache để tick sau check lại window
+          channelsCache.delete(cacheKey);
         } else {
           lastPeriodMs = attackCooldownMs(error?.data, lastPeriodMs || hitDelayMs);
+          if (isAttackBlockedError(error) || isWaitingRespawnLike(error)) {
+            channelsCache.delete(cacheKey);
+          }
         }
+
+        summary.lastHit = {
+          ok: false,
+          tier,
+          netMs: elapsed,
+          nextMs: lastPeriodMs,
+          error: msg.slice(0, 100),
+        };
 
         onLog?.(
           "WARN",
-          `WB ${tier} FAIL · ${msg.slice(0, 70)} · net ${elapsed}ms · next ${lastPeriodMs}ms`
+          `HIT FAIL ${tier} · ${msg.slice(0, 80)} · net ${elapsed}ms · next ${lastPeriodMs}ms`
         );
 
         if (isClaimRewardLike(error)) {
@@ -815,6 +882,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           summary.claimCount += tierResult.claimCount;
           summary.claimStones += tierResult.claimStones;
           if (tierResult.claimed) {
+            channelsCache.delete(cacheKey);
             tierResult.status = "WAITING_RESPAWN";
             summary.tierResults.push(tierResult);
             scheduleWhenClosed(ch0);
@@ -827,19 +895,16 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       }
     }
 
-    // Tick xong: hẹn orchestrator sau lastPeriodMs (1 attack / tick)
     summary.tierResults.push(tierResult);
     summary.status = "DONE";
     summary.nextCheckMs = Math.max(hitDelayMs, lastPeriodMs);
     summary.nextCheckReason = "tick_continue";
-    if (okHits === 0 && failHits > 0) {
-      onLog?.("WARN", `WB tick fail · next ${summary.nextCheckMs}ms`);
-    }
   } catch (e: any) {
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
     summary.nextCheckMs = hitDelayMs;
-    onLog?.("ERROR", `WB fail: ${e?.message || e} · retry ${hitDelayMs}ms`);
+    summary.lastHit = { ok: false, tier: "?", error: e?.message || String(e) };
+    onLog?.("ERROR", `WB fail: ${e?.message || e}`);
   }
 
   summary.finishedAt = new Date().toISOString();

@@ -104,8 +104,9 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
   }
 
   if (module === "WORLD_BOSS") {
+    // TEMP: luôn cho qua log hit/dame/HP
     if (lv === "ERROR" || lv === "SUCCESS" || lv === "WARN") return true;
-    return /rank|sống|chết|check|claim|xong|atk|next|không có boss|WB /i.test(text);
+    return /HIT|dame|HP|dmg|rank|sống|chết|check|claim|xong|atk|next|không có boss|WB /i.test(text);
   }
 
   if (module === "BUFF" || module === "CLAIM_EXP" || module === "ACHIEVEMENT" || module === "MAIL") {
