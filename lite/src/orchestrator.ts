@@ -376,48 +376,78 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = 15 * 60_000;
     } else if (featureId === "world_boss") {
-      // Auto full: 1 tick = 1 attack mỗi ~3s khi boss sống; chết → chờ hồi giờ chẵn VN.
-      // Không đọc setting user (max 999 / delay custom...).
+      // Auto: 1 tick = 1 attack ~3s khi sống; chết = chờ hồi. Luôn force log mỗi tick.
       const HIT_MS = 3000;
-      const result = await runWorldBossAuto({
-        characterId: runtime.characterId,
-        accessToken: runtime.accessToken,
-        autoSelectTiers: true,
-        tiers: undefined,
-        maxAttacksPerCheck: 1,
-        attackDelayMs: HIT_MS,
-        autoClaim: true,
-        checkIntervalMinutes: 10, // fallback; engine ưu tiên giờ chẵn VN khi cửa đóng
-        shouldStop: () => !isAllowed(accountId, featureId, token),
-        onLog: onLog(accountId, "WORLD_BOSS"),
-      });
-      nextDelayMs = Math.max(HIT_MS, Number(result.nextCheckMs || HIT_MS));
-      const nextLabel =
-        nextDelayMs >= 3600_000
-          ? `${(nextDelayMs / 3600_000).toFixed(1)}h hồi`
-          : nextDelayMs >= 60_000
-            ? `${Math.round(nextDelayMs / 60000)}p`
-            : `${Math.round(nextDelayMs / 1000)}s`;
-      if (result.status === "ERROR") {
+      store.addLog(accountId, "WORLD_BOSS", "INFO", "WB tick…", { force: true });
+      let result: any;
+      try {
+        result = await runWorldBossAuto({
+          characterId: runtime.characterId,
+          accessToken: runtime.accessToken,
+          autoSelectTiers: true,
+          tiers: undefined,
+          maxAttacksPerCheck: 1,
+          attackDelayMs: HIT_MS,
+          autoClaim: true,
+          checkIntervalMinutes: 10,
+          shouldStop: () => !isAllowed(accountId, featureId, token),
+          onLog: onLog(accountId, "WORLD_BOSS"),
+        });
+      } catch (wbErr: any) {
         status = "error";
-        errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
-      } else {
-        const hit = (result as any).lastHit;
-        if (hit) {
-          const line = hit.ok
-            ? `HIT ${hit.tier} · dame -${Number.isFinite(hit.damage) ? Number(hit.damage).toLocaleString() : "?"} · HP còn ${Number.isFinite(hit.hpAfter) ? Number(hit.hpAfter).toLocaleString() : "?"} · next ${nextLabel}`
-            : `HIT FAIL ${hit.tier || "?"} · ${hit.error || "?"} · next ${nextLabel}`;
-          store.addLog(accountId, "WORLD_BOSS", hit.ok ? "SUCCESS" : "WARN", line, { force: true });
-        } else if (result.status === "WAITING_RESPAWN") {
-          store.addLog(accountId, "WORLD_BOSS", "INFO", `WB chờ boss hồi · next ${nextLabel}`, {
+        errMsg = wbErr?.message || "WB crash";
+        store.addLog(accountId, "WORLD_BOSS", "ERROR", `WB CRASH · ${errMsg}`, { force: true });
+        nextDelayMs = 15_000;
+        result = null;
+      }
+      if (result) {
+        nextDelayMs = Math.max(HIT_MS, Number(result.nextCheckMs || HIT_MS));
+        // Khi chờ hồi: không ngủ im cả giờ — recheck 60–90s (engine đã clamp)
+        if (result.status === "WAITING_RESPAWN") {
+          nextDelayMs = Math.min(nextDelayMs, 90_000);
+        }
+        const nextLabel =
+          nextDelayMs >= 3600_000
+            ? `${(nextDelayMs / 3600_000).toFixed(1)}h hồi`
+            : nextDelayMs >= 60_000
+              ? `${Math.round(nextDelayMs / 60000)}p`
+              : `${Math.round(nextDelayMs / 1000)}s`;
+        if (result.status === "ERROR") {
+          status = "error";
+          errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
+          store.addLog(accountId, "WORLD_BOSS", "ERROR", `WB ERROR · ${errMsg} · next ${nextLabel}`, {
             force: true,
           });
-        }
-        if (result.claimed || (result.claimStones || 0) > 0) {
-          try {
-            await refreshAccountInfo(accountId);
-          } catch {
-            /* ignore */
+        } else {
+          const hit = result.lastHit;
+          if (hit) {
+            const line = hit.ok
+              ? `HIT ${hit.tier} · dame -${Number.isFinite(hit.damage) ? Number(hit.damage).toLocaleString() : "?"} · HP còn ${Number.isFinite(hit.hpAfter) ? Number(hit.hpAfter).toLocaleString() : "?"} · next ${nextLabel}`
+              : `HIT FAIL ${hit.tier || "?"} · ${String(hit.error || "?").slice(0, 80)} · next ${nextLabel}`;
+            store.addLog(accountId, "WORLD_BOSS", hit.ok ? "SUCCESS" : "WARN", line, { force: true });
+          } else if (result.status === "WAITING_RESPAWN") {
+            store.addLog(
+              accountId,
+              "WORLD_BOSS",
+              "WARN",
+              `WB chờ boss (cửa đóng/chết) · next ${nextLabel}`,
+              { force: true }
+            );
+          } else {
+            store.addLog(
+              accountId,
+              "WORLD_BOSS",
+              "INFO",
+              `WB ${result.status} · atk ${result.attackCount || 0} · next ${nextLabel}`,
+              { force: true }
+            );
+          }
+          if (result.claimed || (result.claimStones || 0) > 0) {
+            try {
+              await refreshAccountInfo(accountId);
+            } catch {
+              /* ignore */
+            }
           }
         }
       }
@@ -983,6 +1013,15 @@ export async function startAccount(accountId: string) {
   }
 
   sysLog(accountId, "RUN", "SUCCESS", `▶ START · ${enabled.join(", ")}`, true);
+  if (!enabled.includes("world_boss")) {
+    store.addLog(
+      accountId,
+      "WORLD_BOSS",
+      "WARN",
+      "W.Boss chưa tick bật — chỉ Farm sẽ chạy. Hãy tick W.Boss rồi Start lại.",
+      { force: true }
+    );
+  }
 
   // stagger start để tránh burst API
   let i = 0;

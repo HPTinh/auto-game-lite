@@ -460,9 +460,15 @@
 
     function logsHtml(logs) {
       if (!logs?.length) return '<span class="mu">Chưa có log</span>';
-      return logs.slice(0,8).map(l => {
+      // Ưu tiên hiện WORLD_BOSS + FARM (WB dễ bị farm đẩy mất)
+      const list = Array.isArray(logs) ? logs.slice() : [];
+      const wb = list.filter(l => l.module === "WORLD_BOSS");
+      const other = list.filter(l => l.module !== "WORLD_BOSS");
+      const merged = [...wb.slice(0, 8), ...other].slice(0, 16);
+      return merged.map(l => {
         const t=(l.time||"").slice(11,19);
-        return `<div class="L-${l.level}">[${t}][${esc(l.module)}] ${esc(l.message)}</div>`;
+        const hi = l.module === "WORLD_BOSS" ? "font-weight:600" : "";
+        return `<div class="L-${l.level}" style="${hi}">[${t}][${esc(l.module)}] ${esc(l.message)}</div>`;
       }).join("");
     }
 

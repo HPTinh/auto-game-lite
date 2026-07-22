@@ -17,7 +17,7 @@ export const config = {
   selfPingMinutes: Math.max(0, num(process.env.SELF_PING_MINUTES, 10)),
   publicUrl: String(process.env.PUBLIC_URL || "").replace(/\/$/, ""),
   /** Giữ log ngắn trên RAM/UI — mặc định 40 */
-  maxLogs: Math.max(15, num(process.env.MAX_LOGS_PER_ACCOUNT, 40)),
+  maxLogs: Math.max(30, num(process.env.MAX_LOGS_PER_ACCOUNT, 60)),
   /** Delay tối thiểu giữa 2 vòng farm (ms) — mặc định 5s */
   minFarmDelayMs: Math.max(1000, num(process.env.MIN_FARM_DELAY_MS, 5000)),
   /** Render free disk mất khi redeploy — có thể trỏ volume path nếu sau này gắn disk */

@@ -304,20 +304,26 @@ function isClaimSuccess(data: any) {
   return false;
 }
 
-/** Boss còn sống trên channel (có thể đánh) */
+/** Boss còn sống / cửa mở — ưu tiên window_open + hp (status idle vẫn có thể window_open=true) */
 export function isWorldBossAlive(ch: WorldBossChannelInfo | any): boolean {
   if (!ch) return false;
   const status = String(ch.status || "").toLowerCase();
-  if (["idle", "dead", "closed", "down", "respawn", "waiting", "expired"].includes(status)) return false;
+  // Chết / đóng thật
+  if (["dead", "closed", "down", "respawn", "expired"].includes(status)) return false;
   if (ch.window_open === false) return false;
+
   const hp = Number(ch.hp_current);
   if (Number.isFinite(hp) && hp <= 0) return false;
-  // open / alive + còn HP
-  if (status === "open" || status === "alive" || ch.window_open === true) {
+
+  // window_open=true + còn HP → đánh được (kể cả status open/alive/idle)
+  if (ch.window_open === true) {
+    if (Number.isFinite(hp)) return hp > 0;
+    return status !== "dead";
+  }
+  if (status === "open" || status === "alive") {
     if (Number.isFinite(hp)) return hp > 0;
     return true;
   }
-  // status lạ nhưng available + hp > 0
   if (ch.available === true && Number.isFinite(hp) && hp > 0) return true;
   return false;
 }
@@ -677,7 +683,9 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     };
     const { waitMs, nextOpenAt, reason } = msUntilWindowReopen(base, checkIntervalMs);
     summary.status = "WAITING_RESPAWN";
-    summary.nextCheckMs = waitMs;
+    // Recheck mỗi 60–90s + log (không im lặng cả giờ) — vẫn không attack khi cửa đóng
+    const recheck = Math.min(Math.max(60_000, waitMs), 90_000);
+    summary.nextCheckMs = Math.min(waitMs, recheck);
     summary.nextCheckReason = reason;
     const when = nextOpenAt
       ? new Date(nextOpenAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })
@@ -685,7 +693,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     const hp = ch?.hp_current;
     onLog?.(
       "WARN",
-      `WB closed · status=${ch?.status || "?"} window_open=${ch?.window_open ?? false} hp=${Number.isFinite(Number(hp)) ? Number(hp).toLocaleString() : "?"} · reopen ~${when} (wait ${formatWait(waitMs)})`
+      `WB chờ hồi · status=${ch?.status || "?"} open=${ch?.window_open ?? false} hp=${Number.isFinite(Number(hp)) ? Number(hp).toLocaleString() : "?"} · ước tính ~${when} · check lại ${formatWait(summary.nextCheckMs)}`
     );
   };
 
