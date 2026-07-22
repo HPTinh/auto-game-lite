@@ -572,10 +572,11 @@ function attackCooldownMs(attack: any, fallbackMs: number): number {
 
 function isBossKilledByAttack(attack: any): boolean {
   if (!attack) return false;
+  // CHỈ tin flag/HP — KHÔNG dùng isClaimRewardLike (JSON có chữ "reward"/"claim" → false kill → next 2p)
   if (attack.killed === true || attack.boss_dead === true || attack.dead === true) return true;
   const hpAfter = Number(attack.hp_after);
   if (Number.isFinite(hpAfter) && hpAfter <= 0) return true;
-  return isClaimRewardLike(attack);
+  return false;
 }
 
 async function checkPendingRewards(options: WorldBossAutoOptions) {
@@ -832,12 +833,11 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           `HIT ${tier} · dame -${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · HP boss còn ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · next ${lastPeriodMs}ms`
         );
 
-        if (
+        // Chỉ coi giết khi killed/hp_after<=0 — không tin can_claim một mình (có thể true khi boss còn máu)
+        const reallyDead =
           isBossKilledByAttack(attack) ||
-          attack?.can_claim === true ||
-          attack?.claimable === true ||
-          (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0)
-        ) {
+          (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0);
+        if (reallyDead) {
           channelsCache.delete(cacheKey);
           onLog?.("SUCCESS", `WB ${tier}: KILL · claim`);
           await tryClaimTier(options, tier, tierResult, "killed");

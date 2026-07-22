@@ -401,56 +401,61 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         result = null;
       }
       if (result) {
-        nextDelayMs = Math.max(HIT_MS, Number(result.nextCheckMs || HIT_MS));
-        if (result.status === "WAITING_RESPAWN") {
-          // Chờ boss hồi: recheck 60–90s
-          nextDelayMs = Math.min(Math.max(60_000, nextDelayMs), 90_000);
-        } else if (result.lastHit || (result.attackCount || 0) > 0) {
-          // Boss còn sống / vừa hit: LUÔN ~3s — chặn bug "next 2p"
-          nextDelayMs = Math.min(5_000, Math.max(HIT_MS, Number(result.lastHit?.nextMs || result.nextCheckMs || HIT_MS)));
+        const hit = result.lastHit;
+        const hpLeft = hit && Number.isFinite(Number(hit.hpAfter)) ? Number(hit.hpAfter) : null;
+        const bossStillAlive = hit?.ok === true && (hpLeft === null || hpLeft > 0) && !hit.killed;
+
+        // QUAN TRỌNG: boss còn máu → luôn 3s. Không bao giờ 2p.
+        if (bossStillAlive || (result.status === "DONE" && (result.attackCount || 0) > 0 && result.status !== "WAITING_RESPAWN")) {
+          nextDelayMs = HIT_MS; // cố định 3s
+        } else if (result.status === "WAITING_RESPAWN") {
+          nextDelayMs = Math.min(90_000, Math.max(60_000, Number(result.nextCheckMs || 60_000)));
+        } else if (hit && hit.ok === false) {
+          nextDelayMs = HIT_MS; // fail (cooldown…) vẫn thử lại 3s
+        } else {
+          nextDelayMs = Math.min(5_000, Math.max(HIT_MS, Number(result.nextCheckMs || HIT_MS)));
         }
+
         const nextLabel =
           nextDelayMs >= 3600_000
             ? `${(nextDelayMs / 3600_000).toFixed(1)}h hồi`
             : nextDelayMs >= 60_000
               ? `${Math.round(nextDelayMs / 60000)}p`
               : `${Math.round(nextDelayMs / 1000)}s`;
+
         if (result.status === "ERROR") {
           status = "error";
           errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
           store.addLog(accountId, "WORLD_BOSS", "ERROR", `WB ERROR · ${errMsg} · next ${nextLabel}`, {
             force: true,
           });
+        } else if (result.status === "WAITING_RESPAWN" && !bossStillAlive) {
+          store.addLog(
+            accountId,
+            "WORLD_BOSS",
+            "WARN",
+            `WB chờ boss hồi · next ${nextLabel}`,
+            { force: true }
+          );
+        } else if (hit) {
+          const line = hit.ok
+            ? `HIT ${hit.tier} · dame -${Number.isFinite(hit.damage) ? Number(hit.damage).toLocaleString() : "?"} · HP còn ${Number.isFinite(hit.hpAfter) ? Number(hit.hpAfter).toLocaleString() : "?"} · next ${nextLabel}`
+            : `HIT FAIL ${hit.tier || "?"} · ${String(hit.error || "?").slice(0, 80)} · next ${nextLabel}`;
+          store.addLog(accountId, "WORLD_BOSS", hit.ok ? "SUCCESS" : "WARN", line, { force: true });
         } else {
-          const hit = result.lastHit;
-          if (hit) {
-            const line = hit.ok
-              ? `HIT ${hit.tier} · dame -${Number.isFinite(hit.damage) ? Number(hit.damage).toLocaleString() : "?"} · HP còn ${Number.isFinite(hit.hpAfter) ? Number(hit.hpAfter).toLocaleString() : "?"} · next ${nextLabel}`
-              : `HIT FAIL ${hit.tier || "?"} · ${String(hit.error || "?").slice(0, 80)} · next ${nextLabel}`;
-            store.addLog(accountId, "WORLD_BOSS", hit.ok ? "SUCCESS" : "WARN", line, { force: true });
-          } else if (result.status === "WAITING_RESPAWN") {
-            store.addLog(
-              accountId,
-              "WORLD_BOSS",
-              "WARN",
-              `WB chờ boss (cửa đóng/chết) · next ${nextLabel}`,
-              { force: true }
-            );
-          } else {
-            store.addLog(
-              accountId,
-              "WORLD_BOSS",
-              "INFO",
-              `WB ${result.status} · atk ${result.attackCount || 0} · next ${nextLabel}`,
-              { force: true }
-            );
-          }
-          if (result.claimed || (result.claimStones || 0) > 0) {
-            try {
-              await refreshAccountInfo(accountId);
-            } catch {
-              /* ignore */
-            }
+          store.addLog(
+            accountId,
+            "WORLD_BOSS",
+            "INFO",
+            `WB ${result.status} · atk ${result.attackCount || 0} · next ${nextLabel}`,
+            { force: true }
+          );
+        }
+        if (result.claimed || (result.claimStones || 0) > 0) {
+          try {
+            await refreshAccountInfo(accountId);
+          } catch {
+            /* ignore */
           }
         }
       }
