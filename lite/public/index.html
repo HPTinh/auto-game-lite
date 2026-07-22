@@ -198,12 +198,8 @@
         {k:"talisman_item_code",l:"Mã phù",t:"text"},
       ],
       claim_exp: [{k:"interval_minutes",l:"Chu kỳ (phút)",t:"number",min:1}],
-      world_boss: [
-        {k:"max_attacks_per_check",l:"Attack / tick (1=tách lẻ, khuyến nghị)",t:"number",min:1,max:20},
-        {k:"attack_delay_ms",l:"Fallback delay ms (CD game ~3000)",t:"number",min:500,max:10000},
-        {k:"check_interval_minutes",l:"Check khi window đóng (phút)",t:"number",min:1,max:1440},
-        {k:"auto_claim",l:"Tự nhận quà",t:"bool"},
-      ],
+      // world_boss: không setting — mở modal hiện hướng dẫn auto
+      world_boss: [],
       breakthrough: [
         {k:"interval_seconds",l:"Chu kỳ (s)",t:"number",min:10},
         {k:"pill_item_codes",l:"Mã đan (xuống dòng)",t:"textarea"},
@@ -771,6 +767,16 @@
         modalEl.classList.add("wide");
         $("modalBody").innerHTML = craftModalHtml(cur);
         bindCraftModalEvents();
+      } else if (featureId === "world_boss") {
+        modalEl.classList.remove("wide");
+        $("modalBody").innerHTML = `
+          <div class="mu" style="font-size:12px;line-height:1.5">
+            <b>World Boss — tự động, không cần chỉnh.</b><br/><br/>
+            • Boss <b>sống</b> / cửa mở → mỗi <b>~3 giây</b> gửi 1 request attack<br/>
+            • Boss <b>chết</b> → claim quà (nếu có) → chờ hồi (giờ chẵn VN) → đánh tiếp<br/>
+            • Tier theo rank account (<code>rpc_wb_channels</code>)<br/>
+            • Chỉ cần <b>tick W.Boss</b> + Start
+          </div>`;
       } else {
         modalEl.classList.remove("wide");
         const fields = FIELDS[featureId] || [];

@@ -634,18 +634,16 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
   }
 }
 /**
- * World Boss — 1 tick orchestrator = tối đa N attack (mặc định 1).
- * Mô hình tách lẻ với farm:
- *   - Orchestrator hẹn WB mỗi ~3s → gọi runWorldBossAuto (1 attack) → return nextCheckMs
- *   - Farm timer riêng mỗi ~4–5s → runFarmAuto (1 attack) — không chặn nhau
+ * World Boss auto (không cần setting user):
+ *   - Boss sống: 1 tick = 1 rpc_wb_attack, next ≈ 3s (cooldown_sec + buffer)
+ *   - Boss chết / cửa đóng: claim → chờ giờ chẵn VN → tick lại
+ *   - Tier: my_tier / available từ rpc_wb_channels
+ * Farm chạy timer riêng, không chặn WB.
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
-  // 1 tick = 1 attack (orchestrator set maxAttacksPerCheck=1)
-  const maxAttacks = clamp(options.maxAttacksPerCheck ?? 1, 1, 999, 1);
-  const fixedDelayMs = Number(options.attackDelayMs);
-  const hitDelayMs =
-    Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(500, fixedDelayMs) : 3000;
+  const maxAttacks = 1; // cố định 1 request / tick
+  const hitDelayMs = 3000; // mặc định game 3s
   const onLog = options.onLog;
 
   const summary: WorldBossRunSummary = {

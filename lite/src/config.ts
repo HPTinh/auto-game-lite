@@ -161,21 +161,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   },
   claim_exp: { interval_minutes: 15 },
   world_boss: {
-    /** luôn auto theo rpc_wb_channels — không cần nhập tier */
-    auto_select_tiers: true,
-    tiers: "",
-    /** chu kỳ CHECK khi window_open=false — phút, min 1, mặc định 10 */
-    check_interval_minutes: 10,
     /**
-     * Mỗi tick orchestrator = 1 lần attack (tách lẻ với farm).
-     * Không batch 999 — timer WB và farm độc lập.
+     * Không cần user setting.
+     * Bật feature → tự: boss sống = attack mỗi ~3s; boss chết = chờ hồi (giờ chẵn VN) rồi đánh tiếp.
+     * Tier theo my_tier/available từ rpc_wb_channels; claim quà tự động.
      */
-    max_attacks_per_check: 1,
-    /**
-     * Fallback delay (ms) khi response không có cooldown_sec.
-     * Game WB thường cooldown_sec=3 → next ~3120ms (3s+buffer).
-     */
-    attack_delay_ms: 3000,
     auto_claim: true,
   },
   breakthrough: {
