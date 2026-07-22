@@ -1,12 +1,12 @@
 /**
- * Buff PVP (Sect rank challenge)
- * - rpc_sect_rank_leaderboard / rpc_sect_rank_challenge
+ * Buff PVP (Sect rank challenge) — theo VỊ TRÍ / SLOT bảng
  *
- * Target logic:
- * - WIN → lưu vào hunt_list (tối đa 2–3 người), đánh loanh quanh những người này
- * - LOSE → skip_list (blacklist) trong ngày, không đánh lại người đó hôm nay
- * - Hôm sau: nếu 2–3 người hunt không còn trên bảng → xóa hunt, lấy danh sách mới
- * - Chỉ đếm WIN vào daily_target; N trận liên tiếp không WIN → dừng
+ * Nhanh & đơn giản:
+ * - Thử slot theo thứ tự: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9
+ * - THUA slot X → không đánh lại slot X hôm nay, nhảy xuống slot kế (vd thua 1,2 → đánh 3,4…)
+ * - THẮNG slot X → nhớ slot đó, farm loanh quanh 2–3 slot đã win
+ * - Hôm sau: reset skip; nếu slot farm không còn win được thì discovery lại từ slot 1
+ * - Chỉ đếm WIN vào target; N trận liên tiếp không WIN → dừng
  */
 
 export type RankChLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
@@ -20,19 +20,6 @@ export interface RankHuntTarget {
   lastSlot?: number;
 }
 
-export interface RankSkipEntry {
-  id: string;
-  name?: string;
-  at?: string;
-}
-
-export interface RankFightTarget {
-  slot: number;
-  characterId: string;
-  name?: string;
-  fromHunt: boolean;
-}
-
 export interface RankChallengeRunSummary {
   startedAt: string;
   finishedAt: string;
@@ -40,18 +27,16 @@ export interface RankChallengeRunSummary {
   fought: number;
   wins: number;
   losses: number;
-  /** số WIN đã có trong ngày */
   dailyCompleted: number;
-  /** số WIN user muốn đạt / ngày */
   dailyTarget: number;
   loseStreak: number;
   dailyLocked: boolean;
   dailyDate: string;
+  /** slot đã WIN — farm loanh quanh */
   huntList: RankHuntTarget[];
-  /** id đã thua hôm nay — không đánh lại */
-  skipList: RankSkipEntry[];
-  /** index round-robin trong farm 2–3 người */
-  huntRotate?: number;
+  /** slot đã THUA hôm nay — không đánh lại */
+  skipSlots: number[];
+  farmRotate?: number;
   nextDelayMs: number;
   reason?: string;
   boardCode?: string;
@@ -68,6 +53,9 @@ export interface RankChallengeAutoOptions {
 
 const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
 const GAME_API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
+
+/** Thứ tự đánh: hạng 1,2 trước; thua thì xuống 3…9 */
+const DEFAULT_SLOT_ORDER = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 
@@ -147,232 +135,67 @@ function isChallengeWin(res: any): boolean {
   return false;
 }
 
-function isEasyNpcName(name: any): boolean {
-  const n = String(name || "");
-  return /\[NPC\]|\[Trấn\]|\[Tran\]|NPC|Lính|Linh #/i.test(n);
-}
-
 function normalizeHunt(list: any): RankHuntTarget[] {
   if (!Array.isArray(list)) return [];
   const out: RankHuntTarget[] = [];
   const seen = new Set<string>();
   for (const item of list) {
-    const id = String(item?.id || item?.character_id || "").trim();
+    const slot = item?.lastSlot != null ? Number(item.lastSlot) : Number(item?.slot);
+    const id = String(item?.id || item?.character_id || (Number.isFinite(slot) ? `slot:${slot}` : "")).trim();
     if (!id || seen.has(id)) continue;
     seen.add(id);
     out.push({
       id,
-      name: item?.name || item?.character_name,
+      name: item?.name || item?.character_name || (Number.isFinite(slot) ? `slot#${slot}` : undefined),
       wins: Number(item?.wins || 0) || 0,
       losses: Number(item?.losses || 0) || 0,
       lastWinAt: item?.lastWinAt,
-      lastSlot: item?.lastSlot != null ? Number(item.lastSlot) : undefined,
+      lastSlot: Number.isFinite(slot) && slot >= 1 ? Math.floor(slot) : undefined,
     });
   }
   return out;
 }
 
-function normalizeSkip(list: any): RankSkipEntry[] {
-  if (!Array.isArray(list)) return [];
-  const out: RankSkipEntry[] = [];
-  const seen = new Set<string>();
-  for (const item of list) {
-    const id = String(item?.id || item?.character_id || item || "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push({
-      id,
-      name: typeof item === "object" ? item?.name || item?.character_name : undefined,
-      at: typeof item === "object" ? item?.at : undefined,
-    });
-  }
-  return out;
-}
-
-function skipIds(skip: RankSkipEntry[]): Set<string> {
-  return new Set(skip.map((s) => s.id).filter(Boolean));
-}
-
-/** WIN: thêm/cập nhật hunt, giữ tối đa maxHunt (2–3) người win được */
-function rememberWin(
-  hunt: RankHuntTarget[],
-  defenderId: string,
-  name?: string,
-  slot?: number,
-  maxHunt = 3
-): RankHuntTarget[] {
-  const id = String(defenderId || "").trim();
-  if (!id) return hunt;
-  const cap = Math.max(1, Math.min(5, maxHunt));
-  const next = [...hunt];
-  const i = next.findIndex((h) => h.id === id);
-  if (i >= 0) {
-    const [row] = next.splice(i, 1);
-    next.unshift({
-      ...row,
-      name: name || row.name,
-      wins: (row.wins || 0) + 1,
-      lastWinAt: new Date().toISOString(),
-      lastSlot: slot ?? row.lastSlot,
-    });
-  } else {
-    next.unshift({
-      id,
-      name,
-      wins: 1,
-      losses: 0,
-      lastWinAt: new Date().toISOString(),
-      lastSlot: slot,
-    });
-  }
-  return next.slice(0, cap);
-}
-
-/** LOSE: gỡ khỏi hunt + thêm skip hôm nay */
-function applyLoss(
-  hunt: RankHuntTarget[],
-  skip: RankSkipEntry[],
-  defenderId: string,
-  name?: string
-): { hunt: RankHuntTarget[]; skip: RankSkipEntry[] } {
-  const id = String(defenderId || "").trim();
-  if (!id) return { hunt, skip };
-  const nextHunt = hunt.filter((h) => h.id !== id);
-  const nextSkip = [...skip];
-  if (!nextSkip.some((s) => s.id === id)) {
-    nextSkip.push({ id, name, at: new Date().toISOString() });
-  }
-  return { hunt: nextHunt, skip: nextSkip };
-}
-
-function boardRows(data: any): any[] {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.rows)) return data.rows;
-  if (Array.isArray(data?.leaderboard)) return data.leaderboard;
-  if (Array.isArray(data?.items)) return data.items;
-  return [];
-}
-
-function realSlot(row: any): number | null {
-  if (row == null || row.slot == null || row.slot === "") return null;
-  const s = Number(row.slot);
-  if (!Number.isFinite(s) || s < 1) return null;
-  return Math.floor(s);
-}
-
-function powerScore(row: any): number {
-  const atk = Number(row?.atk || 0) || 0;
-  const def = Number(row?.def || 0) || 0;
-  const hp = Number(row?.hp_max || row?.hp || 0) || 0;
-  return atk * 2 + def + hp * 0.01;
-}
-
-type BoardRow = any & { _slot: number; _id: string; name?: string };
-
-function mapBoardRows(rows: any[]): BoardRow[] {
-  return rows
-    .map((r) => ({
-      ...r,
-      _slot: realSlot(r),
-      _id: String(r?.character_id || r?.id || "").trim(),
-    }))
-    .filter((r) => r._slot != null) as BoardRow[];
-}
-
-/**
- * Lọc hunt còn trên bảng. Không còn ai → [] (lấy list mới).
- * Còn 1–N người → giữ những người còn trên bảng (cập nhật slot).
- */
-function syncHuntWithBoard(hunt: RankHuntTarget[], withSlot: BoardRow[]): RankHuntTarget[] {
-  if (!hunt.length) return [];
-  const byId = new Map(withSlot.filter((r) => r._id).map((r) => [r._id, r]));
-  const kept: RankHuntTarget[] = [];
-  for (const h of hunt) {
-    const row = byId.get(h.id);
-    if (!row) continue;
-    kept.push({
-      ...h,
-      name: row.name || h.name,
-      lastSlot: row._slot,
-    });
-  }
-  return kept;
-}
-
-/**
- * Chọn 1 target cho 1 trận:
- * 1) Có hunt còn trên bảng (không skip) → round-robin loanh quanh 2–3 người
- * 2) Không → discovery: NPC/yếu trước, bỏ skip + self
- * 3) Không có field slot → probe 2..10 (trừ slot đã skip)
- */
-function pickOneTarget(opts: {
-  withSlot: BoardRow[];
-  allRows: any[];
-  hunt: RankHuntTarget[];
-  skip: Set<string>;
-  skipSlots: Set<number>;
-  selfId: string;
-  huntRotate: number;
-  maxProbeSlot?: number;
-}): RankFightTarget | null {
-  const self = String(opts.selfId || "");
-  const maxProbe = opts.maxProbeSlot ?? 10;
-
-  if (opts.withSlot.length > 0) {
-    const byId = new Map(opts.withSlot.filter((r) => r._id).map((r) => [r._id, r]));
-
-    // 1) Farm loanh quanh hunt
-    const liveHunt = opts.hunt
-      .map((h) => {
-        const row = byId.get(h.id);
-        if (!row || opts.skip.has(h.id) || h.id === self) return null;
-        return {
-          slot: row._slot,
-          characterId: h.id,
-          name: row.name || h.name,
-          fromHunt: true,
-        } as RankFightTarget;
-      })
-      .filter(Boolean) as RankFightTarget[];
-
-    if (liveHunt.length > 0) {
-      return liveHunt[opts.huntRotate % liveHunt.length];
+/** skip_slots: number[] (và migrate skip_list cũ nếu có slot) */
+function normalizeSkipSlots(settings: Record<string, any>): number[] {
+  const out = new Set<number>();
+  const raw = settings.skip_slots;
+  if (Array.isArray(raw)) {
+    for (const x of raw) {
+      const n = Number(x);
+      if (Number.isFinite(n) && n >= 1) out.add(Math.floor(n));
     }
-
-    // 2) Discovery — người mới trên bảng
-    const others = opts.withSlot
-      .filter((r) => r._id && r._id !== self && !opts.skip.has(r._id) && !opts.skipSlots.has(r._slot))
-      .sort((a, b) => {
-        const ea = isEasyNpcName(a.name) ? 0 : 1;
-        const eb = isEasyNpcName(b.name) ? 0 : 1;
-        if (ea !== eb) return ea - eb;
-        return powerScore(a) - powerScore(b);
-      });
-
-    if (others.length > 0) {
-      const r = others[0];
-      return {
-        slot: r._slot,
-        characterId: r._id,
-        name: r.name,
-        fromHunt: false,
-      };
+  }
+  // migrate skip_list cũ (id dạng slot:N hoặc lastSlot)
+  if (Array.isArray(settings.skip_list)) {
+    for (const item of settings.skip_list) {
+      if (typeof item === "number") {
+        if (item >= 1) out.add(Math.floor(item));
+        continue;
+      }
+      const id = String(item?.id || "").trim();
+      const m = /^slot:(\d+)$/i.exec(id);
+      if (m) out.add(Number(m[1]));
+      const ls = Number(item?.lastSlot ?? item?.slot);
+      if (Number.isFinite(ls) && ls >= 1) out.add(Math.floor(ls));
     }
-    return null;
   }
+  return [...out].sort((a, b) => a - b);
+}
 
-  // Probe khi API không trả slot
-  for (let slot = 2; slot <= maxProbe; slot++) {
-    if (opts.skipSlots.has(slot)) continue;
-    const h = opts.hunt.find((x) => Number(x.lastSlot) === slot && !opts.skip.has(x.id));
-    return {
-      slot,
-      characterId: h?.id || "",
-      name: h?.name || `slot#${slot}`,
-      fromHunt: Boolean(h),
-    };
+function resolveSlotOrder(settings: Record<string, any>): number[] {
+  const min = Math.max(1, Math.floor(Number(settings.slot_min || 1)) || 1);
+  const max = Math.max(min, Math.min(20, Math.floor(Number(settings.slot_max || 9)) || 9));
+  const custom = settings.slot_order;
+  if (Array.isArray(custom) && custom.length) {
+    const arr = custom
+      .map((x: any) => Math.floor(Number(x)))
+      .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 20);
+    if (arr.length) return [...new Set(arr)];
   }
-  return null;
+  const order: number[] = [];
+  for (let s = min; s <= max; s++) order.push(s);
+  return order.length ? order : [...DEFAULT_SLOT_ORDER];
 }
 
 function resolveWinTarget(settings: Record<string, any>): number {
@@ -390,6 +213,60 @@ function resolveMaxHunt(settings: Record<string, any>): number {
   return Math.max(1, Math.min(5, Math.floor(Number.isFinite(raw) ? raw : 3)));
 }
 
+/** WIN: nhớ slot (và id nếu có), giữ tối đa maxHunt slot farm */
+function rememberWinSlot(
+  hunt: RankHuntTarget[],
+  slot: number,
+  defenderId?: string,
+  name?: string,
+  maxHunt = 3
+): RankHuntTarget[] {
+  const s = Math.floor(Number(slot));
+  if (!Number.isFinite(s) || s < 1) return hunt;
+  const id = String(defenderId || "").trim() || `slot:${s}`;
+  const cap = Math.max(1, Math.min(5, maxHunt));
+  const next = hunt.filter((h) => h.lastSlot !== s && h.id !== id);
+  next.unshift({
+    id,
+    name: name || `slot#${s}`,
+    wins: (hunt.find((h) => h.lastSlot === s || h.id === id)?.wins || 0) + 1,
+    losses: 0,
+    lastWinAt: new Date().toISOString(),
+    lastSlot: s,
+  });
+  return next.slice(0, cap);
+}
+
+/** Bỏ slot khỏi farm khi thua */
+function dropHuntSlot(hunt: RankHuntTarget[], slot: number): RankHuntTarget[] {
+  const s = Math.floor(Number(slot));
+  return hunt.filter((h) => h.lastSlot !== s);
+}
+
+/**
+ * Chọn slot tiếp theo:
+ * 1) Có farm slots (đã win) → round-robin trong các slot đó (không nằm skip)
+ * 2) Không → lấy slot nhỏ nhất trong order chưa skip (1,2 rồi 3…9)
+ */
+function pickNextSlot(opts: {
+  farmSlots: number[];
+  skipSlots: Set<number>;
+  slotOrder: number[];
+  farmRotate: number;
+}): { slot: number; fromFarm: boolean; rotate: number } | null {
+  const liveFarm = opts.farmSlots.filter((s) => !opts.skipSlots.has(s));
+  if (liveFarm.length > 0) {
+    const idx = opts.farmRotate % liveFarm.length;
+    return { slot: liveFarm[idx], fromFarm: true, rotate: opts.farmRotate + 1 };
+  }
+  for (const s of opts.slotOrder) {
+    if (!opts.skipSlots.has(s)) {
+      return { slot: s, fromFarm: false, rotate: opts.farmRotate };
+    }
+  }
+  return null;
+}
+
 export async function runRankChallengeAuto(options: RankChallengeAutoOptions): Promise<RankChallengeRunSummary> {
   const settings = options.settings || {};
   const onLog = options.onLog;
@@ -397,6 +274,7 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
   const winTarget = resolveWinTarget(settings);
   const maxNoWinStreak = resolveMaxNoWinStreak(settings);
   const maxHunt = resolveMaxHunt(settings);
+  const slotOrder = resolveSlotOrder(settings);
   const delayMs = Math.max(800, Number(settings.delay_ms || 1500) || 1500);
   const maxPerTick = Math.max(1, Math.min(30, Math.floor(Number(settings.max_fights_per_tick || 10)) || 10));
   let boardCode = resolveBoardCode(settings, options.realmCode);
@@ -406,22 +284,20 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
   let locked = settings.daily_locked === true;
   let dailyDate = String(settings.daily_date || "");
   let hunt = normalizeHunt(settings.hunt_list);
-  let skip = normalizeSkip(settings.skip_list);
+  let skipSlots = normalizeSkipSlots(settings);
+  let farmRotate = Math.max(0, Math.floor(Number(settings.farm_rotate ?? settings.hunt_rotate || 0)) || 0);
   let stopNoWin = false;
-  const sessionSkipSlots = new Set<number>();
 
-  // Sang ngày mới: reset win/streak/skip; hunt giữ đến khi check bảng
+  // Sang ngày mới: reset skip + win count; farm slot giữ (thử lại hôm sau)
   if (dailyDate !== today) {
     dailyWins = 0;
     loseStreak = 0;
     locked = false;
-    skip = []; // blacklist chỉ trong ngày
+    skipSlots = [];
     dailyDate = today;
   }
 
-  if (locked || dailyWins >= winTarget) {
-    locked = true;
-  }
+  if (locked || dailyWins >= winTarget) locked = true;
 
   const summary: RankChallengeRunSummary = {
     startedAt: new Date().toISOString(),
@@ -436,7 +312,8 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
     dailyLocked: locked,
     dailyDate,
     huntList: hunt,
-    skipList: skip,
+    skipSlots: [...skipSlots],
+    farmRotate,
     nextDelayMs: delayMs * 2,
     boardCode,
   };
@@ -465,99 +342,58 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
     return summary;
   }
 
+  const skipSet = new Set(skipSlots);
   const needWins = winTarget - dailyWins;
 
   try {
+    // Leaderboard optional — chủ yếu challenge theo slot số
+    try {
+      await rpc(
+        "rpc_sect_rank_leaderboard",
+        {
+          p_character_id: options.characterId,
+          p_min_level: Math.max(1, Number(settings.min_level || 1) || 1),
+          p_max_level: Math.max(1, Number(settings.max_level || 99) || 99),
+          p_limit: Math.max(10, Math.min(50, Number(settings.board_limit || 20) || 20)),
+        },
+        options.accessToken
+      );
+    } catch {
+      // không chặn — vẫn challenge theo slot
+    }
+
+    const farmSlots = hunt
+      .map((h) => Number(h.lastSlot))
+      .filter((s) => Number.isFinite(s) && s >= 1 && !skipSet.has(s)) as number[];
+
     onLog?.(
       "INFO",
-      `BuffPVP: board=${boardCode} · cần ${needWins} WIN (${dailyWins}/${winTarget}) · hunt ${hunt.length} · skip ${skip.length} · streak ${loseStreak}/${maxNoWinStreak}`
+      `BuffPVP: board=${boardCode} · cần ${needWins} WIN (${dailyWins}/${winTarget}) · farm slots [${farmSlots.join(",") || "—"}] · skip thua [${[...skipSet].sort((a, b) => a - b).join(",") || "—"}] · ladder ${slotOrder[0]}→${slotOrder[slotOrder.length - 1]}`
     );
-
-    const board = await rpc(
-      "rpc_sect_rank_leaderboard",
-      {
-        p_character_id: options.characterId,
-        p_min_level: Math.max(1, Number(settings.min_level || 1) || 1),
-        p_max_level: Math.max(1, Number(settings.max_level || 99) || 99),
-        p_limit: Math.max(10, Math.min(50, Number(settings.board_limit || 20) || 20)),
-      },
-      options.accessToken
-    );
-
-    const rows = boardRows(board);
-    if (!rows.length) {
-      summary.status = "NO_TARGET";
-      summary.reason = "Bảng xếp hạng trống";
-      summary.nextDelayMs = 10 * 60_000;
-      onLog?.("WARN", "BuffPVP: không có ai trên bảng");
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    const withSlot = mapBoardRows(rows);
-    const prevHuntCount = hunt.length;
-
-    // Hunt cũ: chỉ giữ người còn trên bảng. Không còn ai → list mới
-    if (withSlot.length > 0 && hunt.length > 0) {
-      const synced = syncHuntWithBoard(hunt, withSlot);
-      if (synced.length === 0) {
-        onLog?.(
-          "INFO",
-          `BuffPVP: ${prevHuntCount} người hunt cũ không còn trên bảng → lấy danh sách mới`
-        );
-        hunt = [];
-      } else {
-        if (synced.length < prevHuntCount) {
-          onLog?.(
-            "INFO",
-            `BuffPVP: hunt còn ${synced.length}/${prevHuntCount} trên bảng · farm: ${synced.map((h) => h.name || h.id.slice(0, 6)).join(", ")}`
-          );
-        }
-        hunt = synced;
-      }
-    }
-
-    const hasRealSlots = withSlot.length > 0;
-    if (!hasRealSlots) {
-      onLog?.(
-        "WARN",
-        `BuffPVP: leaderboard không có field slot → probe slot 2..10 board=${boardCode}`
-      );
-    } else if (hunt.length > 0) {
-      onLog?.(
-        "INFO",
-        `BuffPVP: farm loanh quanh ${hunt.length} người WIN · ${hunt.map((h) => h.name || h.id.slice(0, 6)).join(" | ")}`
-      );
-    } else {
-      onLog?.("INFO", `BuffPVP: discovery — tìm người mới (skip ${skip.length})`);
-    }
-
-    let huntRotate = Math.max(0, Math.floor(Number(settings.hunt_rotate || 0)) || 0);
-    let invalidStreak = 0;
-    const blocked = skipIds(skip);
 
     for (let i = 0; i < maxPerTick; i++) {
       if (options.shouldStop?.()) break;
       if (dailyWins >= winTarget) break;
       if (loseStreak >= maxNoWinStreak) break;
 
-      const t = pickOneTarget({
-        withSlot,
-        allRows: rows,
-        hunt,
-        skip: blocked,
-        skipSlots: sessionSkipSlots,
-        selfId: options.characterId,
-        huntRotate,
-        maxProbeSlot: 10,
+      const liveFarm = hunt
+        .map((h) => Number(h.lastSlot))
+        .filter((s) => Number.isFinite(s) && s >= 1 && !skipSet.has(s)) as number[];
+
+      const picked = pickNextSlot({
+        farmSlots: liveFarm,
+        skipSlots: skipSet,
+        slotOrder,
+        farmRotate,
       });
 
-      if (!t) {
-        onLog?.("WARN", "BuffPVP: hết target (đã skip hết / bảng rỗng logic)");
+      if (!picked) {
+        onLog?.("WARN", `BuffPVP: hết slot (đã skip 1→9 hoặc invalid) · skip=[${[...skipSet].sort((a, b) => a - b).join(",")}]`);
         break;
       }
 
-      if (t.fromHunt) huntRotate += 1;
+      const slot = picked.slot;
+      if (picked.fromFarm) farmRotate = picked.rotate;
 
       try {
         const res = await rpc(
@@ -565,32 +401,30 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
           {
             p_character_id: options.characterId,
             p_board_code: boardCode,
-            p_target_slot: t.slot,
+            p_target_slot: slot,
           },
           options.accessToken
         );
 
+        // ok:false
         if (res && res.ok === false) {
           const reason = String(res.reason || res.error || res.message || "ok_false");
-          onLog?.("WARN", `BuffPVP skip slot ${t.slot}: ${reason}`);
-          if (/invalid_slot/i.test(reason)) {
-            sessionSkipSlots.add(t.slot);
-            invalidStreak += 1;
-            if (invalidStreak >= 5) break;
-            continue;
-          }
+          onLog?.("WARN", `BuffPVP slot ${slot} FAIL: ${reason} → bỏ slot, xuống slot sau`);
+          // invalid_slot / bất kỳ lỗi slot → coi như không đánh được, nhảy slot
+          skipSet.add(slot);
+          hunt = dropHuntSlot(hunt, slot);
           continue;
         }
 
-        invalidStreak = 0;
         summary.fought += 1;
         const win = isChallengeWin(res);
-
         const defId = String(
-          res?.defender?.character_id || res?.battle?.defender?.character_id || t.characterId || ""
+          res?.defender?.character_id || res?.battle?.defender?.character_id || ""
         ).trim();
-        const defName = String(res?.defender?.name || res?.battle?.defender?.name || t.name || "").trim();
-        const slotAfter = Number(res?.target_slot ?? t.slot);
+        const defName = String(res?.defender?.name || res?.battle?.defender?.name || `slot#${slot}`).trim();
+        const slotAfter = Number(res?.target_slot ?? slot);
+        const useSlot = Number.isFinite(slotAfter) && slotAfter >= 1 ? Math.floor(slotAfter) : slot;
+
         const resBoard = String(res?.board_code || "").toLowerCase();
         if (["lk", "tc", "kd", "na", "ht", "lh"].includes(resBoard)) {
           boardCode = resBoard;
@@ -601,28 +435,22 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
           summary.wins += 1;
           dailyWins += 1;
           loseStreak = 0;
-          // Không skip người vừa win; lưu hunt 2–3
-          if (defId) blocked.delete(defId);
-          hunt = rememberWin(hunt, defId, defName, slotAfter, maxHunt);
+          // Không skip slot win; nhớ farm
+          skipSet.delete(useSlot);
+          hunt = rememberWinSlot(hunt, useSlot, defId, defName, maxHunt);
           onLog?.(
             "SUCCESS",
-            `BuffPVP WIN · ${defName || defId.slice(0, 8)} · WIN ${dailyWins}/${winTarget} · farm [${hunt.map((h) => h.name || h.id.slice(0, 6)).join(", ")}]`
+            `BuffPVP WIN slot ${useSlot} · ${defName} · WIN ${dailyWins}/${winTarget} · farm [${hunt.map((h) => h.lastSlot).filter(Boolean).join(",")}]`
           );
         } else {
           summary.losses += 1;
           loseStreak += 1;
-          // Thua → không đánh lại hôm nay + gỡ khỏi hunt
-          if (defId) {
-            const applied = applyLoss(hunt, skip, defId, defName);
-            hunt = applied.hunt;
-            skip = applied.skip;
-            blocked.add(defId);
-          } else {
-            sessionSkipSlots.add(t.slot);
-          }
+          // THUA → bỏ slot này hôm nay, đánh xuống slot sau (3,4,5…)
+          skipSet.add(useSlot);
+          hunt = dropHuntSlot(hunt, useSlot);
           onLog?.(
             "WARN",
-            `BuffPVP LOSE · ${defName || "?"} · không đánh lại hôm nay · WIN ${dailyWins}/${winTarget} · streak ${loseStreak}/${maxNoWinStreak}`
+            `BuffPVP LOSE slot ${useSlot} · ${defName} · không đánh lại slot này hôm nay → xuống slot sau · WIN ${dailyWins}/${winTarget} · streak ${loseStreak}/${maxNoWinStreak}`
           );
           if (loseStreak >= maxNoWinStreak) {
             stopNoWin = true;
@@ -640,11 +468,11 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
       } catch (e: any) {
         const msg = e?.message || String(e);
         const dataStr = JSON.stringify(e?.data || {});
-        onLog?.("ERROR", `BuffPVP fail slot ${t.slot}: ${msg.slice(0, 100)}`);
-        if (/invalid_slot/i.test(msg + dataStr)) {
-          sessionSkipSlots.add(t.slot);
-          invalidStreak += 1;
-          if (invalidStreak >= 5) break;
+        onLog?.("ERROR", `BuffPVP fail slot ${slot}: ${msg.slice(0, 100)}`);
+        // Lỗi slot / invalid → bỏ slot, thử slot dưới — KHÔNG đánh lại cùng slot
+        if (/invalid_slot|slot|not.?found|target/i.test(msg + dataStr)) {
+          skipSet.add(slot);
+          hunt = dropHuntSlot(hunt, slot);
           continue;
         }
         summary.status = "PARTIAL";
@@ -652,14 +480,15 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
       }
     }
 
+    skipSlots = [...skipSet].sort((a, b) => a - b);
     summary.dailyCompleted = dailyWins;
     summary.dailyTarget = winTarget;
     summary.loseStreak = loseStreak;
     summary.dailyLocked = locked || dailyWins >= winTarget || stopNoWin;
     summary.dailyDate = today;
     summary.huntList = hunt;
-    summary.skipList = skip;
-    summary.huntRotate = huntRotate;
+    summary.skipSlots = skipSlots;
+    summary.farmRotate = farmRotate;
     summary.boardCode = boardCode;
 
     if (stopNoWin || loseStreak >= maxNoWinStreak) {
@@ -667,19 +496,16 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
       summary.dailyLocked = true;
       summary.nextDelayMs = msUntilNextVnMidnight();
       summary.reason = `Buff PVP dừng: ${loseStreak} trận liên tiếp không WIN · WIN ${dailyWins}/${winTarget}`;
-      onLog?.(
-        "WARN",
-        `BuffPVP NO_WIN stop · batch ${summary.wins}W/${summary.losses}L · tổng WIN ${dailyWins}/${winTarget}`
-      );
+      onLog?.("WARN", `BuffPVP NO_WIN · batch ${summary.wins}W/${summary.losses}L · WIN ${dailyWins}/${winTarget}`);
     } else if (summary.dailyLocked || dailyWins >= winTarget) {
       summary.status = "LOCKED";
       summary.nextDelayMs = msUntilNextVnMidnight();
-      summary.reason = `Buff PVP xong ${dailyWins}/${winTarget} WIN · farm ${hunt.length} · chờ 00:00 VN`;
-      onLog?.("SUCCESS", `BuffPVP DONE · đủ ${dailyWins}/${winTarget} WIN · hunt ${hunt.length}`);
+      summary.reason = `Buff PVP xong ${dailyWins}/${winTarget} WIN · chờ 00:00 VN`;
+      onLog?.("SUCCESS", `BuffPVP DONE · đủ ${dailyWins}/${winTarget} WIN · farm slots [${hunt.map((h) => h.lastSlot).join(",")}]`);
     } else {
       summary.status = summary.fought > 0 ? "DONE" : summary.status === "PARTIAL" ? "PARTIAL" : "NO_TARGET";
       summary.nextDelayMs = Math.max(delayMs * 2, 10_000);
-      summary.reason = `Batch ${summary.wins}W/${summary.losses}L · WIN ${dailyWins}/${winTarget} · hunt ${hunt.length} · skip ${skip.length}`;
+      summary.reason = `Batch ${summary.wins}W/${summary.losses}L · WIN ${dailyWins}/${winTarget} · skip slots [${skipSlots.join(",")}]`;
     }
   } catch (e: any) {
     summary.status = "ERROR";
@@ -691,7 +517,8 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
     summary.dailyLocked = locked;
     summary.dailyDate = today;
     summary.huntList = hunt;
-    summary.skipList = skip;
+    summary.skipSlots = [...skipSet].sort((a, b) => a - b);
+    summary.farmRotate = farmRotate;
     onLog?.("ERROR", `BuffPVP error: ${summary.reason}`);
   }
 

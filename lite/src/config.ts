@@ -112,27 +112,31 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     daily_locked: false,
   },
   rank_challenge: {
-    /** board: auto | lk | tc | kd | na | ht | lh — preview win dùng "na" */
+    /** board: auto | lk | tc | kd | na | ht | lh */
     board_code: "auto",
-    /** Số lần WIN muốn đạt hôm nay (chỉ đếm win; đủ thì dừng đến 00:00 VN) */
+    /** Số lần WIN muốn đạt hôm nay */
     daily_target: 20,
-    /** Dừng nếu N trận liên tiếp không win (mặc định 10) */
+    /** Dừng nếu N trận liên tiếp không win */
     max_no_win_streak: 10,
-    /** Giữ tối đa N người đã WIN để đánh loanh quanh (2–3) */
+    /** Giữ tối đa N slot đã WIN để farm vòng */
     max_hunt: 3,
+    /** Thử slot từ (1) → đến (9): thua thì nhảy slot sau */
+    slot_min: 1,
+    slot_max: 9,
     delay_ms: 1500,
     max_fights_per_tick: 10,
     min_level: 1,
     max_level: 99,
     board_limit: 20,
-    // tự lưu: daily_completed = WIN; hunt = farm 2–3; skip = thua hôm nay
+    // tự lưu
     daily_completed: 0,
     lose_streak: 0,
     daily_date: "",
     daily_locked: false,
     hunt_list: [],
-    skip_list: [],
-    hunt_rotate: 0,
+    /** slot đã thua hôm nay — không đánh lại */
+    skip_slots: [],
+    farm_rotate: 0,
     last_board_code: "",
   },
   nhap_mong: {

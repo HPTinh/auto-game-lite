@@ -589,8 +589,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           daily_date: result.dailyDate,
           daily_locked: result.dailyLocked,
           hunt_list: result.huntList || [],
-          skip_list: result.skipList || [],
-          hunt_rotate: result.huntRotate ?? settings.hunt_rotate ?? 0,
+          skip_slots: result.skipSlots || [],
+          skip_list: [], // legacy clear
+          farm_rotate: result.farmRotate ?? 0,
           board_code: settings.board_code || "auto",
           last_board_code: result.boardCode || settings.last_board_code || "",
         },
@@ -605,7 +606,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "BUFF_PVP",
           "SUCCESS",
-          `Buff PVP đủ ${result.dailyCompleted}/${result.dailyTarget} WIN · farm ${result.huntList?.length || 0} · chờ 00:00 VN`
+          `Buff PVP đủ ${result.dailyCompleted}/${result.dailyTarget} WIN · farm slots ${result.huntList?.map((h) => h.lastSlot).filter(Boolean).join(",") || "—"} · chờ 00:00 VN`
         );
       } else if (result.status === "NO_WIN") {
         sysLog(
@@ -619,7 +620,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "BUFF_PVP",
           "INFO",
-          `Buff PVP ${result.status} · ${result.wins}W/${result.losses}L · WIN ${result.dailyCompleted}/${result.dailyTarget} · farm ${result.huntList?.length || 0} · skip ${result.skipList?.length || 0}`
+          `Buff PVP ${result.status} · ${result.wins}W/${result.losses}L · WIN ${result.dailyCompleted}/${result.dailyTarget} · skip slots [${(result.skipSlots || []).join(",")}]`
         );
       }
     } else if (featureId === "pvp") {
