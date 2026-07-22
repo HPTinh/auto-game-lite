@@ -80,11 +80,18 @@
           ? lb.data.items
           : [];
 
+  // API co the khong tra slot → dung index+1 (hang tren bang = slot challenge)
+  function rowSlot(r, index) {
+    const s = Number(r && (r.slot != null ? r.slot : r.rank != null ? r.rank : r.pos));
+    if (Number.isFinite(s) && s >= 1) return s;
+    return index + 1;
+  }
+
   console.log("[RankCh] net=" + lb.ms + "ms · rows=" + rows.length);
   console.table(
-    rows.map(function (r) {
+    rows.map(function (r, idx) {
       return {
-        slot: r.slot,
+        slot: rowSlot(r, idx),
         name: r.name,
         character_id: r.character_id,
         atk: r.atk,
@@ -104,16 +111,30 @@
   // Chon doi thu: khong phai minh, uu tien atk thap
   const self = String(CHARACTER_ID);
   const candidates = rows
-    .filter(function (r) {
-      return r && r.character_id && String(r.character_id) !== self && Number(r.slot) >= 1;
+    .map(function (r, idx) {
+      return {
+        raw: r,
+        slot: rowSlot(r, idx),
+        character_id: r && r.character_id,
+        name: r && r.name,
+        atk: r && r.atk,
+      };
     })
-    .slice()
+    .filter(function (t) {
+      return t.character_id && String(t.character_id) !== self && t.slot >= 1;
+    })
     .sort(function (a, b) {
       return Number(a.atk || 0) - Number(b.atk || 0);
     });
 
   if (!candidates.length) {
-    console.warn("[RankCh] Khong co target (chi co minh?)");
+    console.warn(
+      "[RankCh] Khong co target. self=" +
+        self.slice(0, 8) +
+        " rows=" +
+        rows.length +
+        " (kiem tra CHARACTER_ID dung chua)"
+    );
     return;
   }
 
@@ -130,7 +151,14 @@
     const t = candidates[i];
     const slot = Number(t.slot);
     console.log(
-      "[RankCh] → slot " + slot + " · " + (t.name || "?") + " · id " + String(t.character_id).slice(0, 8) + "… · atk " + t.atk
+      "[RankCh] → slot " +
+        slot +
+        " · " +
+        (t.name || "?") +
+        " · id " +
+        String(t.character_id).slice(0, 8) +
+        "… · atk " +
+        t.atk
     );
 
     const ch = await rpc("rpc_sect_rank_challenge", {

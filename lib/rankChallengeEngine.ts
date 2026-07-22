@@ -173,6 +173,13 @@ function boardRows(data: any): any[] {
   return [];
 }
 
+/** API đôi khi không trả slot — dùng thứ tự trên bảng (1-based) */
+function resolveSlot(row: any, index: number): number {
+  const s = Number(row?.slot ?? row?.rank ?? row?.pos ?? row?.position);
+  if (Number.isFinite(s) && s >= 1) return Math.floor(s);
+  return index + 1;
+}
+
 function powerScore(row: any): number {
   const atk = Number(row?.atk || 0) || 0;
   const def = Number(row?.def || 0) || 0;
@@ -192,10 +199,16 @@ function pickTargets(
   preferHunt: boolean
 ): { slot: number; characterId: string; name?: string; fromHunt: boolean }[] {
   const self = String(selfId || "");
-  const byId = new Map<string, any>();
-  for (const r of rows) {
-    const id = String(r?.character_id || r?.id || "").trim();
-    if (id) byId.set(id, r);
+  // Gắn slot ổn định theo index
+  const normalized = rows.map((r, idx) => ({
+    ...r,
+    _slot: resolveSlot(r, idx),
+    _id: String(r?.character_id || r?.id || "").trim(),
+  }));
+
+  const byId = new Map<string, (typeof normalized)[0]>();
+  for (const r of normalized) {
+    if (r._id) byId.set(r._id, r);
   }
 
   const out: { slot: number; characterId: string; name?: string; fromHunt: boolean }[] = [];
@@ -205,37 +218,31 @@ function pickTargets(
     for (const h of hunt) {
       const row = byId.get(h.id);
       if (!row) continue;
-      const slot = Number(row.slot ?? h.lastSlot);
+      const slot = row._slot || Number(h.lastSlot);
       if (!Number.isFinite(slot) || slot < 1) continue;
       if (usedSlots.has(slot)) continue;
-      const cid = String(row.character_id || h.id);
-      if (cid === self) continue;
+      if (row._id === self) continue;
       usedSlots.add(slot);
       out.push({
         slot,
-        characterId: cid,
+        characterId: row._id,
         name: row.name || h.name,
         fromHunt: true,
       });
     }
   }
 
-  // Ưu tiên yếu (power thấp) — dễ win, rồi lưu hunt
-  const others = rows
-    .filter((r) => {
-      const id = String(r?.character_id || "").trim();
-      const slot = Number(r?.slot);
-      return id && id !== self && Number.isFinite(slot) && slot >= 1 && !usedSlots.has(slot);
-    })
+  // Ưu tiên yếu (power thấp)
+  const others = normalized
+    .filter((r) => r._id && r._id !== self && r._slot >= 1 && !usedSlots.has(r._slot))
     .sort((a, b) => powerScore(a) - powerScore(b));
 
   for (const r of others) {
-    const slot = Number(r.slot);
-    if (usedSlots.has(slot)) continue;
-    usedSlots.add(slot);
+    if (usedSlots.has(r._slot)) continue;
+    usedSlots.add(r._slot);
     out.push({
-      slot,
-      characterId: String(r.character_id),
+      slot: r._slot,
+      characterId: r._id,
       name: r.name,
       fromHunt: false,
     });
