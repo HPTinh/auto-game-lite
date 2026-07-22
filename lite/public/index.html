@@ -139,8 +139,11 @@
         {k:"to_channel",l:"Kênh đến (đa)",t:"number",min:1,max:99},
         {k:"farm_realm_tier_override",l:"Map / cảnh giới",t:"select",o:["auto","lk","tc","kd","na","ht","lh"]},
         {k:"smart_rebirth_farm",l:"Theo nhiệm vụ trùng sinh",t:"bool"},
-        {k:"auto_use_mp_potion",l:"Uống MP",t:"bool"},
-        {k:"mp_potion_item_code",l:"Mã bình MP",t:"text"},
+        {k:"auto_use_mp_potion",l:"Uống MP khi hết mana",t:"bool"},
+        {k:"mp_potion_item_code",l:"Mã bình MP (vd pill_lk_mp)",t:"text"},
+        {k:"auto_buy_mp_potion",l:"Hết bình → tự mua shop",t:"bool"},
+        {k:"mp_potion_buy_qty",l:"Mua mỗi lần (shop)",t:"select",o:["10","1"], hint:"Mặc định 10; fail thì tool thử mua 1"},
+        {k:"mp_potion_shop_code",l:"Shop code",t:"text"},
       ],
       pvp: [
         {k:"daily_target",l:"Số trận / ngày",t:"number",min:1,max:100},

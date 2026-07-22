@@ -98,7 +98,7 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     if (lv === "SUCCESS") return true;
     if (lv === "WARN" && !soft) return true;
     if (lv === "INFO") {
-      return /tóm tắt|summary|đủ nhiệm vụ|smart_done|dừng farm|hết mp|mua mp fail/i.test(text);
+      return /tóm tắt|summary|đủ nhiệm vụ|smart_done|dừng farm|hết mp|mua mp|mua \d+×|shop alchemy/i.test(text);
     }
     return false;
   }

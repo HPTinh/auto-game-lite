@@ -1,0 +1,38 @@
+fetch("https://jeassefmlprfnlszgvbs.supabase.co/rest/v1/rpc/rpc_nh_shop_buy", {
+  "headers": {
+    "accept": "*/*",
+    "accept-language": "vi,en-US;q=0.9,en;q=0.8,de;q=0.7",
+    "apikey": "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB",
+    "authorization": "Bearer eyJhbGciOiJFUzI1NiIsImtpZCI6IjU0MjZlNDI2LWMzNTEtNDE0MC04OGIwLWU2NTc4NTczMmQ1YyIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2plYXNzZWZtbHByZm5sc3pndmJzLnN1cGFiYXNlLmNvL2F1dGgvdjEiLCJzdWIiOiIzZGU5NmY1Yy1kYmVhLTQwNjQtYThlNy1kOTEwZGVjZDBlMDUiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiZXhwIjoxNzg0Njk0NDU4LCJpYXQiOjE3ODQ2OTA4NTgsImVtYWlsIjoidGluaDIyMTA2NUBnbWFpbC5jb20iLCJwaG9uZSI6IiIsImFwcF9tZXRhZGF0YSI6eyJwcm92aWRlciI6ImVtYWlsIiwicHJvdmlkZXJzIjpbImVtYWlsIl19LCJ1c2VyX21ldGFkYXRhIjp7ImVtYWlsIjoidGluaDIyMTA2NUBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGhvbmVfdmVyaWZpZWQiOmZhbHNlLCJzdWIiOiIzZGU5NmY1Yy1kYmVhLTQwNjQtYThlNy1kOTEwZGVjZDBlMDUifSwicm9sZSI6ImF1dGhlbnRpY2F0ZWQiLCJhYWwiOiJhYWwxIiwiYW1yIjpbeyJtZXRob2QiOiJwYXNzd29yZCIsInRpbWVzdGFtcCI6MTc4NDY5MDg1OH1dLCJzZXNzaW9uX2lkIjoiYzcwOWZiYmEtZGY0Yi00NDFjLThiODAtNThlNzIyMTQzY2U2IiwiaXNfYW5vbnltb3VzIjpmYWxzZX0.seV8-NQ9LPbC2Gtalg2LMcLVFPfm1lzELaWR_8LIokC8QugpeYjXeV_9zhe-Ym0ka_Rn6maEIDSxKlfc0-k7cg",
+    "content-profile": "public",
+    "content-type": "application/json",
+    "priority": "u=1, i",
+    "sec-ch-ua": "\"Google Chrome\";v=\"149\", \"Chromium\";v=\"149\", \"Not)A;Brand\";v=\"24\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"Windows\"",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "cross-site",
+    "x-client-info": "supabase-flutter/2.12.0"
+  },
+  "referrer": "https://play.samsaragame.online/",
+  "body": "{\"p_character_id\":\"1cb54f4d-437f-4e91-be0c-5b4e3df39b02\",\"p_shop_code\":\"alchemy\",\"p_item_code\":\"pill_lk_mp\",\"p_qty\":1}",
+  "method": "POST",
+  "mode": "cors",
+  "credentials": "include"
+});
+data
+{
+    "p_character_id": "1cb54f4d-437f-4e91-be0c-5b4e3df39b02",
+    "p_shop_code": "alchemy",
+    "p_item_code": "pill_lk_mp",
+    "p_qty": 1
+}
+preview
+{
+    "ok": true,
+    "qty": 1,
+    "spent": 60,
+    "instances": false,
+    "item_code": "pill_lk_mp"
+}
