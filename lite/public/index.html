@@ -116,12 +116,13 @@
 
   <script>
     const FEATURES = [
-      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","nhap_mong","khoi_loi","ki_ngo","vip_daily",
+      "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","rank_challenge","nhap_mong","khoi_loi","ki_ngo","vip_daily",
       "auto_equip","craft","body_cult"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
-      achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", nhap_mong:"Nhập Mộng", khoi_loi:"Khôi Lỗi",
+      achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", rank_challenge:"RankCh",
+      nhap_mong:"Nhập Mộng", khoi_loi:"Khôi Lỗi",
       ki_ngo:"Kì ngộ", vip_daily:"VIP daily",
       auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể"
     };
@@ -150,6 +151,16 @@
         {k:"max_hunt",l:"Tối đa ID hunt",t:"number",min:1,max:50},
         {k:"daily_completed",l:"Đã đánh hôm nay (tự đếm)",t:"number",min:0},
         {k:"daily_date",l:"Ngày đếm (tự)",t:"text"},
+        {k:"daily_locked",l:"Đủ hôm nay — chờ 00h",t:"bool"},
+      ],
+      rank_challenge: [
+        {k:"board_code",l:"Board (auto/lk/tc/kd/na/ht/lh)",t:"select",o:["auto","lk","tc","kd","na","ht","lh"]},
+        {k:"daily_limit",l:"Lượt / ngày (max 20)",t:"number",min:1,max:20},
+        {k:"max_fights_per_tick",l:"Số trận / lần check",t:"number",min:1,max:20},
+        {k:"delay_ms",l:"Delay giữa trận (ms)",t:"number",min:500},
+        {k:"prefer_hunt",l:"Ưu tiên ID đã thắng",t:"bool"},
+        {k:"remaining_today",l:"Còn lượt (tự từ API)",t:"number",min:0,max:20},
+        {k:"daily_date",l:"Ngày (tự)",t:"text"},
         {k:"daily_locked",l:"Đủ hôm nay — chờ 00h",t:"bool"},
       ],
       nhap_mong: [
@@ -816,6 +827,13 @@
           forging: "Luyện khí (forging)",
           talisman: "Phù lục (talisman)",
           formation: "Trận pháp (formation)",
+          auto: "auto (theo cảnh giới)",
+          lk: "lk · Luyện Khí",
+          tc: "tc · Trúc Cơ",
+          kd: "kd · Kim Đan",
+          na: "na · Nguyên Anh",
+          ht: "ht · Hoá Thần",
+          lh: "lh · Luyện Hư",
         };
         return `<div class="f"><label>${esc(f.l)}</label><select data-k="${f.k}">${(f.o||[]).map(o=>`<option value="${esc(o)}" ${String(val)===String(o)?"selected":""}>${esc(labels[o]||o)}</option>`).join("")}</select>${f.hint?`<div class="mu" style="font-size:10px;margin-top:2px">${esc(f.hint)}</div>`:""}</div>`;
       }

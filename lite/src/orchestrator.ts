@@ -23,6 +23,7 @@ import {
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
+  runRankChallengeAuto,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -154,11 +155,6 @@ function onLog(accountId: string, module: string) {
   return (level: any, message: string) => {
     const lv = String(level || "INFO").toUpperCase() as any;
     const text = String(message || "");
-    // TEMP debug WB: HIT/dame luôn force, không rate-limit
-    if (module === "WORLD_BOSS" && (/^HIT |dame|HP boss/i.test(text) || lv === "SUCCESS" || lv === "WARN")) {
-      store.addLog(accountId, module, lv, text, { force: true });
-      return;
-    }
     if (!shouldAcceptEngineLog(module, lv, text)) return;
     const gated = logGate.allow(accountId, module, lv, text);
     if (!gated) return;
@@ -376,9 +372,8 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = 15 * 60_000;
     } else if (featureId === "world_boss") {
-      // Auto: 1 tick = 1 attack ~3s khi sống; chết = chờ hồi. Luôn force log mỗi tick.
+      // Auto: 1 tick = 1 attack ~3s khi sống; chết = chờ hồi. Log thưa.
       const HIT_MS = 3000;
-      store.addLog(accountId, "WORLD_BOSS", "INFO", "WB tick…", { force: true });
       let result: any;
       try {
         result = await runWorldBossAuto({
@@ -396,7 +391,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       } catch (wbErr: any) {
         status = "error";
         errMsg = wbErr?.message || "WB crash";
-        store.addLog(accountId, "WORLD_BOSS", "ERROR", `WB CRASH · ${errMsg}`, { force: true });
+        sysLog(accountId, "WORLD_BOSS", "ERROR", errMsg);
         nextDelayMs = 15_000;
         result = null;
       }
@@ -405,52 +400,30 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         const hpLeft = hit && Number.isFinite(Number(hit.hpAfter)) ? Number(hit.hpAfter) : null;
         const bossStillAlive = hit?.ok === true && (hpLeft === null || hpLeft > 0) && !hit.killed;
 
-        // QUAN TRỌNG: boss còn máu → luôn 3s. Không bao giờ 2p.
         if (bossStillAlive || (result.status === "DONE" && (result.attackCount || 0) > 0 && result.status !== "WAITING_RESPAWN")) {
-          nextDelayMs = HIT_MS; // cố định 3s
+          nextDelayMs = HIT_MS;
         } else if (result.status === "WAITING_RESPAWN") {
           nextDelayMs = Math.min(90_000, Math.max(60_000, Number(result.nextCheckMs || 60_000)));
         } else if (hit && hit.ok === false) {
-          nextDelayMs = HIT_MS; // fail (cooldown…) vẫn thử lại 3s
+          nextDelayMs = HIT_MS;
         } else {
           nextDelayMs = Math.min(5_000, Math.max(HIT_MS, Number(result.nextCheckMs || HIT_MS)));
         }
 
-        const nextLabel =
-          nextDelayMs >= 3600_000
-            ? `${(nextDelayMs / 3600_000).toFixed(1)}h hồi`
-            : nextDelayMs >= 60_000
-              ? `${Math.round(nextDelayMs / 60000)}p`
-              : `${Math.round(nextDelayMs / 1000)}s`;
-
         if (result.status === "ERROR") {
           status = "error";
           errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
-          store.addLog(accountId, "WORLD_BOSS", "ERROR", `WB ERROR · ${errMsg} · next ${nextLabel}`, {
-            force: true,
-          });
         } else if (result.status === "WAITING_RESPAWN" && !bossStillAlive) {
-          store.addLog(
-            accountId,
-            "WORLD_BOSS",
-            "WARN",
-            `WB chờ boss hồi · next ${nextLabel}`,
-            { force: true }
-          );
-        } else if (hit) {
-          const line = hit.ok
-            ? `HIT ${hit.tier} · dame -${Number.isFinite(hit.damage) ? Number(hit.damage).toLocaleString() : "?"} · HP còn ${Number.isFinite(hit.hpAfter) ? Number(hit.hpAfter).toLocaleString() : "?"} · next ${nextLabel}`
-            : `HIT FAIL ${hit.tier || "?"} · ${String(hit.error || "?").slice(0, 80)} · next ${nextLabel}`;
-          store.addLog(accountId, "WORLD_BOSS", hit.ok ? "SUCCESS" : "WARN", line, { force: true });
-        } else {
-          store.addLog(
-            accountId,
-            "WORLD_BOSS",
-            "INFO",
-            `WB ${result.status} · atk ${result.attackCount || 0} · next ${nextLabel}`,
-            { force: true }
-          );
+          sysLog(accountId, "WORLD_BOSS", "INFO", `WB chờ hồi · next ${Math.ceil(nextDelayMs / 60000)}p`);
+        } else if (hit?.ok && hit.killed) {
+          sysLog(accountId, "WORLD_BOSS", "SUCCESS", `WB KILL · claim ${result.claimCount || 0}`);
+        } else if (hit?.ok === false) {
+          // cooldown fail: thưa log
+          const gated = logGate.allow(accountId, "WORLD_BOSS", "WARN", "WB hit fail", { minIntervalMs: 30_000 });
+          if (gated) store.addLog(accountId, "WORLD_BOSS", "WARN", gated);
         }
+        // hit OK thường: không log mỗi 3s (đã ổn)
+
         if (result.claimed || (result.claimStones || 0) > 0) {
           try {
             await refreshAccountInfo(accountId);
@@ -595,6 +568,47 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
             sysLog(accountId, "MAZE", "INFO", `Mê cung tạm dừng · ${daily.completed}/${daily.target} · tiếp sau 30s`);
           }
         }
+      }
+    } else if (featureId === "rank_challenge") {
+      // Rank challenge: 20 lượt/ngày (remaining_today), thắng → lưu character_id hunt
+      const result = await runRankChallengeAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        realmCode: String(acc.realmCode || acc.realmTier || ""),
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "RANK_CH"),
+      });
+
+      store.setFeature(accountId, "rank_challenge", {
+        settings: {
+          ...settings,
+          remaining_today: result.remainingToday ?? settings.remaining_today,
+          daily_date: result.dailyDate,
+          daily_locked: result.dailyLocked,
+          hunt_list: result.huntList || settings.hunt_list || [],
+          board_code: result.boardCode || settings.board_code,
+        },
+      });
+
+      nextDelayMs = Math.max(15_000, Number(result.nextDelayMs || 60_000));
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Rank challenge error";
+      } else if (result.status === "LOCKED") {
+        sysLog(
+          accountId,
+          "RANK_CH",
+          "SUCCESS",
+          `RankCh xong hôm nay · ${result.wins}W/${result.losses}L · hunt ${result.huntList?.length || 0} · chờ 00:00 VN`
+        );
+      } else {
+        sysLog(
+          accountId,
+          "RANK_CH",
+          "INFO",
+          `RankCh ${result.status} · ${result.wins}W/${result.losses}L · còn ${result.remainingToday ?? "?"} · hunt ${result.huntList?.length || 0}`
+        );
       }
     } else if (featureId === "pvp") {
       // PVP theo ngày: daily_target (vd 30) → đủ thì khóa đến 00:00 VN

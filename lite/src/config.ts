@@ -41,6 +41,7 @@ export type FeatureId =
   | "mail"
   | "maze"
   | "pvp"
+  | "rank_challenge"
   | "nhap_mong"
   | "khoi_loi"
   | "ki_ngo"
@@ -59,6 +60,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   mail: "Nhận mail",
   maze: "Mê cung",
   pvp: "Auto PVP",
+  rank_challenge: "Rank Challenge",
   nhap_mong: "Nhập Mộng",
   khoi_loi: "Khôi Lỗi",
   ki_ngo: "Kì ngộ",
@@ -108,6 +110,23 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     daily_date: "",
     daily_completed: 0,
     daily_locked: false,
+  },
+  rank_challenge: {
+    /** board: auto | lk | tc | kd | na | ht | lh */
+    board_code: "auto",
+    /** lượt/ngày (game 20) */
+    daily_limit: 20,
+    delay_ms: 1500,
+    max_fights_per_tick: 5,
+    prefer_hunt: true,
+    min_level: 1,
+    max_level: 20,
+    board_limit: 20,
+    // tự lưu
+    remaining_today: 20,
+    daily_date: "",
+    daily_locked: false,
+    hunt_list: [],
   },
   nhap_mong: {
     /** safe | gamble | first */

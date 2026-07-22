@@ -104,10 +104,11 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
   }
 
   if (module === "WORLD_BOSS") {
-    // TEMP: luôn cho qua log hit/dame/HP
-    if (lv === "ERROR" || lv === "SUCCESS" || lv === "WARN") return true;
-    return /HIT|dame|HP|dmg|rank|sống|chết|check|claim|xong|atk|next|không có boss|WB /i.test(text);
+    if (lv === "ERROR" || lv === "SUCCESS") return true;
+    if (lv === "WARN") return /chờ|hồi|closed|fail|error|kill/i.test(text);
+    return /chờ|hồi|KILL|claim|xong|không có boss/i.test(text);
   }
+
 
   if (module === "BUFF" || module === "CLAIM_EXP" || module === "ACHIEVEMENT" || module === "MAIL") {
     return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN";
@@ -122,6 +123,15 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
 
   if (module === "PVP") {
     return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /xong|win|loss|hết lượt/i.test(text);
+  }
+
+  if (module === "RANK_CH") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /win|lose|còn|xong|hunt|rank|hôm nay|00:00/i.test(text)
+    );
   }
 
   if (module === "NHAP_MONG") {
