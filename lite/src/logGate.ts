@@ -168,7 +168,7 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
       lv === "ERROR" ||
       lv === "SUCCESS" ||
       lv === "WARN" ||
-      /craft|recipe|luyện đan|luyện khí|alchemy|forging|tải|ok |fail|pause|rương|thiếu/i.test(text)
+      /craft|recipe|luyện đan|luyện khí|phù|trận|alchemy|forging|talisman|formation|quick|tải|ok |fail|pause|rương|thiếu/i.test(text)
     );
   }
 

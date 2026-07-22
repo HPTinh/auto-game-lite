@@ -216,13 +216,15 @@
         {k:"interval_seconds",l:"Chu kỳ (s)",t:"number",min:30},
         {k:"auto_equip",l:"Tự mặc",t:"bool"},
       ],
-      // craft dùng UI riêng (alchemy + forging) — FIELDS chỉ fallback
+      // craft UI riêng (4 category + quick VIP) — FIELDS fallback
       craft: [
-        {k:"category",l:"Mục craft",t:"select",o:["alchemy","forging"]},
+        {k:"category",l:"Mục craft",t:"select",o:["alchemy","forging","talisman","formation"]},
         {k:"recipe_code",l:"Recipe code",t:"text"},
         {k:"tier",l:"Tier",t:"select",o:["all","lk","tc","kd","na","ht","lh"]},
         {k:"times_per_run",l:"Lần/vòng",t:"number",min:1,max:50},
-        {k:"interval_seconds",l:"Chu kỳ (s)",t:"number",min:5},
+        {k:"interval_seconds",l:"Chu kỳ manual (s)",t:"number",min:3},
+        {k:"use_quick_craft",l:"Craft nhanh VIP≥5 (rpc_craft_auto)",t:"bool"},
+        {k:"quick_craft_delay_ms",l:"Delay craft nhanh (ms, min 3000)",t:"number",min:3000,max:60000},
         {k:"pause_on_fail_minutes",l:"Nghỉ khi lỗi (phút)",t:"number",min:1},
         {k:"auto_load_recipes",l:"Tự tải list nếu rỗng",t:"bool"},
         {k:"auto_open_containers",l:"Thiếu NL → mở rương",t:"bool"},
@@ -507,10 +509,14 @@
     function craftCatNorm(c) {
       const r = String(c || "alchemy").toLowerCase();
       if (r === "forging" || r === "forge" || r === "luyen_khi") return "forging";
+      if (r === "talisman" || r === "phu_luc") return "talisman";
+      if (r === "formation" || r === "array" || r === "tran_phap") return "formation";
+      if (r === "alchemy" || r === "luyen_dan") return "alchemy";
       return "alchemy";
     }
     function craftCatLabel(c) {
-      return craftCatNorm(c) === "forging" ? "Luyện khí" : "Luyện đan";
+      const m = { alchemy:"Luyện đan", forging:"Luyện khí", talisman:"Phù lục", formation:"Trận pháp" };
+      return m[craftCatNorm(c)] || craftCatNorm(c);
     }
 
     function craftRecipeListHtml(draft) {
@@ -558,19 +564,28 @@
         const on = v === undefined || v === null || v === "" ? defTrue : (v === true || v === "true" || v === 1 || v === "1");
         return on;
       };
-      const searchPh = cat === "forging"
-        ? "weapon, armor, boots, dao_quang, ore..."
+      const searchPh =
+        cat === "forging" ? "weapon, armor, boots, dao_quang..."
+        : cat === "talisman" ? "atk, crit, def, hp, tu_linh..."
+        : cat === "formation" ? "dragon, tiger, turtle, ngu_hanh..."
         : "mp, sta, tu_vi, linh_thu...";
-      const codePh = cat === "forging" ? "r_dao_khi_dao_quang_lk" : "r_pill_lk_sta";
+      const codePh =
+        cat === "forging" ? "r_dao_khi_dao_quang_lk"
+        : cat === "talisman" ? "r_talisman_lk_atk"
+        : cat === "formation" ? "r_formation_lk_dragon"
+        : "r_pill_lk_sta";
       return `
         <div class="mu" style="font-size:11px;margin-bottom:8px">
-          <b>alchemy</b> = Luyện đan · <b>forging</b> = Luyện khí. Tải list → chọn recipe → Lưu → Start.
+          <b>alchemy</b> đan · <b>forging</b> khí · <b>talisman</b> phù · <b>formation</b> trận.
+          Craft nhanh (VIP≥5): <code>rpc_craft_auto</code> mỗi ~3s.
         </div>
         <div class="f">
           <label>Mục craft</label>
           <select data-k="category" id="craftCategory">
             <option value="alchemy" ${cat==="alchemy"?"selected":""}>alchemy · Luyện đan</option>
             <option value="forging" ${cat==="forging"?"selected":""}>forging · Luyện khí</option>
+            <option value="talisman" ${cat==="talisman"?"selected":""}>talisman · Phù lục</option>
+            <option value="formation" ${cat==="formation"?"selected":""}>formation · Trận pháp</option>
           </select>
         </div>
         <div class="grid2">
@@ -613,6 +628,11 @@
             <label>Lỗi thật → nghỉ (phút)</label>
             <input data-k="pause_on_fail_minutes" type="number" min="1" value="${esc(draft.pause_on_fail_minutes ?? 30)}" />
           </div>
+        </div>
+        <div class="f chk"><input type="checkbox" data-k="use_quick_craft" ${bool("use_quick_craft", false)?"checked":""}/><label>Craft nhanh VIP ≥ 5 (rpc_craft_auto · ~3s/lần)</label></div>
+        <div class="f">
+          <label>Delay craft nhanh (ms, min 3000)</label>
+          <input data-k="quick_craft_delay_ms" type="number" min="3000" max="60000" value="${esc(draft.quick_craft_delay_ms ?? 3000)}" />
         </div>
         <div class="f chk"><input type="checkbox" data-k="auto_load_recipes" ${bool("auto_load_recipes", true)?"checked":""}/><label>Tự tải list nếu cache rỗng khi Start</label></div>
         <div class="f chk"><input type="checkbox" data-k="auto_open_containers" ${bool("auto_open_containers", true)?"checked":""}/><label>Thiếu nguyên liệu → mở rương</label></div>
@@ -784,6 +804,8 @@
           first: "Luôn chọn đáp án đầu",
           alchemy: "Luyện đan (alchemy)",
           forging: "Luyện khí (forging)",
+          talisman: "Phù lục (talisman)",
+          formation: "Trận pháp (formation)",
         };
         return `<div class="f"><label>${esc(f.l)}</label><select data-k="${f.k}">${(f.o||[]).map(o=>`<option value="${esc(o)}" ${String(val)===String(o)?"selected":""}>${esc(labels[o]||o)}</option>`).join("")}</select>${f.hint?`<div class="mu" style="font-size:10px;margin-top:2px">${esc(f.hint)}</div>`:""}</div>`;
       }

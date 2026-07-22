@@ -833,14 +833,22 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
     } else if (featureId === "craft") {
-      // alchemy = luyện đan · forging = luyện khí (API p_category, không dùng "forge")
+      // alchemy | forging | talisman | formation + craft nhanh VIP>=5 (rpc_craft_auto)
       const category = normalizeCraftCategory(settings.category || "alchemy");
+      const vipLevel = Number(acc.vipLevel ?? settings.vip_level ?? 0);
       let craftSettings = {
         ...settings,
         category,
+        vip_level: Number.isFinite(vipLevel) ? vipLevel : 0,
         mode: settings.mode || "manual",
       };
-      const catLabel = category === "forging" ? "luyện khí" : "luyện đan";
+      const catLabels: Record<string, string> = {
+        alchemy: "luyện đan",
+        forging: "luyện khí",
+        talisman: "phù lục",
+        formation: "trận pháp",
+      };
+      const catLabel = catLabels[category] || category;
 
       // Tự tải danh sách recipe theo category nếu cache rỗng
       if (
@@ -878,7 +886,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         status = "error";
         errMsg = `Chưa chọn recipe_code (${catLabel})`;
         nextDelayMs = Math.max(60_000, Number(craftSettings.interval_seconds || 20) * 1000);
-        sysLog(accountId, "CRAFT", "WARN", `Craft: chưa chọn recipe — ⚙ Craft → chọn ${catLabel} → Tải list → pick`);
+        sysLog(accountId, "CRAFT", "WARN", `Craft: chưa chọn recipe — ⚙ Craft → ${catLabel} → Tải list → pick`);
       } else {
         const result = await runCraftAuto({
           characterId: runtime.characterId,
@@ -888,7 +896,10 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           shouldStop: () => !isAllowed(accountId, featureId, token),
         } as any);
 
-        nextDelayMs = Math.max(5_000, Number(result?.nextDelayMs || (craftSettings.interval_seconds || 20) * 1000));
+        // quick craft: min 3s; manual: min 5s
+        const wantQuick = craftSettings.use_quick_craft === true || craftSettings.quick_craft === true;
+        const minNext = wantQuick && vipLevel >= 5 ? 3000 : 5_000;
+        nextDelayMs = Math.max(minNext, Number(result?.nextDelayMs || (craftSettings.interval_seconds || 20) * 1000));
 
         if (result?.status === "ERROR") {
           status = "error";
@@ -901,11 +912,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
             Array.isArray(result?.rewards) && result.rewards.length
               ? result.rewards.map((r: any) => `${r.code || "?"}x${r.qty || 1}`).join(",")
               : "-";
+          const quickTag = wantQuick && vipLevel >= 5 ? "QUICK" : "manual";
           sysLog(
             accountId,
             "CRAFT",
             result?.successCount > 0 ? "SUCCESS" : result?.status === "PAUSED" || result?.status === "SKIPPED" ? "WARN" : "INFO",
-            `Craft ${result?.status} · ${category} · ${result?.recipeCode || "?"} · ok ${result?.successCount || 0}/fail ${result?.failCount || 0} · ${rewardText} · next ${Math.round(nextDelayMs / 1000)}s`
+            `Craft ${result?.status} · ${quickTag} · ${category} · ${result?.recipeCode || "?"} · ok ${result?.successCount || 0}/fail ${result?.failCount || 0} · ${rewardText} · next ${Math.round(nextDelayMs / 1000)}s`
           );
         }
       }

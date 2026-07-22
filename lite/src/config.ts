@@ -214,9 +214,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   },
   craft: {
     /**
-     * category API:
+     * category API (rpc_list_recipes p_category):
      * - alchemy = Luyện đan
-     * - forging = Luyện khí (không dùng "forge")
+     * - forging = Luyện khí
+     * - talisman = Phù lục
+     * - formation = Trận pháp
      */
     mode: "manual",
     category: "alchemy",
@@ -226,7 +228,14 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     selected_recipe_tier: "",
     recipe_search: "",
     times_per_run: 1,
+    /** chu kỳ craft manual (giây) */
     interval_seconds: 20,
+    /**
+     * Craft nhanh (rpc_craft_auto) — chỉ VIP >= 5.
+     * Delay mặc định 3000ms (3s/lần theo craft.txt).
+     */
+    use_quick_craft: false,
+    quick_craft_delay_ms: 3000,
     pause_on_fail_minutes: 30,
     /** tự tải rpc_list_recipes(category) nếu recipe_cache rỗng */
     auto_load_recipes: true,

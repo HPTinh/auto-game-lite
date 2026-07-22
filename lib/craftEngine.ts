@@ -71,21 +71,28 @@ const TIER_LABELS: Record<string, string> = {
 
 const CATEGORY_LABELS: Record<string, string> = {
   alchemy: "Luyện đan (hệ Mộc)",
-  /** API thật dùng forging (không phải forge) — xem craft.txt */
+  /** API: forging (không phải forge) */
   forging: "Luyện khí",
   forge: "Luyện khí",
+  /** API: formation (không phải array) */
+  formation: "Trận pháp",
   array: "Trận pháp",
+  /** API: talisman */
   talisman: "Phù lục",
 };
 
-/** Category được hỗ trợ list + craft hiện tại */
-export const CRAFT_SUPPORTED_CATEGORIES = ["alchemy", "forging"] as const;
+/** Category list + craft hiện hỗ trợ (rpc_list_recipes p_category) */
+export const CRAFT_SUPPORTED_CATEGORIES = ["alchemy", "forging", "talisman", "formation"] as const;
 export type CraftSupportedCategory = (typeof CRAFT_SUPPORTED_CATEGORIES)[number];
 
+/** VIP tối thiểu để dùng rpc_craft_auto (craft nhanh) */
+export const CRAFT_QUICK_MIN_VIP = 5;
+/** Delay mặc định craft nhanh (ms) — craft.txt ~3s/lần */
+export const CRAFT_QUICK_DEFAULT_DELAY_MS = 3000;
+
 /**
- * Chuẩn hoá category gửi RPC:
- * - forge / luyen_khi / luyện khí → forging
- * - alchemy / luyen_dan → alchemy
+ * Chuẩn hoá category gửi RPC (craft.txt):
+ * - alchemy | forging | talisman | formation
  */
 export const normalizeCraftCategory = (category: any): CraftSupportedCategory => {
   const raw = String(category || "alchemy").toLowerCase().trim();
@@ -95,7 +102,18 @@ export const normalizeCraftCategory = (category: any): CraftSupportedCategory =>
   if (raw === "alchemy" || raw === "luyen_dan" || raw === "luyện đan" || raw === "luyen dan") {
     return "alchemy";
   }
-  // fallback: nếu lạ thì alchemy
+  if (raw === "talisman" || raw === "phu_luc" || raw === "phù lục" || raw === "phu luc") {
+    return "talisman";
+  }
+  if (
+    raw === "formation" ||
+    raw === "array" ||
+    raw === "tran_phap" ||
+    raw === "trận pháp" ||
+    raw === "tran phap"
+  ) {
+    return "formation";
+  }
   if ((CRAFT_SUPPORTED_CATEGORIES as readonly string[]).includes(raw)) return raw as CraftSupportedCategory;
   return "alchemy";
 };
@@ -171,8 +189,30 @@ const inferTierFromCode = (recipeCode: string, settingsTier: any): CraftTierCode
 const inferKindLabel = (recipe: any) => {
   const code = String(recipe?.recipe_code || recipe?.output_code || "").toLowerCase();
   const meta = recipe?.meta || {};
+  const cat = String(recipe?.category || "").toLowerCase();
+  // Formation / trận pháp
+  if (cat === "formation" || code.includes("formation") || code.includes("tran") || code.includes("array")) {
+    if (code.includes("dragon")) return "Trận Rồng";
+    if (code.includes("tiger")) return "Trận Hổ";
+    if (code.includes("turtle")) return "Trận Rùa";
+    if (code.includes("tu_linh")) return "Trận Tứ Linh";
+    if (code.includes("ngu_hanh")) return "Ngũ Hành Trận";
+    return "Trận pháp";
+  }
+  // Talisman / phù lục
+  if (cat === "talisman" || code.includes("talisman") || code.includes("phu")) {
+    if (code.includes("_atk") || code.includes("atk")) return "Phù ATK";
+    if (code.includes("crit")) return "Phù Crit";
+    if (code.includes("_def") || code.includes("def")) return "Phù DEF";
+    if (code.includes("_hp") || code.includes("hp")) return "Phù HP";
+    if (code.includes("tu_linh")) return "Phù Tứ Linh";
+    if (code.includes("tay_tuy")) return "Tẩy tuỷ phù";
+    return "Phù lục";
+  }
   // Forging / luyện khí
-  if (meta.dao_khi || code.includes("dao_khi") || code.includes("dao_quang") || code.includes("dao_tinh")) return "Đạo khí";
+  if (meta.dao_khi || code.includes("dao_khi") || code.includes("dao_quang") || code.includes("dao_tinh") || code.includes("dao_hon")) {
+    return "Đạo khí";
+  }
   if (code.includes("eq_weapon") || code.includes("_weapon_")) return "Vũ khí";
   if (code.includes("eq_armor") || code.includes("_armor_")) return "Giáp";
   if (code.includes("eq_boots") || code.includes("_boots_")) return "Giày";
@@ -416,13 +456,29 @@ export const runCraftAuto = async ({
   const recipeCode = String(settings.recipe_code || settings.selected_recipe_code || "").trim();
   const tierCode = inferTierFromCode(recipeCode, settings.tier || settings.realm_code || settings.selected_recipe_tier);
   const times = clampNumber(settings.times_per_run ?? settings.p_times ?? 1, 1, 50, 1);
-  const intervalSeconds = clampNumber(settings.interval_seconds ?? 20, 5, 24 * 60 * 60, 20);
   const pauseMinutes = clampNumber(settings.pause_on_fail_minutes ?? 30, 1, 24 * 60, 30);
-  const intervalMs = intervalSeconds * 1000;
   const pauseMs = pauseMinutes * 60_000;
   const autoOpenContainers = settings.auto_open_containers !== false;
   const autoUseRecoveryItems = settings.auto_use_recovery_items !== false;
   const retryDelayMs = clampNumber(settings.retry_delay_ms ?? 700, 200, 5000, 700);
+
+  // VIP >= 5 + bật quick → rpc_craft_auto, delay ~3s (craft.txt)
+  const vipLevel = Number(settings.vip_level ?? settings.vipLevel ?? settings.vip ?? 0);
+  const wantQuick =
+    settings.use_quick_craft === true ||
+    settings.quick_craft === true ||
+    String(settings.mode || "").toLowerCase() === "auto" ||
+    String(settings.mode || "").toLowerCase() === "quick";
+  const canQuick = wantQuick && Number.isFinite(vipLevel) && vipLevel >= CRAFT_QUICK_MIN_VIP;
+  const craftRpc = canQuick ? "rpc_craft_auto" : "rpc_craft_manual";
+
+  // Delay: quick min 3s; manual theo interval_seconds (default 20)
+  const quickDelayMs = Math.max(
+    CRAFT_QUICK_DEFAULT_DELAY_MS,
+    clampNumber(settings.quick_craft_delay_ms ?? settings.quick_delay_ms ?? CRAFT_QUICK_DEFAULT_DELAY_MS, 3000, 60_000, CRAFT_QUICK_DEFAULT_DELAY_MS)
+  );
+  const intervalSeconds = clampNumber(settings.interval_seconds ?? 20, 3, 24 * 60 * 60, 20);
+  const intervalMs = canQuick ? quickDelayMs : intervalSeconds * 1000;
 
   if (!recipeCode) {
     onLog?.("WARN", "Auto Craft chưa chọn recipe_code.", { category, tierCode });
@@ -455,11 +511,20 @@ export const runCraftAuto = async ({
     };
   }
 
+  if (wantQuick && !canQuick) {
+    onLog?.(
+      "WARN",
+      `Craft nhanh cần VIP >= ${CRAFT_QUICK_MIN_VIP} (hiện VIP ${Number.isFinite(vipLevel) ? vipLevel : "?"}) → dùng rpc_craft_manual`
+    );
+  }
+
   const usedItems: Array<{ itemCode: string; ok: boolean; raw?: any }> = [];
   let openedContainers = 0;
 
   const craftOnce = async () => {
-    const data = await rpc(accessToken, "rpc_craft_manual", {
+    // craft.txt: rpc_craft_auto (VIP nhanh) / rpc_craft_manual (thủ công)
+    // body: p_character_id, p_recipe_code, p_times
+    const data = await rpc(accessToken, craftRpc, {
       p_character_id: characterId,
       p_recipe_code: recipeCode,
       p_times: times,
@@ -494,7 +559,11 @@ export const runCraftAuto = async ({
     return used;
   };
 
-  onLog?.("INFO", `Craft ${recipeCode} x${times} (${getCraftCategoryLabel(category)}).`, { recipeCode, times, category, tierCode });
+  onLog?.(
+    "INFO",
+    `Craft ${recipeCode} x${times} · ${getCraftCategoryLabel(category)} · ${canQuick ? "QUICK rpc_craft_auto" : "manual rpc_craft_manual"} · VIP ${Number.isFinite(vipLevel) ? vipLevel : "?"} · next ${Math.round(intervalMs / 1000)}s`,
+    { recipeCode, times, category, tierCode, craftRpc, vipLevel, canQuick }
+  );
 
   try {
     let analysis = await craftOnce();
