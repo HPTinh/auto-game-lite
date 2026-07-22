@@ -112,21 +112,22 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     daily_locked: false,
   },
   rank_challenge: {
-    /** board: auto | lk | tc | kd | na | ht | lh */
+    /** board: auto | lk | tc | kd | na | ht | lh — preview win dùng "na" */
     board_code: "auto",
-    /** lượt/ngày (game 20) */
+    /** lượt/ngày (game 20, remaining_today) */
     daily_limit: 20,
     delay_ms: 1500,
     max_fights_per_tick: 5,
     prefer_hunt: true,
     min_level: 1,
-    max_level: 20,
+    max_level: 99,
     board_limit: 20,
     // tự lưu
     remaining_today: 20,
     daily_date: "",
     daily_locked: false,
     hunt_list: [],
+    last_board_code: "",
   },
   nhap_mong: {
     /** safe | gamble | first */

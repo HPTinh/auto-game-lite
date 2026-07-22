@@ -12,7 +12,8 @@
   // ---------- CONFIG ----------
   const ACCESS_TOKEN = "PASTE_BEARER_TOKEN_HERE";
   const CHARACTER_ID = "PASTE_CHARACTER_UUID_HERE";
-  const BOARD_CODE = "lk"; // lk | tc | kd | na | ht | lh
+  // Preview win thật: board_code "na" (Nguyên Anh). Đổi theo cảnh giới!
+  const BOARD_CODE = "na"; // lk | tc | kd | na | ht | lh
   // ----------------------------
 
   const MAX_FIGHTS = 3; // số trận thử trong 1 lần dán
@@ -60,7 +61,7 @@
   const lb = await rpc("rpc_sect_rank_leaderboard", {
     p_character_id: CHARACTER_ID,
     p_min_level: 1,
-    p_max_level: 20,
+    p_max_level: 99,
     p_limit: 20,
   });
 
@@ -108,8 +109,11 @@
     return;
   }
 
-  // Chon doi thu: khong phai minh, uu tien atk thap
+  // Chon doi thu: khong phai minh; uu tien NPC/Tran, roi atk thap (de win)
   const self = String(CHARACTER_ID);
+  function isEasy(name) {
+    return /\[NPC\]|\[Trấn\]|\[Tran\]|NPC|Lính|Linh #/i.test(String(name || ""));
+  }
   const candidates = rows
     .map(function (r, idx) {
       return {
@@ -124,6 +128,9 @@
       return t.character_id && String(t.character_id) !== self && t.slot >= 1;
     })
     .sort(function (a, b) {
+      const ea = isEasy(a.name) ? 0 : 1;
+      const eb = isEasy(b.name) ? 0 : 1;
+      if (ea !== eb) return ea - eb;
       return Number(a.atk || 0) - Number(b.atk || 0);
     });
 
@@ -189,10 +196,23 @@
     }
 
     const d = ch.data || {};
-    const win = d.win === true || (d.battle && d.battle.winner === "attacker");
+    // Preview win: win=true | battle.winner=attacker | final.defender_hp=0
+    const win =
+      d.win === true ||
+      (d.battle && d.battle.winner === "attacker") ||
+      (d.battle && d.battle.final && Number(d.battle.final.defender_hp) === 0);
     remaining = d.remaining_today != null ? Number(d.remaining_today) : remaining;
-    const defId = d.defender && d.defender.character_id ? d.defender.character_id : t.character_id;
-    const defName = d.defender && d.defender.name ? d.defender.name : t.name;
+    const defId =
+      (d.defender && d.defender.character_id) ||
+      (d.battle && d.battle.defender && d.battle.defender.character_id) ||
+      t.character_id;
+    const defName =
+      (d.defender && d.defender.name) ||
+      (d.battle && d.battle.defender && d.battle.defender.name) ||
+      t.name;
+    if (d.board_code) {
+      console.log("[RankCh] board_code response =", d.board_code, "(dat BOARD_CODE dung nhu vay)");
+    }
 
     if (win) {
       hunt.push({ id: defId, name: defName, slot: d.target_slot != null ? d.target_slot : slot });

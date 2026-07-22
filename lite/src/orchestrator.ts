@@ -575,7 +575,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings,
-        realmCode: String(acc.realmCode || acc.realmTier || ""),
+        realmCode: String(acc.realmCode || acc.realmLabel || acc.realmTier || ""),
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "RANK_CH"),
       });
@@ -587,7 +587,8 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           daily_date: result.dailyDate,
           daily_locked: result.dailyLocked,
           hunt_list: result.huntList || settings.hunt_list || [],
-          board_code: result.boardCode || settings.board_code,
+          board_code: settings.board_code || "auto",
+          last_board_code: result.boardCode || settings.last_board_code || "",
         },
       });
 

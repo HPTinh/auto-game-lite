@@ -97,19 +97,40 @@ export function msUntilNextVnMidnight(nowMs = Date.now()): number {
   return Math.max(60_000, nextMidnightUtcMs - nowMs + 5_000);
 }
 
-/** Map realm → board_code (lk/tc/kd/…) */
+/** Map realm / last board → board_code (preview win: board_code "na") */
 function resolveBoardCode(settings: Record<string, any>, realmCode?: string): string {
   const raw = String(settings.board_code || settings.board || "auto").toLowerCase().trim();
   if (raw && raw !== "auto") {
     if (["lk", "tc", "kd", "na", "ht", "lh"].includes(raw)) return raw;
   }
-  const realm = String(realmCode || settings.realm_code || "").toLowerCase();
-  if (realm.includes("truc") || realm === "tc") return "tc";
+  // Lưu từ response win lần trước
+  const last = String(settings.last_board_code || "").toLowerCase().trim();
+  if (["lk", "tc", "kd", "na", "ht", "lh"].includes(last)) return last;
+
+  const realm = String(realmCode || settings.realm_code || settings.realmLabel || "").toLowerCase();
+  if (realm.includes("truc") || realm.includes("trúc") || realm === "tc") return "tc";
   if (realm.includes("kim") || realm === "kd") return "kd";
-  if (realm.includes("nguyen") || realm === "na") return "na";
-  if (realm.includes("hoa") || realm === "ht") return "ht";
-  if (realm.includes("luyen_hu") || realm === "lh") return "lh";
+  if (realm.includes("nguyen") || realm.includes("nguyên") || realm === "na") return "na";
+  if (realm.includes("hoa") || realm.includes("hoá") || realm.includes("hóa") || realm === "ht") return "ht";
+  if (realm.includes("luyen_hu") || realm.includes("luyện hư") || realm === "lh") return "lh";
+  if (realm.includes("luyen_khi") || realm.includes("luyện khí") || realm === "lk") return "lk";
   return "lk";
+}
+
+/** Preview win: win=true | battle.winner=attacker | defender_hp=0 */
+function isChallengeWin(res: any): boolean {
+  if (!res) return false;
+  if (res.win === true) return true;
+  if (res.battle?.winner === "attacker") return true;
+  if (res.battle?.simulation?.winner === "attacker") return true;
+  const defHp = Number(res.battle?.final?.defender_hp);
+  if (Number.isFinite(defHp) && defHp <= 0) return true;
+  return false;
+}
+
+function isEasyNpcName(name: any): boolean {
+  const n = String(name || "");
+  return /\[NPC\]|\[Trấn\]|\[Tran\]|NPC|Lính|Linh #/i.test(n);
 }
 
 function normalizeHunt(list: any): RankHuntTarget[] {
@@ -232,10 +253,15 @@ function pickTargets(
     }
   }
 
-  // Ưu tiên yếu (power thấp)
+  // Ưu tiên: NPC / Trấn (dễ win) → rồi power thấp
   const others = normalized
     .filter((r) => r._id && r._id !== self && r._slot >= 1 && !usedSlots.has(r._slot))
-    .sort((a, b) => powerScore(a) - powerScore(b));
+    .sort((a, b) => {
+      const ea = isEasyNpcName(a.name) ? 0 : 1;
+      const eb = isEasyNpcName(b.name) ? 0 : 1;
+      if (ea !== eb) return ea - eb;
+      return powerScore(a) - powerScore(b);
+    });
 
   for (const r of others) {
     if (usedSlots.has(r._slot)) continue;
@@ -259,7 +285,7 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
   const delayMs = Math.max(800, Number(settings.delay_ms || 1500) || 1500);
   const maxPerTick = Math.max(1, Math.min(20, Math.floor(Number(settings.max_fights_per_tick || 5)) || 5));
   const preferHunt = settings.prefer_hunt !== false;
-  const boardCode = resolveBoardCode(settings, options.realmCode);
+  let boardCode = resolveBoardCode(settings, options.realmCode);
 
   let remaining = Math.max(0, Math.floor(Number(settings.remaining_today ?? dailyLimit)));
   let locked = settings.daily_locked === true;
@@ -301,12 +327,13 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
   try {
     onLog?.("INFO", `RankCh: leaderboard board=${boardCode} · còn ${remaining}/${dailyLimit}`);
 
+    // max_level rộng — preview win realm 31–36 board na
     const board = await rpc(
       "rpc_sect_rank_leaderboard",
       {
         p_character_id: options.characterId,
         p_min_level: Math.max(1, Number(settings.min_level || 1) || 1),
-        p_max_level: Math.max(1, Number(settings.max_level || 20) || 20),
+        p_max_level: Math.max(1, Number(settings.max_level || 99) || 99),
         p_limit: Math.max(10, Math.min(50, Number(settings.board_limit || 20) || 20)),
       },
       options.accessToken
@@ -327,10 +354,15 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
       summary.status = "NO_TARGET";
       summary.reason = "Không chọn được slot";
       summary.nextDelayMs = 10 * 60_000;
-      onLog?.("WARN", "RankCh: không có target");
+      onLog?.("WARN", `RankCh: không có target · rows=${rows.length} · board=${boardCode}`);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
+
+    onLog?.(
+      "INFO",
+      `RankCh: ${targets.length} target · ưu tiên hunt/NPC · slot đầu ${targets[0].slot} ${targets[0].name || ""}`
+    );
 
     const toFight = Math.min(maxPerTick, remaining, targets.length);
     for (let i = 0; i < toFight; i++) {
@@ -350,21 +382,30 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
         );
 
         summary.fought += 1;
-        const win = res?.win === true || res?.battle?.winner === "attacker";
+        // Preview: win, battle.winner, remaining_today, defender.character_id, board_code
+        const win = isChallengeWin(res);
         const rem = Number(res?.remaining_today);
         if (Number.isFinite(rem)) remaining = Math.max(0, rem);
         else remaining = Math.max(0, remaining - 1);
 
-        const defId = String(res?.defender?.character_id || t.characterId || "").trim();
-        const defName = String(res?.defender?.name || t.name || "").trim();
+        const defId = String(
+          res?.defender?.character_id || res?.battle?.defender?.character_id || t.characterId || ""
+        ).trim();
+        const defName = String(res?.defender?.name || res?.battle?.defender?.name || t.name || "").trim();
         const slotAfter = Number(res?.target_slot ?? t.slot);
+        const resBoard = String(res?.board_code || "").toLowerCase();
+        if (["lk", "tc", "kd", "na", "ht", "lh"].includes(resBoard)) {
+          boardCode = resBoard;
+          summary.boardCode = boardCode;
+        }
 
         if (win) {
           summary.wins += 1;
+          // Lưu character_id đã thắng → lần sau tìm lại trên bảng để challenge
           hunt = rememberWin(hunt, defId, defName, slotAfter);
           onLog?.(
             "SUCCESS",
-            `RankCh WIN slot ${t.slot} · ${defName || defId.slice(0, 8)} · còn ${remaining} · hunt ${hunt.length}`
+            `RankCh WIN slot ${t.slot} · ${defName || defId.slice(0, 8)} · còn ${remaining} · hunt ${hunt.length} · board ${boardCode}`
           );
         } else {
           summary.losses += 1;
@@ -380,7 +421,6 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
       } catch (e: any) {
         const msg = e?.message || String(e);
         onLog?.("ERROR", `RankCh fail slot ${t.slot}: ${msg.slice(0, 100)}`);
-        // Hết lượt?
         if (/remaining|limit|daily|hết|het lượt|no.?challenge/i.test(msg + JSON.stringify(e?.data || {}))) {
           remaining = 0;
           locked = true;
@@ -395,6 +435,7 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
     summary.dailyLocked = locked || remaining <= 0;
     summary.dailyDate = today;
     summary.huntList = hunt;
+    summary.boardCode = boardCode;
 
     if (summary.dailyLocked) {
       summary.status = "LOCKED";
