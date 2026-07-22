@@ -125,12 +125,12 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     return lv === "ERROR" || lv === "SUCCESS" || lv === "WARN" || /xong|win|loss|hết lượt/i.test(text);
   }
 
-  if (module === "RANK_CH") {
+  if (module === "RANK_CH" || module === "BUFF_PVP") {
     return (
       lv === "ERROR" ||
       lv === "SUCCESS" ||
       lv === "WARN" ||
-      /win|lose|còn|xong|hunt|rank|hôm nay|00:00/i.test(text)
+      /win|lose|còn|xong|hunt|rank|buff|hôm nay|00:00|\d+\/\d+/i.test(text)
     );
   }
 

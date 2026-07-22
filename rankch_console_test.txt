@@ -1,23 +1,24 @@
 // =============================================================================
-// RANK CHALLENGE — F12 CONSOLE TEST
-// Copy TOÀN BỘ file (Ctrl+A) → dán Console game play.samsaragame.online → Enter
-// Chỉ có comment // — KHÔNG dán dòng === (sẽ lỗi SyntaxError)
+// RANK CHALLENGE — F12 CONSOLE TEST (v2)
+// Ctrl+A copy TOAN FILE → dan Console game
 //
-// 1) Network filter: rpc_sect_rank → copy Bearer + p_character_id
-// 2) Sửa 3 dòng CONFIG bên dưới
-// 3) Dán → xem leaderboard + challenge vài slot
+// Loi ban gap: invalid_slot
+//   → leaderboard KHONG co field "slot", tool cu bia slot 11/14/15 = SAI
+//   → Win that cua ban: board=na, target_slot=2 hoac 3
+//   → Script nay: chi dung slot that; neu thieu → probe slot 2..10
 // =============================================================================
 
 (async () => {
   // ---------- CONFIG ----------
   const ACCESS_TOKEN = "PASTE_BEARER_TOKEN_HERE";
   const CHARACTER_ID = "PASTE_CHARACTER_UUID_HERE";
-  // Preview win thật: board_code "na" (Nguyên Anh). Đổi theo cảnh giới!
+  // Preview win that: board_code "na"
   const BOARD_CODE = "na"; // lk | tc | kd | na | ht | lh
   // ----------------------------
 
-  const MAX_FIGHTS = 3; // số trận thử trong 1 lần dán
+  const MAX_FIGHTS = 5;
   const DELAY_MS = 1500;
+  const PROBE_SLOTS = [2, 3, 4, 5, 6, 7, 8, 9, 10]; // gan rank 1
   const API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
   const BASE = "https://jeassefmlprfnlszgvbs.supabase.co";
 
@@ -41,7 +42,7 @@
         authorization: "Bearer " + ACCESS_TOKEN,
         "content-profile": "public",
         "content-type": "application/json",
-        "x-client-info": "rankch-console-test/1.0",
+        "x-client-info": "rankch-console-test/2.0",
       },
       body: JSON.stringify(body),
     });
@@ -52,9 +53,12 @@
     } catch (e) {
       data = { raw: text };
     }
-    const ms = Math.round(performance.now() - t0);
-    const ok = res.ok && !(data && data.ok === false);
-    return { ok: ok, status: res.status, data: data, ms: ms, text: text };
+    return {
+      httpOk: res.ok,
+      status: res.status,
+      data: data,
+      ms: Math.round(performance.now() - t0),
+    };
   }
 
   console.log("%c[RankCh] 1) leaderboard...", "color:#6db3ff;font-weight:bold");
@@ -65,9 +69,8 @@
     p_limit: 20,
   });
 
-  if (!lb.ok) {
-    console.error("[RankCh] leaderboard FAIL", lb.status, lb.data || lb.text);
-    console.warn("Token het han? Login lai game, copy Bearer moi.");
+  if (!lb.httpOk) {
+    console.error("[RankCh] leaderboard HTTP FAIL", lb.status, lb.data);
     return;
   }
 
@@ -75,73 +78,75 @@
     ? lb.data
     : Array.isArray(lb.data && lb.data.rows)
       ? lb.data.rows
-      : Array.isArray(lb.data && lb.data.leaderboard)
-        ? lb.data.leaderboard
-        : Array.isArray(lb.data && lb.data.items)
-          ? lb.data.items
-          : [];
+      : [];
 
-  // API co the khong tra slot → dung index+1 (hang tren bang = slot challenge)
-  function rowSlot(r, index) {
-    const s = Number(r && (r.slot != null ? r.slot : r.rank != null ? r.rank : r.pos));
-    if (Number.isFinite(s) && s >= 1) return s;
-    return index + 1;
-  }
+  const realSlotCount = rows.filter(function (r) {
+    return r && r.slot != null && Number(r.slot) >= 1;
+  }).length;
 
-  console.log("[RankCh] net=" + lb.ms + "ms · rows=" + rows.length);
+  console.log(
+    "[RankCh] net=" +
+      lb.ms +
+      "ms · rows=" +
+      rows.length +
+      " · co field slot that=" +
+      realSlotCount +
+      "/" +
+      rows.length
+  );
+
   console.table(
-    rows.map(function (r, idx) {
+    rows.slice(0, 15).map(function (r, idx) {
       return {
-        slot: rowSlot(r, idx),
+        api_slot: r.slot != null ? r.slot : "(khong co)",
+        fake_index_slot: idx + 1,
         name: r.name,
-        character_id: r.character_id,
         atk: r.atk,
-        def: r.def,
-        hp_max: r.hp_max,
-        realm_level: r.realm_level,
-        vip: r.vip_level,
+        character_id: r.character_id,
       };
     })
   );
 
-  if (!rows.length) {
-    console.warn("[RankCh] Bang trong — khong challenge duoc");
-    return;
-  }
-
-  // Chon doi thu: khong phai minh; uu tien NPC/Tran, roi atk thap (de win)
-  const self = String(CHARACTER_ID);
-  function isEasy(name) {
-    return /\[NPC\]|\[Trấn\]|\[Tran\]|NPC|Lính|Linh #/i.test(String(name || ""));
-  }
-  const candidates = rows
-    .map(function (r, idx) {
-      return {
-        raw: r,
-        slot: rowSlot(r, idx),
-        character_id: r && r.character_id,
-        name: r && r.name,
-        atk: r && r.atk,
-      };
-    })
-    .filter(function (t) {
-      return t.character_id && String(t.character_id) !== self && t.slot >= 1;
-    })
-    .sort(function (a, b) {
-      const ea = isEasy(a.name) ? 0 : 1;
-      const eb = isEasy(b.name) ? 0 : 1;
-      if (ea !== eb) return ea - eb;
-      return Number(a.atk || 0) - Number(b.atk || 0);
+  // Chon slot challenge
+  let slotsToTry = [];
+  if (realSlotCount > 0) {
+    // Chi dung slot that, uu tien atk thap / NPC
+    const self = String(CHARACTER_ID);
+    slotsToTry = rows
+      .filter(function (r) {
+        return r && r.slot != null && Number(r.slot) >= 1 && String(r.character_id) !== self;
+      })
+      .map(function (r) {
+        return {
+          slot: Number(r.slot),
+          name: r.name,
+          character_id: r.character_id,
+          atk: r.atk,
+        };
+      })
+      .sort(function (a, b) {
+        const ea = /\[NPC\]|\[Trấn\]|NPC|Lính/i.test(String(a.name || "")) ? 0 : 1;
+        const eb = /\[NPC\]|\[Trấn\]|NPC|Lính/i.test(String(b.name || "")) ? 0 : 1;
+        if (ea !== eb) return ea - eb;
+        return Number(a.atk || 0) - Number(b.atk || 0);
+      });
+    console.log("[RankCh] Dung SLOT THAT tu API · so luong=" + slotsToTry.length);
+  } else {
+    // KHONG bi a slot tu index — probe 2..10 (win that: slot 2,3)
+    slotsToTry = PROBE_SLOTS.map(function (s) {
+      return { slot: s, name: "probe#" + s, character_id: "", atk: null };
     });
-
-  if (!candidates.length) {
     console.warn(
-      "[RankCh] Khong co target. self=" +
-        self.slice(0, 8) +
-        " rows=" +
-        rows.length +
-        " (kiem tra CHARACTER_ID dung chua)"
+      "[RankCh] API khong tra slot → PROBE slot " +
+        PROBE_SLOTS.join(",") +
+        " board=" +
+        BOARD_CODE +
+        " (dung bia 11/14/15)"
     );
+  }
+
+  if (!slotsToTry.length) {
+    console.warn("[RankCh] Khong co slot de thu");
     return;
   }
 
@@ -153,20 +158,12 @@
   const hunt = [];
   const results = [];
   let remaining = null;
+  let fought = 0;
 
-  for (let i = 0; i < Math.min(MAX_FIGHTS, candidates.length); i++) {
-    const t = candidates[i];
+  for (let i = 0; i < slotsToTry.length && fought < MAX_FIGHTS; i++) {
+    const t = slotsToTry[i];
     const slot = Number(t.slot);
-    console.log(
-      "[RankCh] → slot " +
-        slot +
-        " · " +
-        (t.name || "?") +
-        " · id " +
-        String(t.character_id).slice(0, 8) +
-        "… · atk " +
-        t.atk
-    );
+    console.log("[RankCh] → slot " + slot + " · " + (t.name || "?") + " · atk " + t.atk);
 
     const ch = await rpc("rpc_sect_rank_challenge", {
       p_character_id: CHARACTER_ID,
@@ -174,57 +171,50 @@
       p_target_slot: slot,
     });
 
-    if (!ch.ok) {
-      console.error("[RankCh] challenge FAIL", ch.status, ch.data || ch.text);
+    const d = ch.data || {};
+    // invalid_slot: thuong HTTP 200 + ok:false
+    if (!ch.httpOk || d.ok === false) {
+      const reason = d.reason || d.error || d.message || ch.status;
+      console.error("[RankCh] FAIL slot " + slot, reason, d);
       results.push({
-        n: i + 1,
+        n: results.length + 1,
         slot: slot,
         ok: false,
         win: false,
         name: t.name,
-        remaining_today: null,
-        err: String((ch.data && (ch.data.error || ch.data.reason || ch.data.message)) || ch.status).slice(0, 80),
+        remaining_today: d.remaining_today != null ? d.remaining_today : null,
+        err: String(reason).slice(0, 60),
       });
-      // het luot?
-      const errStr = JSON.stringify(ch.data || {}).toLowerCase();
-      if (errStr.indexOf("remaining") >= 0 || errStr.indexOf("limit") >= 0 || errStr.indexOf("daily") >= 0) {
-        console.warn("[RankCh] Co the het luot hom nay — dung");
+      if (String(reason).indexOf("invalid_slot") >= 0) {
+        // thu slot tiep
+        await sleep(400);
+        continue;
+      }
+      if (/remaining|limit|daily/i.test(String(reason))) {
+        console.warn("[RankCh] Het luot hom nay?");
         break;
       }
       await sleep(DELAY_MS);
       continue;
     }
 
-    const d = ch.data || {};
-    // Preview win: win=true | battle.winner=attacker | final.defender_hp=0
+    fought += 1;
     const win =
       d.win === true ||
       (d.battle && d.battle.winner === "attacker") ||
       (d.battle && d.battle.final && Number(d.battle.final.defender_hp) === 0);
     remaining = d.remaining_today != null ? Number(d.remaining_today) : remaining;
-    const defId =
-      (d.defender && d.defender.character_id) ||
-      (d.battle && d.battle.defender && d.battle.defender.character_id) ||
-      t.character_id;
-    const defName =
-      (d.defender && d.defender.name) ||
-      (d.battle && d.battle.defender && d.battle.defender.name) ||
-      t.name;
+    const defId = (d.defender && d.defender.character_id) || t.character_id || "";
+    const defName = (d.defender && d.defender.name) || t.name || "";
+
     if (d.board_code) {
-      console.log("[RankCh] board_code response =", d.board_code, "(dat BOARD_CODE dung nhu vay)");
+      console.log("[RankCh] response board_code=" + d.board_code);
     }
 
     if (win) {
       hunt.push({ id: defId, name: defName, slot: d.target_slot != null ? d.target_slot : slot });
       console.log(
-        "%c[RankCh] WIN slot " +
-          slot +
-          " · " +
-          defName +
-          " · remaining_today=" +
-          remaining +
-          " · rank_changed=" +
-          d.rank_changed,
+        "%c[RankCh] WIN slot " + slot + " · " + defName + " · remaining_today=" + remaining,
         "color:#3dd68c;font-weight:bold"
       );
     } else {
@@ -235,7 +225,7 @@
     }
 
     results.push({
-      n: i + 1,
+      n: results.length + 1,
       slot: slot,
       ok: true,
       win: win,
@@ -243,29 +233,26 @@
       defender_id: defId,
       remaining_today: remaining,
       rank_changed: d.rank_changed,
-      used_pk_token: d.used_pk_token,
       err: "",
     });
 
     if (remaining === 0) {
-      console.log("[RankCh] remaining_today=0 — het luot hom nay");
+      console.log("[RankCh] remaining_today=0 — het luot");
       break;
     }
-    if (i + 1 < Math.min(MAX_FIGHTS, candidates.length)) await sleep(DELAY_MS);
+    await sleep(DELAY_MS);
   }
 
   console.log("%c[RankCh] SUMMARY", "color:#6db3ff;font-weight:bold");
   console.table(results);
-  console.log("[RankCh] remaining_today cuoi =", remaining);
-  console.log("[RankCh] hunt (thang → luu id danh lai):", hunt);
-
+  console.log("[RankCh] remaining_today =", remaining);
+  console.log("[RankCh] hunt (luu id thang):", hunt);
   console.log(`
-===== DOC KET QUA =====
-• leaderboard OK + co rows → API bang xep hang chay
-• challenge WIN + remaining_today giam (20→19→…) → API danh chay
-• WIN → luu defender_id (hunt) de tool uu tien danh lai
-• remaining_today=0 → dung, cho 00:00 VN
-• FAIL 401 → token het han, copy Bearer moi
-• FAIL board/slot → doi BOARD_CODE (lk/tc/kd…) cho dung canh gioi
+===== GIAI THICH =====
+• invalid_slot = p_target_slot khong hop le tren board nay
+• Leaderboard khong co "slot" → KHONG duoc dung hang 11/14/15 trong bang
+• Win that cua ban: board=na, target_slot=2 hoac 3, remaining_today giam
+• Neu PROBE 2..10 van invalid_slot → sai BOARD_CODE (thu lk/tc/kd/na)
+• WIN + remaining_today giam = API danh OK → tool lite se chay duoc
 `);
 })();

@@ -570,20 +570,22 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         }
       }
     } else if (featureId === "rank_challenge") {
-      // Rank challenge: 20 lượt/ngày (remaining_today), thắng → lưu character_id hunt
+      // Buff PVP: user nhập số WIN target → chỉ đếm win; 10 thua liên tiếp → dừng
       const result = await runRankChallengeAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings,
         realmCode: String(acc.realmCode || acc.realmLabel || acc.realmTier || ""),
         shouldStop: () => !isAllowed(accountId, featureId, token),
-        onLog: onLog(accountId, "RANK_CH"),
+        onLog: onLog(accountId, "BUFF_PVP"),
       });
 
       store.setFeature(accountId, "rank_challenge", {
         settings: {
           ...settings,
-          remaining_today: result.remainingToday ?? settings.remaining_today,
+          daily_target: result.dailyTarget ?? settings.daily_target ?? settings.daily_limit ?? 20,
+          daily_completed: result.dailyCompleted ?? 0,
+          lose_streak: result.loseStreak ?? 0,
           daily_date: result.dailyDate,
           daily_locked: result.dailyLocked,
           hunt_list: result.huntList || settings.hunt_list || [],
@@ -595,20 +597,27 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       nextDelayMs = Math.max(15_000, Number(result.nextDelayMs || 60_000));
       if (result.status === "ERROR") {
         status = "error";
-        errMsg = result.reason || "Rank challenge error";
+        errMsg = result.reason || "Buff PVP error";
       } else if (result.status === "LOCKED") {
         sysLog(
           accountId,
-          "RANK_CH",
+          "BUFF_PVP",
           "SUCCESS",
-          `RankCh xong hôm nay · ${result.wins}W/${result.losses}L · hunt ${result.huntList?.length || 0} · chờ 00:00 VN`
+          `Buff PVP đủ ${result.dailyCompleted}/${result.dailyTarget} WIN · hunt ${result.huntList?.length || 0} · chờ 00:00 VN`
+        );
+      } else if (result.status === "NO_WIN") {
+        sysLog(
+          accountId,
+          "BUFF_PVP",
+          "WARN",
+          `Buff PVP dừng: ${result.loseStreak} trận không WIN · WIN ${result.dailyCompleted}/${result.dailyTarget} · chờ 00:00 VN`
         );
       } else {
         sysLog(
           accountId,
-          "RANK_CH",
+          "BUFF_PVP",
           "INFO",
-          `RankCh ${result.status} · ${result.wins}W/${result.losses}L · còn ${result.remainingToday ?? "?"} · hunt ${result.huntList?.length || 0}`
+          `Buff PVP ${result.status} · batch ${result.wins}W/${result.losses}L · tổng WIN ${result.dailyCompleted}/${result.dailyTarget} · streak ${result.loseStreak}`
         );
       }
     } else if (featureId === "pvp") {
