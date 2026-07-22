@@ -73,7 +73,19 @@ export interface WorldBossAutoOptions {
 const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
 const GAME_API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
 
+/** characterId đang trong vòng spam WB — farm nên nhường API */
+const wbCombatBusy = new Set<string>();
+
+/** Farm/tool khác gọi: true = đang đánh WB, tạm dừng farm */
+export function isWorldBossCombatBusy(characterId?: string | null): boolean {
+  if (!characterId) return false;
+  return wbCombatBusy.has(String(characterId));
+}
+
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+
+/** Buffer ms thêm vào CD server — F12 test gap~2850 vẫn còn FAIL cooldown */
+const CD_BUFFER_MS = 120;
 
 function clamp(n: number, min: number, max: number, fallback: number) {
   const v = Number(n);
@@ -520,17 +532,19 @@ function pickTiersToFight(
   return { fight, skipped };
 }
 
-/** Cooldown giữa 2 đòn từ response attack (mặc định game: 3s) */
+/** Cooldown giữa 2 đòn từ response (game: cooldown_sec=3 → 3000ms) + buffer chống FAIL */
 function attackCooldownMs(attack: any, fallbackMs: number): number {
-  const cd = Number(attack?.cooldown_sec ?? attack?.atk_speed_sec ?? attack?.cooldown ?? attack?.atk_speed);
-  if (Number.isFinite(cd) && cd > 0) return Math.max(200, Math.round(cd * 1000));
-  // atk_speed_sec ưu tiên nếu có cả hai
-  const speed = Number(attack?.atk_speed_sec);
   const cool = Number(attack?.cooldown_sec);
-  if (Number.isFinite(speed) && Number.isFinite(cool)) {
-    return Math.max(200, Math.round(Math.max(speed, cool) * 1000));
+  const speed = Number(attack?.atk_speed_sec);
+  let sec = 0;
+  if (Number.isFinite(cool) && cool > 0) sec = cool;
+  else if (Number.isFinite(speed) && speed > 0) sec = speed;
+  else {
+    const cd = Number(attack?.cooldown ?? attack?.atk_speed);
+    if (Number.isFinite(cd) && cd > 0) sec = cd;
   }
-  return Math.max(200, fallbackMs || 3000);
+  if (sec > 0) return Math.max(500, Math.round(sec * 1000) + CD_BUFFER_MS);
+  return Math.max(500, (fallbackMs || 3000) + CD_BUFFER_MS);
 }
 
 function isBossKilledByAttack(attack: any): boolean {
@@ -611,23 +625,22 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
   }
 }
 /**
- * World Boss — nhịp giống client game:
- *   1) rpc_wb_channels 1 lần (tier + window_open + HP)
- *   2) rpc_wb_attack → chờ theo cooldown_sec từ response (thường 3s)
- *      wait = max(0, cdMs - thời_gian_request)  → chu kỳ ổn định ~3s
- *   3) Không channels giữa 2 đòn
- *   4) Dừng sớm khi kill / hp_after<=0
- *
- * attack_delay_ms: fallback khi response không có cooldown (mặc định 3000)
+ * World Boss — nhịp giống F12 console test (game client):
+ *   1) channels 1 lần
+ *   2) vòng attack thuần: start → rpc_wb_attack → sleep(cd+buffer − elapsed)
+ *      chu kỳ giữa 2 lần BẮT ĐẦU attack ≈ 3000+120ms (tránh FAIL cooldown)
+ *   3) không claim giữa vòng (claim sau kill / hết batch / cửa đóng)
+ *   4) đánh dấu combat busy → farm nhường API
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 999, 1, 999, 999);
   const fixedDelayMs = Number(options.attackDelayMs);
-  // Fallback = game default 3s; user set 1500 vẫn được nhưng server CD thường 3s
+  // Fallback game 3s
   const hitDelayMs =
     Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(500, fixedDelayMs) : 3000;
   const onLog = options.onLog;
+  const charId = String(options.characterId || "");
 
   const summary: WorldBossRunSummary = {
     startedAt: new Date().toISOString(),
@@ -690,8 +703,14 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     return isWorldBossAlive(ch);
   };
 
+  /** sleep sao cho chu kỳ từ t0 ≈ periodMs (giống F12 game_cd + buffer) */
+  const sleepUntilCycle = async (t0: number, periodMs: number) => {
+    const wait = Math.max(0, periodMs - (Date.now() - t0));
+    if (wait > 0) await sleep(wait);
+    return wait;
+  };
+
   try {
-    // 1) channels 1 lan
     onLog?.("INFO", "WB: channels once (HP + window_open)...");
     const first = await fetchChannels(options.characterId, options.accessToken);
     summary.myTier = first.myTier;
@@ -707,20 +726,14 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     tierResult.tier = tier;
     tierResult.channel = first.channels.find((c) => c.tier === tier);
 
-    await tryClaimTier(options, "", tierResult, "start_claim");
-    if (tierResult.claimed) {
-      summary.claimed = true;
-      summary.claimCount += tierResult.claimCount;
-      summary.claimStones += tierResult.claimStones;
-    }
-
     const ch0 = tierResult.channel;
     onLog?.(
       "INFO",
-      `WB tier=${tier} my=${first.myTier || "?"} · open=${ch0?.window_open ?? "?"} · hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"} · delay ${hitDelayMs}ms · max ${maxAttacks} attempts`
+      `WB tier=${tier} my=${first.myTier || "?"} · open=${ch0?.window_open ?? "?"} · hp=${Number.isFinite(Number(ch0?.hp_current)) ? Number(ch0?.hp_current).toLocaleString() : "?"} · cd_fallback ${hitDelayMs}ms · max ${maxAttacks}`
     );
 
     if (!canFightChannel(ch0)) {
+      // Cửa đóng: claim quà treo rồi chờ
       await tryClaimTier(options, "", tierResult, "closed_at_start");
       summary.claimed = summary.claimed || tierResult.claimed;
       summary.claimCount += tierResult.claimCount;
@@ -732,18 +745,19 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       return summary;
     }
 
-    // 2) Attack đều: chờ theo cooldown server (giống game), trừ thời gian request
+    // Cửa mở: đánh như F12 — không claim trước (claim làm chậm đòn 1)
+    if (charId) wbCombatBusy.add(charId);
+
     let okHits = 0;
     let failHits = 0;
-    let lastCdMs = hitDelayMs;
+    let lastPeriodMs = hitDelayMs + CD_BUFFER_MS;
 
     for (let attempt = 1; attempt <= maxAttacks; attempt++) {
       if (options.shouldStop?.()) {
-        onLog?.("WARN", `WB stop · attempts ${attempt - 1}/${maxAttacks} ok=${okHits} fail=${failHits}`);
+        onLog?.("WARN", `WB stop · ${attempt - 1}/${maxAttacks} ok=${okHits} fail=${failHits}`);
         break;
       }
 
-      let killed = false;
       const t0 = Date.now();
       try {
         const attack = await rpc(
@@ -759,14 +773,13 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
 
         const dmg = Number(attack?.damage);
         const hpAfterAtk = Number(attack?.hp_after);
-        // Game trả cooldown_sec / atk_speed_sec (thường 3) — ưu tiên response
-        lastCdMs = attackCooldownMs(attack, hitDelayMs);
-        const waitMs = Math.max(0, lastCdMs - elapsed);
+        lastPeriodMs = attackCooldownMs(attack, hitDelayMs);
+        const waitMs = Math.max(0, lastPeriodMs - elapsed);
 
         if (attempt === 1 || attempt === maxAttacks || attempt % 10 === 0 || isBossKilledByAttack(attack)) {
           onLog?.(
             "INFO",
-            `WB ${tier} #${attempt}/${maxAttacks} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · cd ${lastCdMs}ms · wait ${waitMs}ms`
+            `WB ${tier} #${attempt} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · period ${lastPeriodMs}ms · wait ${waitMs}ms`
           );
         }
 
@@ -776,8 +789,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           attack?.claimable === true ||
           (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0)
         ) {
-          killed = true;
-          onLog?.("SUCCESS", `WB ${tier}: KILL at attempt #${attempt} · claim`);
+          onLog?.("SUCCESS", `WB ${tier}: KILL #${attempt} · claim`);
           await tryClaimTier(options, tier, tierResult, "killed");
           summary.claimed = summary.claimed || tierResult.claimed;
           summary.claimCount += tierResult.claimCount;
@@ -794,23 +806,31 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           return summary;
         }
 
-        if (attempt < maxAttacks) await sleep(waitMs);
+        if (attempt < maxAttacks) await sleepUntilCycle(t0, lastPeriodMs);
       } catch (error: any) {
         const elapsed = Date.now() - t0;
         failHits += 1;
         tierResult.attackCount += 1;
         summary.attackCount += 1;
         tierResult.lastAttack = error?.data;
-        const msg = error?.message || "attack error";
-        // Fail cooldown: chờ đủ CD (không spam 1.5s gây lệch)
-        const errCd = attackCooldownMs(error?.data, lastCdMs || hitDelayMs);
-        lastCdMs = errCd;
-        const waitMs = Math.max(0, errCd - elapsed);
+        const msg = String(error?.message || "attack error");
+        const isCd = /cooldown|cool_down|too_fast|rate/i.test(msg + JSON.stringify(error?.data || {}));
 
-        if (attempt === 1 || attempt % 10 === 0 || failHits <= 3) {
+        // Cooldown fail: chỉ thêm buffer ngắn rồi đánh lại (không chờ full 3s lần nữa)
+        // Fail khác: giữ period như F12
+        if (isCd) {
+          lastPeriodMs = Math.max(lastPeriodMs, hitDelayMs + CD_BUFFER_MS);
+          // Tăng period nhẹ để lần sau bớt fail
+          lastPeriodMs = Math.min(5000, lastPeriodMs + 80);
+        } else {
+          lastPeriodMs = attackCooldownMs(error?.data, lastPeriodMs || hitDelayMs);
+        }
+        const waitMs = Math.max(0, lastPeriodMs - elapsed);
+
+        if (attempt === 1 || attempt % 10 === 0 || failHits <= 5) {
           onLog?.(
             "WARN",
-            `WB ${tier} #${attempt}/${maxAttacks} FAIL · ${msg.slice(0, 80)} · wait ${waitMs}ms (cd ${errCd}ms)`
+            `WB ${tier} #${attempt} FAIL · ${msg.slice(0, 70)} · net ${elapsed}ms · wait ${waitMs}ms`
           );
         }
 
@@ -820,7 +840,6 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           summary.claimCount += tierResult.claimCount;
           summary.claimStones += tierResult.claimStones;
           if (tierResult.claimed) {
-            killed = true;
             tierResult.status = "WAITING_RESPAWN";
             summary.tierResults.push(tierResult);
             scheduleWhenClosed(ch0);
@@ -829,18 +848,18 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           }
         }
 
-        if (!killed && attempt < maxAttacks) await sleep(waitMs);
+        if (attempt < maxAttacks) await sleepUntilCycle(t0, lastPeriodMs);
       }
     }
 
-    // 3) Het batch — check channels 1 lan (log HP), hen don tiep sau hitDelayMs
+    // Hết batch
     try {
       const last = await getChannel(tier);
       const chLast = last.channel;
       const hpLeft = Number(chLast?.hp_current);
       onLog?.(
         "INFO",
-        `WB batch done · attempts ${maxAttacks} ok=${okHits} fail=${failHits} · hp ${Number.isFinite(hpLeft) ? hpLeft.toLocaleString() : "?"} · open=${chLast?.window_open} · next ${hitDelayMs}ms`
+        `WB batch · ok=${okHits} fail=${failHits} · hp ${Number.isFinite(hpLeft) ? hpLeft.toLocaleString() : "?"} · open=${chLast?.window_open}`
       );
       if (!canFightChannel(chLast)) {
         await tryClaimTier(options, "", tierResult, "after_batch_closed");
@@ -863,20 +882,20 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
     summary.claimStones += tierResult.claimStones;
     summary.tierResults.push(tierResult);
 
-    // Het 999 don → quay lai sau dung hitDelayMs (tiep tuc DPS), KHONG cho hang gio
     summary.status = "DONE";
-    summary.nextCheckMs = hitDelayMs;
+    summary.nextCheckMs = Math.max(hitDelayMs, lastPeriodMs);
     summary.nextCheckReason = "batch_done_continue";
     onLog?.(
       "SUCCESS",
-      `WB batch · atk ${summary.attackCount} (ok ${okHits}/fail ${failHits}) · claim ${summary.claimCount} · +${summary.claimStones || 0} LS · next ${hitDelayMs}ms`
+      `WB batch · ok ${okHits}/fail ${failHits} · claim ${summary.claimCount} · +${summary.claimStones || 0} LS · next ${summary.nextCheckMs}ms`
     );
   } catch (e: any) {
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
-    // Loi he thong: van retry sau hitDelay, khong 1 gio
     summary.nextCheckMs = hitDelayMs;
     onLog?.("ERROR", `WB fail: ${e?.message || e} · retry ${hitDelayMs}ms`);
+  } finally {
+    if (charId) wbCombatBusy.delete(charId);
   }
 
   summary.finishedAt = new Date().toISOString();

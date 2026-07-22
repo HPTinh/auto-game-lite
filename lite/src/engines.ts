@@ -9,7 +9,7 @@ export {
   runAchievementClaimAuto,
   runBodyCultAuto,
 } from "../../lib/dailyEngine";
-export { runWorldBossAuto } from "../../lib/worldBossEngine";
+export { runWorldBossAuto, isWorldBossCombatBusy } from "../../lib/worldBossEngine";
 export { runBreakthroughAuto } from "../../lib/breakthroughEngine";
 export { runMailClaimAll } from "../../lib/mailEngine";
 export { runMazeAuto } from "../../lib/mazeEngine";

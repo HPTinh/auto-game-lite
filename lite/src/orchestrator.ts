@@ -23,6 +23,7 @@ import {
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
+  isWorldBossCombatBusy,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -297,11 +298,17 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
 
     if (featureId === "farm") {
       const farmSettings = buildFarmEngineSettings(settings);
+      // Đang đánh WB: farm nhường API (giống F12 chỉ spam 1 loại request)
+      if (isWorldBossCombatBusy(runtime.characterId)) {
+        nextDelayMs = 2000;
+        sysLog(accountId, "FARM", "INFO", "Farm tạm nhường — đang World Boss");
+      } else {
       const result = await runFarmAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings: farmSettings,
-        shouldStop: () => !isAllowed(accountId, featureId, token),
+        shouldStop: () =>
+          !isAllowed(accountId, featureId, token) || isWorldBossCombatBusy(runtime.characterId),
         onLog: onLog(accountId, "FARM"),
       });
       // Mỗi vòng farm cách nhau tối thiểu 5s (cấu hình minFarmDelayMs / empty_scan_delay_ms)
@@ -330,6 +337,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         });
         if (gated) store.addLog(accountId, "FARM", "INFO", gated);
       }
+      } // end else not WB busy
     } else if (featureId === "buff") {
       const result = await runAutoBuffCheck({
         characterId: runtime.characterId,
