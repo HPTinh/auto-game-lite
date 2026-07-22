@@ -23,7 +23,6 @@ import {
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
-  isWorldBossCombatBusy,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -297,23 +296,20 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     let errMsg = "";
 
     if (featureId === "farm") {
+      // Vòng lặp độc lập: mỗi tick farm 1 lần API → hẹn nextDelay (thường ~5s game CD)
+      // Không đợi / không nhường World Boss — timer riêng
       const farmSettings = buildFarmEngineSettings(settings);
-      // Đang đánh WB: farm nhường API (giống F12 chỉ spam 1 loại request)
-      if (isWorldBossCombatBusy(runtime.characterId)) {
-        nextDelayMs = 2000;
-        sysLog(accountId, "FARM", "INFO", "Farm tạm nhường — đang World Boss");
-      } else {
       const result = await runFarmAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings: farmSettings,
-        shouldStop: () =>
-          !isAllowed(accountId, featureId, token) || isWorldBossCombatBusy(runtime.characterId),
+        shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "FARM"),
       });
-      // Mỗi vòng farm cách nhau tối thiểu 5s (cấu hình minFarmDelayMs / empty_scan_delay_ms)
+      // Chu kỳ farm: attack_delay (engine ~5s) hoặc empty_scan
       nextDelayMs = Math.max(
         config.minFarmDelayMs,
+        Number(farmSettings.attack_delay_ms || 4000),
         Number(farmSettings.empty_scan_delay_ms || 5000),
         Number(result.nextDelayMs || 0)
       );
@@ -330,14 +326,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         status = "done";
         sysLog(accountId, "FARM", "SUCCESS", "Đủ nhiệm vụ trùng sinh — dừng farm", true);
       } else {
-        // 1 dòng tóm tắt; vòng không đánh: thưa hơn (45s)
         const empty = !(result.attackCount > 0);
         const gated = logGate.allow(accountId, "FARM", "INFO", line, {
           minIntervalMs: empty ? 45_000 : 20_000,
         });
         if (gated) store.addLog(accountId, "FARM", "INFO", gated);
       }
-      } // end else not WB busy
     } else if (featureId === "buff") {
       const result = await runAutoBuffCheck({
         characterId: runtime.characterId,
@@ -377,9 +371,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = 15 * 60_000;
     } else if (featureId === "world_boss") {
+      // Vòng lặp độc lập với farm: MỖI TICK = 1 lần rpc_wb_attack (hoặc check channels nếu cửa đóng)
+      // → hẹn next theo cooldown_sec (~3s). Không batch 999 trong 1 run.
       const checkMin = Math.max(1, Math.min(24 * 60, Number(settings.check_interval_minutes || 10) || 10));
-      const maxAtk = Math.max(1, Math.min(999, Number(settings.max_attacks_per_check ?? 999) || 999));
-      // Fallback 3000ms (= game cooldown); engine ưu tiên cooldown_sec từ response
       const attackDelayMs = Number(settings.attack_delay_ms ?? 3000);
       const hitMs = Number.isFinite(attackDelayMs) && attackDelayMs > 0 ? Math.max(500, attackDelayMs) : 3000;
       const result = await runWorldBossAuto({
@@ -387,31 +381,36 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         accessToken: runtime.accessToken,
         autoSelectTiers: true,
         tiers: undefined,
-        maxAttacksPerCheck: maxAtk,
+        maxAttacksPerCheck: 1, // 1 tick = 1 attack API
         attackDelayMs: hitMs,
         autoClaim: settings.auto_claim !== false,
         checkIntervalMinutes: checkMin,
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "WORLD_BOSS"),
       });
-      // window mở / batch xong → hitMs; chỉ window đóng thật → nextCheckMs dài (giờ chẵn)
+      // next: cooldown từ engine; cửa đóng → giờ chẵn
       nextDelayMs = Math.max(hitMs, Number(result.nextCheckMs || hitMs));
       const nextLabel =
         nextDelayMs >= 3600_000
           ? `${(nextDelayMs / 3600_000).toFixed(1)}h reopen`
           : nextDelayMs >= 60_000
             ? `${Math.round(nextDelayMs / 60000)}p`
-            : `${Math.round(nextDelayMs / 1000)}s ATTACK`;
+            : `${Math.round(nextDelayMs / 1000)}s`;
       if (result.status === "ERROR") {
         status = "error";
         errMsg = (result.errors || []).slice(0, 1).join("; ") || "World boss error";
       } else {
-        sysLog(
-          accountId,
-          "WORLD_BOSS",
-          "INFO",
-          `WB ${result.status} · rank ${result.myTier || "?"} · atk ${result.attackCount || 0} · claim ${result.claimCount || 0} · +${result.claimStones || 0}LS · next ${nextLabel}`
-        );
+        // log thưa: chỉ mỗi vài tick hoặc khi claim
+        if (result.claimed || result.status === "WAITING_RESPAWN" || (result.attackCount || 0) > 0) {
+          const gated = logGate.allow(
+            accountId,
+            "WORLD_BOSS",
+            "INFO",
+            `WB tick · ${result.status} · atk ${result.attackCount || 0} · next ${nextLabel}`,
+            { minIntervalMs: result.status === "WAITING_RESPAWN" ? 30_000 : 12_000 }
+          );
+          if (gated) store.addLog(accountId, "WORLD_BOSS", "INFO", gated);
+        }
         if (result.claimed || (result.claimStones || 0) > 0) {
           try {
             await refreshAccountInfo(accountId);

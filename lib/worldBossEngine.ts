@@ -73,18 +73,9 @@ export interface WorldBossAutoOptions {
 const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
 const GAME_API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
 
-/** characterId đang trong vòng spam WB — farm nên nhường API */
-const wbCombatBusy = new Set<string>();
-
-/** Farm/tool khác gọi: true = đang đánh WB, tạm dừng farm */
-export function isWorldBossCombatBusy(characterId?: string | null): boolean {
-  if (!characterId) return false;
-  return wbCombatBusy.has(String(characterId));
-}
-
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 
-/** Buffer ms thêm vào CD server — F12 test gap~2850 vẫn còn FAIL cooldown */
+/** Buffer ms thêm vào CD server — tránh FAIL cooldown (F12 gap~2850 vẫn fail) */
 const CD_BUFFER_MS = 120;
 
 function clamp(n: number, min: number, max: number, fallback: number) {
@@ -625,22 +616,19 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
   }
 }
 /**
- * World Boss — nhịp giống F12 console test (game client):
- *   1) channels 1 lần
- *   2) vòng attack thuần: start → rpc_wb_attack → sleep(cd+buffer − elapsed)
- *      chu kỳ giữa 2 lần BẮT ĐẦU attack ≈ 3000+120ms (tránh FAIL cooldown)
- *   3) không claim giữa vòng (claim sau kill / hết batch / cửa đóng)
- *   4) đánh dấu combat busy → farm nhường API
+ * World Boss — 1 tick orchestrator = tối đa N attack (mặc định 1).
+ * Mô hình tách lẻ với farm:
+ *   - Orchestrator hẹn WB mỗi ~3s → gọi runWorldBossAuto (1 attack) → return nextCheckMs
+ *   - Farm timer riêng mỗi ~4–5s → runFarmAuto (1 attack) — không chặn nhau
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
-  const maxAttacks = clamp(options.maxAttacksPerCheck ?? 999, 1, 999, 999);
+  // 1 tick = 1 attack (orchestrator set maxAttacksPerCheck=1)
+  const maxAttacks = clamp(options.maxAttacksPerCheck ?? 1, 1, 999, 1);
   const fixedDelayMs = Number(options.attackDelayMs);
-  // Fallback game 3s
   const hitDelayMs =
     Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(500, fixedDelayMs) : 3000;
   const onLog = options.onLog;
-  const charId = String(options.characterId || "");
 
   const summary: WorldBossRunSummary = {
     startedAt: new Date().toISOString(),
@@ -745,18 +733,14 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       return summary;
     }
 
-    // Cửa mở: đánh như F12 — không claim trước (claim làm chậm đòn 1)
-    if (charId) wbCombatBusy.add(charId);
-
+    // Cửa mở: 1 tick = N attack (thường N=1). Không sleep trong engine khi N=1 —
+    // orchestrator hẹn nextCheckMs rồi gọi lại (tách lẻ với farm).
     let okHits = 0;
     let failHits = 0;
     let lastPeriodMs = hitDelayMs + CD_BUFFER_MS;
 
     for (let attempt = 1; attempt <= maxAttacks; attempt++) {
-      if (options.shouldStop?.()) {
-        onLog?.("WARN", `WB stop · ${attempt - 1}/${maxAttacks} ok=${okHits} fail=${failHits}`);
-        break;
-      }
+      if (options.shouldStop?.()) break;
 
       const t0 = Date.now();
       try {
@@ -774,14 +758,11 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         const dmg = Number(attack?.damage);
         const hpAfterAtk = Number(attack?.hp_after);
         lastPeriodMs = attackCooldownMs(attack, hitDelayMs);
-        const waitMs = Math.max(0, lastPeriodMs - elapsed);
 
-        if (attempt === 1 || attempt === maxAttacks || attempt % 10 === 0 || isBossKilledByAttack(attack)) {
-          onLog?.(
-            "INFO",
-            `WB ${tier} #${attempt} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · period ${lastPeriodMs}ms · wait ${waitMs}ms`
-          );
-        }
+        onLog?.(
+          "INFO",
+          `WB ${tier} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · next ${lastPeriodMs}ms`
+        );
 
         if (
           isBossKilledByAttack(attack) ||
@@ -789,7 +770,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           attack?.claimable === true ||
           (Number.isFinite(hpAfterAtk) && hpAfterAtk <= 0)
         ) {
-          onLog?.("SUCCESS", `WB ${tier}: KILL #${attempt} · claim`);
+          onLog?.("SUCCESS", `WB ${tier}: KILL · claim`);
           await tryClaimTier(options, tier, tierResult, "killed");
           summary.claimed = summary.claimed || tierResult.claimed;
           summary.claimCount += tierResult.claimCount;
@@ -806,6 +787,7 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           return summary;
         }
 
+        // N>1: chờ trong engine; N=1: orchestrator hẹn lại
         if (attempt < maxAttacks) await sleepUntilCycle(t0, lastPeriodMs);
       } catch (error: any) {
         const elapsed = Date.now() - t0;
@@ -816,23 +798,16 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
         const msg = String(error?.message || "attack error");
         const isCd = /cooldown|cool_down|too_fast|rate/i.test(msg + JSON.stringify(error?.data || {}));
 
-        // Cooldown fail: chỉ thêm buffer ngắn rồi đánh lại (không chờ full 3s lần nữa)
-        // Fail khác: giữ period như F12
         if (isCd) {
-          lastPeriodMs = Math.max(lastPeriodMs, hitDelayMs + CD_BUFFER_MS);
-          // Tăng period nhẹ để lần sau bớt fail
-          lastPeriodMs = Math.min(5000, lastPeriodMs + 80);
+          lastPeriodMs = Math.min(5000, Math.max(lastPeriodMs, hitDelayMs + CD_BUFFER_MS) + 80);
         } else {
           lastPeriodMs = attackCooldownMs(error?.data, lastPeriodMs || hitDelayMs);
         }
-        const waitMs = Math.max(0, lastPeriodMs - elapsed);
 
-        if (attempt === 1 || attempt % 10 === 0 || failHits <= 5) {
-          onLog?.(
-            "WARN",
-            `WB ${tier} #${attempt} FAIL · ${msg.slice(0, 70)} · net ${elapsed}ms · wait ${waitMs}ms`
-          );
-        }
+        onLog?.(
+          "WARN",
+          `WB ${tier} FAIL · ${msg.slice(0, 70)} · net ${elapsed}ms · next ${lastPeriodMs}ms`
+        );
 
         if (isClaimRewardLike(error)) {
           await tryClaimTier(options, tier, tierResult, "error_claimable");
@@ -852,50 +827,19 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       }
     }
 
-    // Hết batch
-    try {
-      const last = await getChannel(tier);
-      const chLast = last.channel;
-      const hpLeft = Number(chLast?.hp_current);
-      onLog?.(
-        "INFO",
-        `WB batch · ok=${okHits} fail=${failHits} · hp ${Number.isFinite(hpLeft) ? hpLeft.toLocaleString() : "?"} · open=${chLast?.window_open}`
-      );
-      if (!canFightChannel(chLast)) {
-        await tryClaimTier(options, "", tierResult, "after_batch_closed");
-        summary.claimed = summary.claimed || tierResult.claimed;
-        summary.claimCount += tierResult.claimCount;
-        summary.claimStones += tierResult.claimStones;
-        tierResult.status = "WAITING_RESPAWN";
-        summary.tierResults.push(tierResult);
-        scheduleWhenClosed(chLast);
-        summary.finishedAt = new Date().toISOString();
-        return summary;
-      }
-    } catch {
-      /* ignore */
-    }
-
-    await tryClaimTier(options, "", tierResult, "after_batch");
-    summary.claimed = summary.claimed || tierResult.claimed;
-    summary.claimCount += tierResult.claimCount;
-    summary.claimStones += tierResult.claimStones;
+    // Tick xong: hẹn orchestrator sau lastPeriodMs (1 attack / tick)
     summary.tierResults.push(tierResult);
-
     summary.status = "DONE";
     summary.nextCheckMs = Math.max(hitDelayMs, lastPeriodMs);
-    summary.nextCheckReason = "batch_done_continue";
-    onLog?.(
-      "SUCCESS",
-      `WB batch · ok ${okHits}/fail ${failHits} · claim ${summary.claimCount} · +${summary.claimStones || 0} LS · next ${summary.nextCheckMs}ms`
-    );
+    summary.nextCheckReason = "tick_continue";
+    if (okHits === 0 && failHits > 0) {
+      onLog?.("WARN", `WB tick fail · next ${summary.nextCheckMs}ms`);
+    }
   } catch (e: any) {
     summary.status = "ERROR";
     summary.errors.push(e?.message || String(e));
     summary.nextCheckMs = hitDelayMs;
     onLog?.("ERROR", `WB fail: ${e?.message || e} · retry ${hitDelayMs}ms`);
-  } finally {
-    if (charId) wbCombatBusy.delete(charId);
   }
 
   summary.finishedAt = new Date().toISOString();

@@ -80,8 +80,9 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     target_order: "boss_elite",
     farm_realm_tier_override: "auto",
     smart_rebirth_farm: true,
-    attack_delay_ms: 5000,
-    empty_scan_delay_ms: 5000,
+    /** chu kỳ farm (ms) — orchestrator hẹn vòng sau; engine game CD ~5s */
+    attack_delay_ms: 4000,
+    empty_scan_delay_ms: 4000,
     farm_log_mode: "summary",
     summary_log_interval_seconds: 1800,
     max_available_base_codes: 2,
@@ -165,12 +166,14 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     tiers: "",
     /** chu kỳ CHECK khi window_open=false — phút, min 1, mặc định 10 */
     check_interval_minutes: 10,
-    /** số lần attack / đợt (OK hoặc fail đều tính 1) — 1..999 */
-    max_attacks_per_check: 999,
+    /**
+     * Mỗi tick orchestrator = 1 lần attack (tách lẻ với farm).
+     * Không batch 999 — timer WB và farm độc lập.
+     */
+    max_attacks_per_check: 1,
     /**
      * Fallback delay (ms) khi response không có cooldown_sec.
-     * Game thường trả cooldown_sec=3 → engine chờ theo server (chu kỳ ~3s đều).
-     * Không nên set 1500: dễ FAIL cooldown → DPS thấp/lệch.
+     * Game WB thường cooldown_sec=3 → next ~3120ms (3s+buffer).
      */
     attack_delay_ms: 3000,
     auto_claim: true,
