@@ -47,9 +47,7 @@ export type FeatureId =
   | "vip_daily"
   | "auto_equip"
   | "craft"
-  | "body_cult"
-  | "onboarding_claim"
-  | "world_cup_checkin";
+  | "body_cult";
 
 export const FEATURE_LABELS: Record<FeatureId, string> = {
   farm: "Farm quái",
@@ -68,8 +66,6 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
-  onboarding_claim: "Onboarding",
-  world_cup_checkin: "World Cup checkin",
 };
 
 /** Setting mặc định tối ưu treo Render free */
@@ -248,6 +244,4 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
-  onboarding_claim: {},
-  world_cup_checkin: { reset_at_vn_midnight: true },
 });

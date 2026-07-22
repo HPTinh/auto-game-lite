@@ -16,7 +16,6 @@ import {
   runFarmAuto,
   runMailClaimAll,
   runMazeAuto,
-  runOnboardingClaimAuto,
   runKhoiLoiAuto,
   runKiNgoAuto,
   msUntilNextVietnamNoon,
@@ -24,7 +23,6 @@ import {
   runNhapMongAuto,
   runPvpAuto,
   runWorldBossAuto,
-  runWorldCupCheckinAuto,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -362,22 +360,6 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         onLog: onLog(accountId, "ACHIEVEMENT"),
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_minutes || 60) * 60_000);
-    } else if (featureId === "world_cup_checkin") {
-      await runWorldCupCheckinAuto({
-        characterId: runtime.characterId,
-        accessToken: runtime.accessToken,
-        settings,
-        onLog: onLog(accountId, "WORLD_CUP"),
-      });
-      nextDelayMs = 6 * 60 * 60_000;
-    } else if (featureId === "onboarding_claim") {
-      await runOnboardingClaimAuto({
-        characterId: runtime.characterId,
-        accessToken: runtime.accessToken,
-        settings,
-        onLog: onLog(accountId, "ONBOARDING"),
-      });
-      nextDelayMs = 60 * 60_000;
     } else if (featureId === "body_cult") {
       await runBodyCultAuto({
         characterId: runtime.characterId,

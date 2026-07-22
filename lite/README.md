@@ -18,7 +18,7 @@ Bản **tinh gọn** của Auto Best:
 - **PVP** (quota ngày), **Mê cung**, **Nhập Mộng**, **Khôi Lỗi**, **Kì ngộ** (reset 12h VN)
 - **Craft**: alchemy / forging / talisman / formation — list `rpc_list_recipes`; craft `rpc_craft_manual` hoặc **quick** `rpc_craft_auto` (VIP≥5, ~3s)
 - **VIP daily**: `rpc_get_vip_daily_status` + `rpc_claim_vip_daily` · `claimed_today` · reset 00:00 VN
-- Tuỳ chọn: Auto equip, Luyện thể, Onboarding, WC checkin
+- Tuỳ chọn: Auto equip, Luyện thể
 
 UI chỉ để: thêm account, tick feature, Start/Stop, xem log.
 

@@ -8,8 +8,6 @@ export {
   runClaimExpAuto,
   runAchievementClaimAuto,
   runBodyCultAuto,
-  runOnboardingClaimAuto,
-  runWorldCupCheckinAuto,
 } from "../../lib/dailyEngine";
 export { runWorldBossAuto } from "../../lib/worldBossEngine";
 export { runBreakthroughAuto } from "../../lib/breakthroughEngine";
