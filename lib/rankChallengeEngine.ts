@@ -285,7 +285,7 @@ export async function runRankChallengeAuto(options: RankChallengeAutoOptions): P
   let dailyDate = String(settings.daily_date || "");
   let hunt = normalizeHunt(settings.hunt_list);
   let skipSlots = normalizeSkipSlots(settings);
-  let farmRotate = Math.max(0, Math.floor(Number(settings.farm_rotate ?? settings.hunt_rotate || 0)) || 0);
+  let farmRotate = Math.max(0, Math.floor(Number(settings.farm_rotate ?? settings.hunt_rotate ?? 0)) || 0);
   let stopNoWin = false;
 
   // Sang ngày mới: reset skip + win count; farm slot giữ (thử lại hôm sau)
