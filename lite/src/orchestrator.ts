@@ -371,9 +371,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     } else if (featureId === "world_boss") {
       const checkMin = Math.max(1, Math.min(24 * 60, Number(settings.check_interval_minutes || 10) || 10));
       const maxAtk = Math.max(1, Math.min(999, Number(settings.max_attacks_per_check ?? 999) || 999));
-      // Delay giữa 2 attempt — tối thiểu 1500ms (engine cũng clamp)
-      const attackDelayMs = Number(settings.attack_delay_ms ?? 1500);
-      const hitMs = Number.isFinite(attackDelayMs) && attackDelayMs > 0 ? Math.max(1500, attackDelayMs) : 1500;
+      // Fallback 3000ms (= game cooldown); engine ưu tiên cooldown_sec từ response
+      const attackDelayMs = Number(settings.attack_delay_ms ?? 3000);
+      const hitMs = Number.isFinite(attackDelayMs) && attackDelayMs > 0 ? Math.max(500, attackDelayMs) : 3000;
       const result = await runWorldBossAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,

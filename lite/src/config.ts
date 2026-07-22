@@ -168,10 +168,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** số lần attack / đợt (OK hoặc fail đều tính 1) — 1..999 */
     max_attacks_per_check: 999,
     /**
-     * Delay giữa 2 lần attack (ms) — tối thiểu 1500.
-     * Vòng: attack → chờ delay → attack (không channels giữa 2 đòn).
+     * Fallback delay (ms) khi response không có cooldown_sec.
+     * Game thường trả cooldown_sec=3 → engine chờ theo server (chu kỳ ~3s đều).
+     * Không nên set 1500: dễ FAIL cooldown → DPS thấp/lệch.
      */
-    attack_delay_ms: 1500,
+    attack_delay_ms: 3000,
     auto_claim: true,
   },
   breakthrough: {

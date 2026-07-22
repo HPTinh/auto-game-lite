@@ -611,21 +611,22 @@ async function tryClaimTier(options: WorldBossAutoOptions, tier: string, tierRes
   }
 }
 /**
- * World Boss — spam attack theo delay user:
- *   1) rpc_wb_channels 1 lan (tier + window_open + HP)
- *   2) for 1..max_attacks: rpc_wb_attack → sleep(delay) — moi lan (ke ca fail) = 1 attempt
- *   3) KHONG channels moi don (tranh cho lau)
- *   4) chi dung som khi kill / hp_after<=0
+ * World Boss — nhịp giống client game:
+ *   1) rpc_wb_channels 1 lần (tier + window_open + HP)
+ *   2) rpc_wb_attack → chờ theo cooldown_sec từ response (thường 3s)
+ *      wait = max(0, cdMs - thời_gian_request)  → chu kỳ ổn định ~3s
+ *   3) Không channels giữa 2 đòn
+ *   4) Dừng sớm khi kill / hp_after<=0
  *
- * attack_delay_ms: toi thieu 1500ms (vd 1500 = 1.5s/don)
+ * attack_delay_ms: fallback khi response không có cooldown (mặc định 3000)
  */
 export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<WorldBossRunSummary> {
   const checkIntervalMs = clamp(Number(options.checkIntervalMinutes ?? 10), 1, 24 * 60, 10) * 60_000;
   const maxAttacks = clamp(options.maxAttacksPerCheck ?? 999, 1, 999, 999);
   const fixedDelayMs = Number(options.attackDelayMs);
-  // User delay, MIN 1500ms — khong cho delay ngan hon 1.5s
+  // Fallback = game default 3s; user set 1500 vẫn được nhưng server CD thường 3s
   const hitDelayMs =
-    Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(1500, fixedDelayMs) : 1500;
+    Number.isFinite(fixedDelayMs) && fixedDelayMs > 0 ? Math.max(500, fixedDelayMs) : 3000;
   const onLog = options.onLog;
 
   const summary: WorldBossRunSummary = {
@@ -731,9 +732,10 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       return summary;
     }
 
-    // 2) Spam attack: moi lan (OK hoac fail) = 1 attempt, chi cho hitDelayMs
+    // 2) Attack đều: chờ theo cooldown server (giống game), trừ thời gian request
     let okHits = 0;
     let failHits = 0;
+    let lastCdMs = hitDelayMs;
 
     for (let attempt = 1; attempt <= maxAttacks; attempt++) {
       if (options.shouldStop?.()) {
@@ -742,12 +744,14 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
       }
 
       let killed = false;
+      const t0 = Date.now();
       try {
         const attack = await rpc(
           "rpc_wb_attack",
           { p_character_id: options.characterId, p_tier: tier },
           options.accessToken
         );
+        const elapsed = Date.now() - t0;
         tierResult.lastAttack = attack;
         tierResult.attackCount += 1;
         summary.attackCount += 1;
@@ -755,11 +759,14 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
 
         const dmg = Number(attack?.damage);
         const hpAfterAtk = Number(attack?.hp_after);
+        // Game trả cooldown_sec / atk_speed_sec (thường 3) — ưu tiên response
+        lastCdMs = attackCooldownMs(attack, hitDelayMs);
+        const waitMs = Math.max(0, lastCdMs - elapsed);
 
         if (attempt === 1 || attempt === maxAttacks || attempt % 10 === 0 || isBossKilledByAttack(attack)) {
           onLog?.(
             "INFO",
-            `WB ${tier} #${attempt}/${maxAttacks} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · next ${hitDelayMs}ms`
+            `WB ${tier} #${attempt}/${maxAttacks} OK · dmg ${Number.isFinite(dmg) ? dmg.toLocaleString() : "?"} · hp ${Number.isFinite(hpAfterAtk) ? hpAfterAtk.toLocaleString() : "?"} · net ${elapsed}ms · cd ${lastCdMs}ms · wait ${waitMs}ms`
           );
         }
 
@@ -786,22 +793,27 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
+
+        if (attempt < maxAttacks) await sleep(waitMs);
       } catch (error: any) {
-        // FAIL van tinh 1 attempt — khong dung batch, khong cho hang gio
+        const elapsed = Date.now() - t0;
         failHits += 1;
-        tierResult.attackCount += 1; // dem ca fail
+        tierResult.attackCount += 1;
         summary.attackCount += 1;
         tierResult.lastAttack = error?.data;
         const msg = error?.message || "attack error";
+        // Fail cooldown: chờ đủ CD (không spam 1.5s gây lệch)
+        const errCd = attackCooldownMs(error?.data, lastCdMs || hitDelayMs);
+        lastCdMs = errCd;
+        const waitMs = Math.max(0, errCd - elapsed);
 
         if (attempt === 1 || attempt % 10 === 0 || failHits <= 3) {
           onLog?.(
             "WARN",
-            `WB ${tier} #${attempt}/${maxAttacks} FAIL · ${msg.slice(0, 80)} · van dem 1 lan · next ${hitDelayMs}ms`
+            `WB ${tier} #${attempt}/${maxAttacks} FAIL · ${msg.slice(0, 80)} · wait ${waitMs}ms (cd ${errCd}ms)`
           );
         }
 
-        // Co the van claim duoc (boss chet)
         if (isClaimRewardLike(error)) {
           await tryClaimTier(options, tier, tierResult, "error_claimable");
           summary.claimed = summary.claimed || tierResult.claimed;
@@ -816,12 +828,8 @@ export async function runWorldBossAuto(options: WorldBossAutoOptions): Promise<W
             return summary;
           }
         }
-        // isAttackBlockedError: van tiep tuc spam den het max — user yeu cau
-      }
 
-      // Delay chinh xac giua 2 attempt (ke ca fail)
-      if (!killed && attempt < maxAttacks) {
-        await sleep(hitDelayMs);
+        if (!killed && attempt < maxAttacks) await sleep(waitMs);
       }
     }
 

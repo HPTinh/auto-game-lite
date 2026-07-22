@@ -1,0 +1,233 @@
+================================================================================
+WORLD BOSS — CONSOLE TEST (dán vào F12 Console trên play.samsaragame.online)
+Mục đích: so nhịp đánh đều với game client, tìm vì sao tool chậm/lệch.
+================================================================================
+
+HƯỚNG DẪN
+1) Mở game → World Boss (cửa sổ đang mở)
+2) F12 → tab Console
+3) Sửa 3 chỗ CONFIG bên dưới (token / characterId / tier)
+4) Dán TOÀN BỘ khối code "=== PASTE START ===" ... "=== PASTE END ==="
+5) Enter → xem log: gap_ms giữa 2 đòn OK phải ~3000 (game cooldown)
+
+CÁCH LẤY TOKEN + CHARACTER ID
+- F12 → Network → filter "rpc_wb" → click 1 request
+- Headers: authorization: Bearer <TOKEN>
+- Payload: p_character_id, p_tier
+
+KẾT QUẢ MONG ĐỢI (giống game)
+- cooldown_sec / atk_speed_sec trong response = 3
+- gap giữa 2 đòn OK ≈ 3000ms (± mạng)
+- Nếu delay=1500: sẽ thấy FAIL cooldown xen kẽ → DPS thấp, "không đều"
+
+--------------------------------------------------------------------------------
+=== PASTE START ===
+--------------------------------------------------------------------------------
+
+(async () => {
+  // ========== CONFIG — SỬA 3 DÒNG NÀY ==========
+  const ACCESS_TOKEN = "PASTE_BEARER_TOKEN_HERE";
+  const CHARACTER_ID = "PASTE_CHARACTER_UUID_HERE";
+  const TIER = ""; // để trống = auto my_tier từ channels; hoặc "lk"|"tc"|"kd"|"na"|"ht"|"lh"
+  // =============================================
+
+  const API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
+  const BASE = "https://jeassefmlprfnlszgvbs.supabase.co";
+  const MAX_HITS = 20;           // số lần attack thử
+  const MODE = "game_cd";        // "game_cd" | "fixed_1500" | "fixed_3000"
+  const FIXED_MS = 1500;         // dùng khi MODE = fixed_*
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function rpc(name, body) {
+    const t0 = performance.now();
+    const res = await fetch(`${BASE}/rest/v1/rpc/${name}`, {
+      method: "POST",
+      headers: {
+        apikey: API_KEY,
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-profile": "public",
+        "content-type": "application/json",
+        "x-client-info": "wb-console-test/1.0",
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+    const ms = Math.round(performance.now() - t0);
+    return { ok: res.ok && data?.ok !== false, status: res.status, data, ms };
+  }
+
+  console.log("%c[WB TEST] channels...", "color:#6db3ff");
+  const chRes = await rpc("rpc_wb_channels", { p_character_id: CHARACTER_ID });
+  if (!chRes.ok) {
+    console.error("[WB TEST] channels FAIL", chRes.status, chRes.data);
+    return;
+  }
+  const myTier = String(chRes.data?.my_tier || "").toLowerCase();
+  const channels = Array.isArray(chRes.data?.channels) ? chRes.data.channels : [];
+  const pick =
+    (TIER && channels.find((c) => c.tier === TIER.toLowerCase())) ||
+    channels.find((c) => c.available === true) ||
+    channels.find((c) => c.tier === myTier) ||
+    channels[0];
+  const tier = String(pick?.tier || TIER || myTier || "lk").toLowerCase();
+
+  console.table(
+    channels.map((c) => ({
+      tier: c.tier,
+      available: c.available,
+      window_open: c.window_open,
+      status: c.status,
+      hp_current: c.hp_current,
+      hp_max: c.hp_max,
+    }))
+  );
+  console.log(
+    `[WB TEST] my_tier=${myTier} fight=${tier} open=${pick?.window_open} hp=${pick?.hp_current} net=${chRes.ms}ms MODE=${MODE}`
+  );
+
+  if (pick?.window_open !== true) {
+    console.warn("[WB TEST] window_open != true — vẫn thử attack");
+  }
+
+  const rows = [];
+  let lastEnd = 0;
+  let ok = 0;
+  let fail = 0;
+
+  for (let i = 1; i <= MAX_HITS; i++) {
+    const tStart = performance.now();
+    const gapFromPrev = lastEnd ? Math.round(tStart - lastEnd) : 0;
+
+    const atk = await rpc("rpc_wb_attack", {
+      p_character_id: CHARACTER_ID,
+      p_tier: tier,
+    });
+    const tEnd = performance.now();
+    lastEnd = tEnd;
+
+    const d = atk.data || {};
+    const success = atk.ok === true;
+    if (success) ok++;
+    else fail++;
+
+    const cdSec = Number(d.cooldown_sec ?? d.atk_speed_sec ?? 3) || 3;
+    const serverCdMs = Math.round(cdSec * 1000);
+    let waitMs = serverCdMs;
+    if (MODE === "fixed_1500") waitMs = 1500;
+    if (MODE === "fixed_3000") waitMs = 3000;
+    if (MODE === "game_cd") {
+      // Giống client: chu kỳ ~ cooldown kể từ lúc BẮT ĐẦU request
+      const elapsed = tEnd - tStart;
+      waitMs = Math.max(0, serverCdMs - elapsed);
+    }
+
+    const row = {
+      n: i,
+      ok: success,
+      net_ms: atk.ms,
+      gap_ms: gapFromPrev,
+      dmg: d.damage,
+      hp_after: d.hp_after,
+      cd_sec: d.cooldown_sec,
+      atk_speed: d.atk_speed_sec,
+      killed: d.killed,
+      err: success ? "" : String(d.error || d.reason || d.message || atk.status).slice(0, 60),
+      next_wait_ms: Math.round(waitMs),
+    };
+    rows.push(row);
+
+    const color = success ? "color:#3dd68c" : "color:#f31260";
+    console.log(
+      `%c#${i} ${success ? "OK" : "FAIL"} net=${atk.ms}ms gap=${gapFromPrev}ms dmg=${d.damage ?? "-"} hp=${d.hp_after ?? "-"} cd=${d.cooldown_sec ?? "?"} wait=${Math.round(waitMs)}ms ${row.err}`,
+      color
+    );
+
+    if (d.killed === true || (Number.isFinite(Number(d.hp_after)) && Number(d.hp_after) <= 0)) {
+      console.log("%c[WB TEST] BOSS DEAD — stop", "color:#f5a524;font-weight:bold");
+      break;
+    }
+
+    if (i < MAX_HITS) await sleep(waitMs);
+  }
+
+  console.log("%c[WB TEST] SUMMARY", "color:#6db3ff;font-weight:bold");
+  console.table(rows);
+
+  const okRows = rows.filter((r) => r.ok);
+  const gaps = okRows.map((r) => r.gap_ms).filter((g) => g > 0);
+  const avgGap = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
+  const avgNet = okRows.length
+    ? Math.round(okRows.reduce((a, b) => a + b.net_ms, 0) / okRows.length)
+    : 0;
+
+  console.log(
+    JSON.stringify(
+      {
+        mode: MODE,
+        tier,
+        total: rows.length,
+        ok,
+        fail,
+        ok_rate: rows.length ? Math.round((ok / rows.length) * 100) + "%" : "0%",
+        avg_gap_between_ok_ms: avgGap,
+        avg_network_ms: avgNet,
+        note:
+          MODE === "game_cd"
+            ? "gap ~3000ms + ổn định = giống game. Tool nên sleep = max(0, cooldown_ms - net_ms)"
+            : MODE === "fixed_1500"
+              ? "1500ms thường FAIL cooldown (server 3s) → chậm/lệch — đây là bug tool cũ"
+              : "fixed 3000",
+      },
+      null,
+      2
+    )
+  );
+
+  // So sánh nhanh 2 mode
+  console.log(`
+===== CÁCH ĐỌC KẾT QUẢ =====
+1) MODE=game_cd  → gap OK ≈ 3000ms, ít FAIL  → client game làm kiểu này
+2) MODE=fixed_1500 → nhiều FAIL cooldown     → tool cũ (min 1500) dễ bị vậy
+3) net_ms cao (500–2000) + farm song song   → API chen nhau, nhịp lệch thêm
+
+Sửa tool: sau mỗi attack thành công chờ
+  wait = max(0, cooldown_sec*1000 - thời_gian_request)
+không chờ cố định 1500ms sau khi request xong.
+`);
+})();
+
+--------------------------------------------------------------------------------
+=== PASTE END ===
+--------------------------------------------------------------------------------
+
+TEST NHANH MODE 1500 (sau khi chạy xong game_cd, đổi MODE):
+- Sửa MODE = "fixed_1500" rồi dán lại → so bảng ok/fail
+
+STOP GIỮA CHỪNG:
+- Reload trang game (F5)
+
+TOKEN HẾT HẠN:
+- Login lại game → copy Bearer mới
+
+================================================================================
+PHÂN TÍCH (không cần dán)
+================================================================================
+Game client (đều):
+  attack → response.cooldown_sec=3 → chờ ~3s kể từ lúc đánh → attack
+
+Tool cũ (chậm/lệch):
+  attack (0.3–1s mạng) + sleep(1500) = chu kỳ ~1.8–2.5s
+  → server còn cooldown 3s → FAIL → vẫn sleep 1500 → DPS thấp, nhịp lổn nhổn
+  + farm chạy song song cướp bandwidth
+  + claim pending mỗi đầu batch
+  + batch xong orchestrator hẹn lại (overhead nhỏ)
+
+Fix engine (đồng bộ game):
+  - Ưu tiên cooldown_sec / atk_speed_sec từ response
+  - wait = max(0, cdMs - elapsed_request)
+  - default delay fallback 3000
+  - fail cooldown: chờ đủ cd rồi đánh tiếp (không spam 1.5s)
+================================================================================
