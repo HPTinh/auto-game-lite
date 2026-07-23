@@ -275,12 +275,14 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
-  /** Hoàng Cổ: mở rộng → thủ → phá (1 timer) */
+  /** Hoàng Cổ: mở rộng → thủ cờ → thủ mỏ → phá */
   hoang_co: {
     auto_place: true,
     auto_build: true,
     auto_defend: true,
-    /** Phá cờ địch — siege_flag side=attack (mặc định tắt) */
+    /** Thủ mỏ — defend_position kind=resource */
+    auto_defend_mine: true,
+    /** Phá cờ địch — mặc định tắt */
     auto_attack: false,
     focus_flag_id: null,
     focus_attack_flag_id: null,

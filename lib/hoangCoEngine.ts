@@ -1,11 +1,12 @@
 /**
  * Hoàng Cổ — 1 feature, nhiều mục tiêu (setting):
  * - Cắm cờ + Xây cờ → expand (is_built=false)
- * - Thủ cờ → siege_flag side=defend (cờ mình bị phá)
- * - Phá cờ → siege_flag side=attack (cờ clan khác)
- * - Rời chỗ xây/thủ → rpc_hoang_co_leave_defense
+ * - Thủ cờ → siege_flag side=defend
+ * - Thủ mỏ → defend_position kind=resource (mỏ clan mình)
+ * - Phá cờ → siege_flag side=attack
+ * - leave_defense khi rời pin
  *
- * runHoangCoAuto: 1 timer. Thứ tự: Mở rộng → Thủ → Phá.
+ * runHoangCoAuto: 1 timer. Thứ tự: Mở rộng → Thủ cờ → Thủ mỏ → Phá.
  */
 
 export type HoangCoLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
@@ -34,8 +35,10 @@ export interface HoangCoRunSummary {
   buildingFlags?: number;
   threatenedCount?: number;
   side?: string;
-  /** expand | defend */
+  /** expand | defend | defend_mine | attack */
   phase?: string;
+  /** node_id mỏ đang thủ */
+  mineId?: string | number;
 }
 
 export interface HoangCoAutoOptions {
@@ -1045,13 +1048,281 @@ function expandStillBusy(r: HoangCoRunSummary): boolean {
   return false;
 }
 
-/** Thủ còn việc: đang đi/cứu hoặc còn cờ bị phá */
+/** Thủ cờ còn việc */
 function defendStillBusy(r: HoangCoRunSummary): boolean {
   if (r.status === "WAITING") return true;
   if (r.status === "ERROR") return true;
   if (r.moved) return true;
   if (r.action && /rescue|defend|siege_flag_defend|move_to_rescue/i.test(r.action || "")) return true;
   return false;
+}
+
+/** Thủ mỏ còn việc */
+function defendMineStillBusy(r: HoangCoRunSummary): boolean {
+  if (r.status === "WAITING") return true;
+  if (r.status === "ERROR") return true;
+  if (r.moved) return true;
+  if (r.action && /defend_mine|move_to_mine|resource/i.test(r.action || "")) return true;
+  return false;
+}
+
+type MineNode = {
+  node_id: number | string;
+  pos_x: number;
+  pos_y: number;
+  holder_clan_id?: string;
+  label?: string;
+  struct_hp_current: number;
+  struct_hp_max: number;
+  is_stronghold?: boolean;
+  tier?: number;
+};
+
+function parseMines(map: any): MineNode[] {
+  const raw = Array.isArray(map?.resources) ? map.resources : [];
+  return raw
+    .map((r: any) => ({
+      node_id: r.node_id != null ? r.node_id : r.id,
+      pos_x: Math.floor(n(r.pos_x)),
+      pos_y: Math.floor(n(r.pos_y)),
+      holder_clan_id: r.holder_clan_id ? String(r.holder_clan_id) : undefined,
+      label: String(r.label_vi || r.label_en || r.name || ""),
+      struct_hp_current: n(r.struct_hp_current, n(r.hp_current, 0)),
+      struct_hp_max: n(r.struct_hp_max, n(r.hp_max, 1)) || 1,
+      is_stronghold: r.is_stronghold === true,
+      tier: n(r.tier, 0),
+    }))
+    .filter((m: MineNode) => m.node_id != null && m.node_id !== "");
+}
+
+function isMineThreatened(
+  map: any,
+  mine: MineNode,
+  myClanId: string,
+  threatRadius: number
+): { danger: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  if (mine.struct_hp_current < mine.struct_hp_max * 0.98) {
+    reasons.push(`HP mỏ ${mine.struct_hp_current}/${mine.struct_hp_max}`);
+  }
+  const players = Array.isArray(map?.players) ? map.players : [];
+  let enemyNear = 0;
+  for (const p of players) {
+    const pid = String(p?.clan_id || "");
+    if (pid && pid === myClanId) continue;
+    if (p?.is_ally === true) continue;
+    const px = Math.floor(n(p?.pos_x, -999));
+    const py = Math.floor(n(p?.pos_y, -999));
+    if (px < -100) continue;
+    if (manhattan(px, py, mine.pos_x, mine.pos_y) <= threatRadius) enemyNear += 1;
+  }
+  if (enemyNear > 0) reasons.push(`${enemyNear} địch gần mỏ`);
+
+  // Defenders stack có target resource?
+  const defenders = Array.isArray(map?.defenders) ? map.defenders : [];
+  const besiegers = Array.isArray(map?.besiegers) ? map.besiegers : [];
+  // resource id string match
+  const idStr = String(mine.node_id);
+  for (const b of besiegers) {
+    if (String(b?.target_id || b?.node_id || "") === idStr) reasons.push("có besieger mỏ");
+  }
+  for (const d of defenders) {
+    if (String(d?.target_kind || "") === "resource" && String(d?.target_id || "") === idStr) {
+      // đang có người thủ — không phải nguy, bỏ qua
+    }
+  }
+
+  return { danger: reasons.length > 0, reasons };
+}
+
+/**
+ * Thủ mỏ — rpc_hoang_co_defend_position
+ * p_target_kind: "resource", p_target_id: node_id
+ */
+export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
+  const settings = options.settings || {};
+  const onLog = options.onLog;
+  const characterId = options.characterId;
+  const accessToken = options.accessToken;
+
+  const threatRadius = 4;
+  const pollMs = 20_000;
+  const onlyWhenEventLive = settings.only_when_event_live !== false;
+  /** Không bị đe dọa vẫn ghim mỏ gần nhất (mặc định true) */
+  const garrisonIdle = settings.mine_garrison !== false;
+
+  const summary: HoangCoRunSummary = {
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    status: "DONE",
+    nextDelayMs: pollMs,
+  };
+
+  try {
+    const status = await rpc("rpc_hoang_co_status", { p_character_id: characterId }, accessToken);
+    const eventLive = status?.is_event_live === true || status?.season?.status === "event_live";
+    const eligible = status?.eligibility?.eligible !== false;
+    const clanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+
+    if (onlyWhenEventLive && !eventLive) {
+      summary.status = "NO_EVENT";
+      summary.reason = "Event chưa live";
+      summary.nextDelayMs = 5 * 60_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (!eligible || !clanId) {
+      summary.status = "SKIPPED";
+      summary.reason = "Không eligible / chưa clan";
+      summary.nextDelayMs = 10 * 60_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    const me = myPos(map);
+    if (!me) {
+      summary.status = "WAITING";
+      summary.reason = "Chưa có vị trí map";
+      summary.nextDelayMs = 60_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (me.dead) {
+      summary.status = "WAITING";
+      summary.reason = "Đang chết";
+      summary.nextDelayMs = 90_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (me.inTransit && me.eta > 0) {
+      summary.status = "WAITING";
+      summary.action = "transit";
+      summary.etaSeconds = me.eta;
+      summary.nextDelayMs = Math.max(3_000, me.eta * 1000 + 1500);
+      summary.reason = `Đang đi · ETA ${me.eta}s`;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const mines = parseMines(map).filter((m) => m.holder_clan_id === clanId);
+    if (!mines.length) {
+      summary.status = "DONE";
+      summary.reason = "Clan không giữ mỏ nào";
+      summary.nextDelayMs = 30_000;
+      onLog?.("INFO", "HC Thủ mỏ: không có mỏ");
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // Bật Phá cờ → không ghim mỏ idle (tránh kẹt), chỉ thủ mỏ khi bị đe dọa
+    const attackAlsoOn = settings.auto_attack === true;
+    const doGarrison = garrisonIdle && !attackAlsoOn;
+
+    type Scored = { m: MineNode; score: number; danger: boolean; reasons: string[] };
+    const scored: Scored[] = mines.map((m) => {
+      const t = isMineThreatened(map, m, clanId, threatRadius);
+      let score = 0;
+      if (t.danger) score += 100;
+      score += (1 - m.struct_hp_current / m.struct_hp_max) * 50;
+      if (m.is_stronghold) score += 10;
+      score += m.tier || 0;
+      score -= manhattan(m.pos_x, m.pos_y, me.x, me.y) * 0.3;
+      return { m, score, danger: t.danger, reasons: t.reasons };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+
+    let pick = scored.find((s) => s.danger);
+    if (!pick && doGarrison) {
+      pick = [...scored].sort((a, b) => {
+        if (a.m.is_stronghold !== b.m.is_stronghold) return a.m.is_stronghold ? -1 : 1;
+        return (
+          manhattan(a.m.pos_x, a.m.pos_y, me.x, me.y) - manhattan(b.m.pos_x, b.m.pos_y, me.x, me.y)
+        );
+      })[0];
+    }
+
+    if (!pick) {
+      summary.status = "DONE";
+      summary.reason = attackAlsoOn
+        ? "Không mỏ bị đe dọa · nhường phase Phá cờ"
+        : "Không mỏ cần thủ";
+      summary.nextDelayMs = 25_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const mine = pick.m;
+    summary.mineId = mine.node_id;
+    summary.dest = { x: mine.pos_x, y: mine.pos_y };
+
+    onLog?.(
+      "INFO",
+      `HC Thủ mỏ: #${mine.node_id} ${mine.label || ""} @(${mine.pos_x},${mine.pos_y}) · HP ${mine.struct_hp_current}/${mine.struct_hp_max}${pick.danger ? " · " + pick.reasons.join("; ") : " · ghim"}`
+    );
+
+    const dist = manhattan(mine.pos_x, mine.pos_y, me.x, me.y);
+    if (dist > 0) {
+      await leaveDefense(characterId, accessToken, onLog);
+      const mv = await rpc(
+        "rpc_hoang_co_move",
+        { p_character_id: characterId, p_dest_x: mine.pos_x, p_dest_y: mine.pos_y },
+        accessToken
+      );
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+      summary.moved = true;
+      summary.action = "move_to_mine";
+      summary.status = "WAITING";
+      summary.etaSeconds = eta;
+      summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+      summary.reason = `Đi thủ mỏ #${mine.node_id} · ETA ${eta}s`;
+      onLog?.("INFO", summary.reason);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // Đứng tại mỏ → defend_position resource
+    try {
+      const res = await rpc(
+        "rpc_hoang_co_defend_position",
+        {
+          p_character_id: characterId,
+          p_target_kind: "resource",
+          p_target_id: String(mine.node_id),
+        },
+        accessToken
+      );
+      summary.action = "defend_mine";
+      summary.status = "WAITING";
+      summary.nextDelayMs = pollMs;
+      summary.reason = `Thủ mỏ #${mine.node_id} · stack ${n(res?.stack_order)}/${n(res?.stack_size)}`;
+      onLog?.("SUCCESS", summary.reason, { res });
+    } catch (e: any) {
+      summary.status = "ERROR";
+      summary.reason = `defend_position mỏ #${mine.node_id} fail: ${(e?.message || e).toString().slice(0, 120)}`;
+      summary.nextDelayMs = 20_000;
+      onLog?.("ERROR", `HC Thủ mỏ: ${summary.reason}`);
+    }
+
+    try {
+      await rpc(
+        "rpc_hoang_co_heartbeat",
+        { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
+        accessToken
+      );
+    } catch {
+      /* ignore */
+    }
+  } catch (e: any) {
+    summary.status = "ERROR";
+    summary.reason = e?.message || String(e);
+    summary.nextDelayMs = 45_000;
+    onLog?.("ERROR", `HC Thủ mỏ error: ${summary.reason}`);
+  }
+
+  summary.finishedAt = new Date().toISOString();
+  return summary;
 }
 
 /**
@@ -1264,15 +1535,16 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
   const placeOn = settings.auto_place !== false;
   const buildOn = settings.auto_build !== false;
   const defendOn = settings.auto_defend !== false;
-  const attackOn = settings.auto_attack === true; // phá cờ — mặc định tắt, bật trong UI
+  const mineOn = settings.auto_defend_mine !== false;
+  const attackOn = settings.auto_attack === true; // phá cờ — mặc định tắt
   const expandOn = placeOn || buildOn;
 
-  if (!expandOn && !defendOn && !attackOn) {
+  if (!expandOn && !defendOn && !mineOn && !attackOn) {
     return {
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       status: "SKIPPED",
-      reason: "Chưa bật Cắm/Xây/Thủ/Phá",
+      reason: "Chưa bật Cắm/Xây/Thủ cờ/Thủ mỏ/Phá",
       nextDelayMs: 60_000,
       phase: "idle",
     };
@@ -1285,14 +1557,14 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
     if (expandStillBusy(exp) || exp.status === "NO_EVENT" || exp.status === "SKIPPED") {
       return exp;
     }
-    if (!defendOn && !attackOn) {
+    if (!defendOn && !mineOn && !attackOn) {
       exp.reason = exp.reason || "Mở rộng xong / không còn việc";
       return exp;
     }
     onLog?.("INFO", "HoàngCổ: mở rộng xong → phase sau");
   }
 
-  // 2) Thủ cờ mình (is_built + siege < 600 / đang bị công)
+  // 2) Thủ cờ mình
   if (defendOn) {
     const def = await runHoangCoDefendAuto(options);
     def.phase = "defend";
@@ -1300,15 +1572,27 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
       def.selfPlacedFlagIds = settings.self_placed_flag_ids;
     }
     if (def.status === "NO_EVENT" || def.status === "SKIPPED") return def;
-    // Còn việc thủ / đang pin cứu → chưa phá địch
     if (defendStillBusy(def) || (def.threatenedCount || 0) > 0) {
       return def;
     }
-    if (!attackOn) return def;
-    onLog?.("INFO", "HoàngCổ: không cờ mình cần thủ → Phá cờ");
+    if (!mineOn && !attackOn) return def;
+    onLog?.("INFO", "HoàngCổ: không cờ cần thủ → phase sau");
   }
 
-  // 3) Phá cờ địch (clan_id khác → siege_flag side=attack)
+  // 3) Thủ mỏ (defend_position resource)
+  if (mineOn) {
+    const mine = await runHoangCoDefendMineAuto(options);
+    mine.phase = "defend_mine";
+    if (mine.status === "NO_EVENT" || mine.status === "SKIPPED") return mine;
+    if (defendMineStillBusy(mine)) {
+      return mine;
+    }
+    // DONE không mỏ bị đe dọa (và không garrison) → sang phá
+    if (!attackOn) return mine;
+    onLog?.("INFO", "HoàngCổ: thủ mỏ xong / không mỏ nguy → Phá cờ");
+  }
+
+  // 4) Phá cờ địch
   if (attackOn) {
     const atk = await runHoangCoAttackAuto(options);
     atk.phase = "attack";

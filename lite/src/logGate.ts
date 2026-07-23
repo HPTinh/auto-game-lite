@@ -161,7 +161,7 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
       lv === "ERROR" ||
       lv === "SUCCESS" ||
       lv === "WARN" ||
-      /place|build|cắm|xây|thủ|cứu|phá|attack|siege|leave|move|đi|ETA|event|cờ|expand|mở rộng|chờ/i.test(
+      /place|build|cắm|xây|thủ|mỏ|cứu|phá|attack|siege|leave|move|đi|ETA|event|cờ|expand|mở rộng|chờ/i.test(
         text
       )
     );

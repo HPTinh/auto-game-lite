@@ -925,17 +925,20 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       } else {
         const phaseLabel =
           result.phase === "defend"
-            ? "Thủ"
-            : result.phase === "expand"
-              ? "Mở rộng"
-              : result.phase === "attack"
-                ? "Phá"
-                : "";
+            ? "Thủ cờ"
+            : result.phase === "defend_mine"
+              ? "Thủ mỏ"
+              : result.phase === "expand"
+                ? "Mở rộng"
+                : result.phase === "attack"
+                  ? "Phá"
+                  : "";
         const lvl =
           (result.placed || 0) > 0 ||
           (result.built || 0) > 0 ||
           result.action === "siege_flag_defend" ||
-          result.action === "siege_flag_attack"
+          result.action === "siege_flag_attack" ||
+          result.action === "defend_mine"
             ? "SUCCESS"
             : result.status === "SKIPPED" || result.status === "NO_EVENT"
               ? "WARN"
