@@ -2,7 +2,7 @@
  * Hoàng Cổ — 1 feature, nhiều mục tiêu (setting):
  * - Cắm cờ + Xây cờ → expand (is_built=false)
  * - Thủ cờ → siege_flag side=defend
- * - Thủ mỏ → defend_position kind=resource (mỏ clan mình)
+ * - Thủ mỏ → defend_position central (stack_order chỉ là hàng, không quan trọng)
  * - Phá cờ → siege_flag side=attack
  * - leave_defense khi rời pin
  *
@@ -1062,7 +1062,12 @@ function defendMineStillBusy(r: HoangCoRunSummary): boolean {
   if (r.status === "WAITING") return true;
   if (r.status === "ERROR") return true;
   if (r.moved) return true;
-  if (r.action && /defend_mine|move_to_mine|flee_mine|flee_to_safe|resource/i.test(r.action || ""))
+  if (
+    r.action &&
+    /defend_mine|defend_central|move_to_mine|move_to_central|flee_mine|flee_central|flee_to_safe|resource/i.test(
+      r.action || ""
+    )
+  )
     return true;
   return false;
 }
@@ -1097,12 +1102,13 @@ function parseMines(map: any): MineNode[] {
 }
 
 /**
- * Địch trong bán kính threatRadius ô quanh mỏ?
- * Chỉ đếm player địch (không ally / khác clan) — không dựa HP mỏ / HP mình.
+ * Địch trong bán kính threatRadius quanh (x,y)
+ * Chỉ player địch — không dựa HP.
  */
-function enemiesNearMine(
+function enemiesNearPoint(
   map: any,
-  mine: MineNode,
+  x: number,
+  y: number,
   myClanId: string,
   threatRadius: number
 ): { count: number; names: string[] } {
@@ -1115,7 +1121,7 @@ function enemiesNearMine(
     const px = Math.floor(n(p?.pos_x, -999));
     const py = Math.floor(n(p?.pos_y, -999));
     if (px < -100) continue;
-    if (manhattan(px, py, mine.pos_x, mine.pos_y) <= threatRadius) {
+    if (manhattan(px, py, x, y) <= threatRadius) {
       names.push(String(p?.name || p?.character_id || "?").slice(0, 24));
     }
   }
@@ -1123,9 +1129,11 @@ function enemiesNearMine(
 }
 
 /**
- * Thủ mỏ — chỉ ghim mỏ AN TOÀN (không địch trong 3 ô).
- * Có địch trong 3 ô → leave_defense + chạy sang mỏ khác an toàn, KHÔNG ở lại đánh
- * (kể cả máu đầy).
+ * Thủ mỏ = ghim **CENTRAL** (trung tâm)
+ * - defend_position { kind: "central", id: "central" }
+ * - stack_order / stack_size chỉ là thứ tự hàng (1,2,3…) — không dùng để quyết định
+ * - Địch trong 3 ô quanh central → leave + chạy về home, KHÔNG ở lại đánh
+ * - An toàn → quay lại ghim central
  */
 export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
@@ -1133,7 +1141,7 @@ export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Pro
   const characterId = options.characterId;
   const accessToken = options.accessToken;
 
-  const threatRadius = 3; // địch trong 3 ô → bỏ chạy
+  const threatRadius = 3;
   const pollMs = 15_000;
   const onlyWhenEventLive = settings.only_when_event_live !== false;
 
@@ -1191,167 +1199,121 @@ export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Pro
       return summary;
     }
 
-    const mines = parseMines(map).filter((m) => m.holder_clan_id === clanId);
-    if (!mines.length) {
+    // Tọa độ central
+    const cx = Math.floor(n(map?.config?.center_x, 42));
+    const cy = Math.floor(n(map?.config?.center_y, 42));
+    const central = map?.central || {};
+    const holder = String(central.holder_clan_id || "");
+    const weHoldCentral = holder === clanId;
+
+    // Chỉ thủ central khi clan mình đang giữ (hoặc phase held và là holder)
+    if (!weHoldCentral && settings.mine_require_hold !== false) {
       summary.status = "DONE";
-      summary.reason = "Clan không giữ mỏ nào";
+      summary.reason = `Central không phải clan mình (holder khác) · không thủ mỏ`;
       summary.nextDelayMs = 30_000;
-      onLog?.("INFO", "HC Thủ mỏ: không có mỏ");
+      onLog?.("INFO", `HC Thủ mỏ/central: ${summary.reason}`);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    type Tagged = { m: MineNode; enemyCount: number; enemyNames: string[]; safe: boolean };
-    const tagged: Tagged[] = mines.map((m) => {
-      const e = enemiesNearMine(map, m, clanId, threatRadius);
-      return { m, enemyCount: e.count, enemyNames: e.names, safe: e.count === 0 };
-    });
+    summary.mineId = "central";
+    summary.dest = { x: cx, y: cy };
 
-    const safeMines = tagged.filter((t) => t.safe);
-    const unsafeHere = tagged.find(
-      (t) => t.m.pos_x === me.x && t.m.pos_y === me.y && !t.safe
-    );
+    const near = enemiesNearPoint(map, cx, cy, clanId, threatRadius);
+    const atCentral = manhattan(me.x, me.y, cx, cy) <= 1; // gần tâm (0–1 ô)
 
-    // Đang đứng mỏ có địch trong 3 ô → bỏ chạy sang mỏ an toàn (không đánh)
-    if (unsafeHere) {
+    // Địch trong 3 ô quanh central → không ở lại đánh, flee về home
+    if (near.count > 0) {
       onLog?.(
         "WARN",
-        `HC Thủ mỏ: #${unsafeHere.m.node_id} có ${unsafeHere.enemyCount} địch trong ${threatRadius} ô (${unsafeHere.enemyNames.slice(0, 3).join(",")}) · bỏ chạy · máu full cũng không ở lại`
+        `HC Central: ${near.count} địch trong ${threatRadius} ô (${near.names.slice(0, 3).join(",")}) · leave + chạy · không đánh`
       );
       await leaveDefense(characterId, accessToken, onLog);
 
-      const nextSafe = safeMines
-        .filter((t) => String(t.m.node_id) !== String(unsafeHere.m.node_id))
-        .sort(
-          (a, b) =>
-            manhattan(a.m.pos_x, a.m.pos_y, me.x, me.y) - manhattan(b.m.pos_x, b.m.pos_y, me.x, me.y)
-        )[0];
-
-      if (!nextSafe) {
-        // Không mỏ an toàn → chạy về home vùng mình
-        const homes = Array.isArray(map?.home_cities) ? map.home_cities : [];
-        const region = String(map?.my_region_code || "");
-        const home = homes.find((h: any) => String(h.vuc || h.region_code) === region) || homes[0];
-        if (home) {
-          const hx = Math.floor(n(home.pos_x));
-          const hy = Math.floor(n(home.pos_y));
-          const mv = await rpc(
-            "rpc_hoang_co_move",
-            { p_character_id: characterId, p_dest_x: hx, p_dest_y: hy },
-            accessToken
-          );
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-          summary.moved = true;
-          summary.action = "flee_mine_home";
+      const homes = Array.isArray(map?.home_cities) ? map.home_cities : [];
+      const region = String(map?.my_region_code || "");
+      const home = homes.find((h: any) => String(h.vuc || h.region_code) === region) || homes[0];
+      if (home) {
+        const hx = Math.floor(n(home.pos_x));
+        const hy = Math.floor(n(home.pos_y));
+        // Đã ở home → chờ địch tan
+        if (manhattan(me.x, me.y, hx, hy) <= 1) {
           summary.status = "WAITING";
-          summary.etaSeconds = eta;
-          summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-          summary.reason = `Flee mỏ #${unsafeHere.m.node_id} · không mỏ an toàn · về home (${hx},${hy}) · ETA ${eta}s`;
-          onLog?.("WARN", summary.reason);
+          summary.action = "flee_central_wait";
+          summary.nextDelayMs = pollMs;
+          summary.reason = `Central có địch · đang tránh ở home · chờ an toàn rồi quay lại`;
+          onLog?.("INFO", summary.reason);
           summary.finishedAt = new Date().toISOString();
           return summary;
         }
+        const mv = await rpc(
+          "rpc_hoang_co_move",
+          { p_character_id: characterId, p_dest_x: hx, p_dest_y: hy },
+          accessToken
+        );
+        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+        summary.moved = true;
+        summary.action = "flee_central_home";
         summary.status = "WAITING";
-        summary.action = "flee_mine_no_target";
-        summary.nextDelayMs = 10_000;
-        summary.reason = `Flee mỏ #${unsafeHere.m.node_id} · không chỗ an toàn`;
+        summary.etaSeconds = eta;
+        summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+        summary.reason = `Flee central · về home (${hx},${hy}) · ETA ${eta}s`;
+        onLog?.("WARN", summary.reason);
         summary.finishedAt = new Date().toISOString();
         return summary;
       }
+      summary.status = "WAITING";
+      summary.action = "flee_central_no_home";
+      summary.nextDelayMs = 12_000;
+      summary.reason = "Central có địch · không có home để chạy";
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
 
-      const dest = nextSafe.m;
+    // Central an toàn → tới và ghim (stack_order chỉ là hàng, không quan trọng)
+    if (!atCentral) {
+      await leaveDefense(characterId, accessToken, onLog);
       const mv = await rpc(
         "rpc_hoang_co_move",
-        { p_character_id: characterId, p_dest_x: dest.pos_x, p_dest_y: dest.pos_y },
+        { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
         accessToken
       );
       const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
       summary.moved = true;
-      summary.mineId = dest.node_id;
-      summary.dest = { x: dest.pos_x, y: dest.pos_y };
-      summary.action = "flee_to_safe_mine";
+      summary.action = "move_to_central";
       summary.status = "WAITING";
       summary.etaSeconds = eta;
       summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-      summary.reason = `Flee #${unsafeHere.m.node_id} → mỏ an toàn #${dest.node_id} · ETA ${eta}s`;
+      summary.reason = `Đi thủ central (${cx},${cy}) · ETA ${eta}s · an toàn`;
       onLog?.("INFO", summary.reason);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    // Chỉ chọn mỏ AN TOÀN (0 địch trong 3 ô)
-    if (!safeMines.length) {
-      summary.status = "DONE";
-      summary.reason = `Mọi mỏ clan đều có địch trong ${threatRadius} ô · không ghim · tránh đánh`;
-      summary.nextDelayMs = 20_000;
-      onLog?.("WARN", `HC Thủ mỏ: ${summary.reason}`);
-      // Nếu đang pin đâu đó → leave
-      await leaveDefense(characterId, accessToken, onLog);
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // Ưu tiên: đang đứng mỏ an toàn → ghim; else mỏ an toàn gần nhất / stronghold
-    const onSafe = safeMines.find((t) => t.m.pos_x === me.x && t.m.pos_y === me.y);
-    const pick =
-      onSafe ||
-      [...safeMines].sort((a, b) => {
-        if (a.m.is_stronghold !== b.m.is_stronghold) return a.m.is_stronghold ? -1 : 1;
-        return (
-          manhattan(a.m.pos_x, a.m.pos_y, me.x, me.y) - manhattan(b.m.pos_x, b.m.pos_y, me.x, me.y)
-        );
-      })[0];
-
-    const mine = pick.m;
-    summary.mineId = mine.node_id;
-    summary.dest = { x: mine.pos_x, y: mine.pos_y };
-
-    onLog?.(
-      "INFO",
-      `HC Thủ mỏ: ghim #${mine.node_id} ${mine.label || ""} @(${mine.pos_x},${mine.pos_y}) · an toàn (0 địch trong ${threatRadius} ô)`
-    );
-
-    const dist = manhattan(mine.pos_x, mine.pos_y, me.x, me.y);
-    if (dist > 0) {
-      await leaveDefense(characterId, accessToken, onLog);
-      const mv = await rpc(
-        "rpc_hoang_co_move",
-        { p_character_id: characterId, p_dest_x: mine.pos_x, p_dest_y: mine.pos_y },
-        accessToken
-      );
-      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-      summary.moved = true;
-      summary.action = "move_to_mine";
-      summary.status = "WAITING";
-      summary.etaSeconds = eta;
-      summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-      summary.reason = `Đi thủ mỏ an toàn #${mine.node_id} · ETA ${eta}s`;
-      onLog?.("INFO", summary.reason);
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // Đứng mỏ an toàn → defend_position
     try {
       const res = await rpc(
         "rpc_hoang_co_defend_position",
         {
           p_character_id: characterId,
-          p_target_kind: "resource",
-          p_target_id: String(mine.node_id),
+          p_target_kind: "central",
+          p_target_id: "central",
         },
         accessToken
       );
-      summary.action = "defend_mine";
+      // stack_order/size = thứ tự hàng (1,2,3…) — log nhẹ, không dùng logic
+      summary.action = "defend_central";
       summary.status = "WAITING";
       summary.nextDelayMs = pollMs;
-      summary.reason = `Thủ mỏ #${mine.node_id} · stack ${n(res?.stack_order)}/${n(res?.stack_size)} · an toàn`;
-      onLog?.("SUCCESS", summary.reason, { res });
+      summary.reason = `Thủ central · ghim OK`;
+      onLog?.("SUCCESS", summary.reason, {
+        stack_order: res?.stack_order,
+        stack_size: res?.stack_size,
+      });
     } catch (e: any) {
       summary.status = "ERROR";
-      summary.reason = `defend_position mỏ #${mine.node_id} fail: ${(e?.message || e).toString().slice(0, 120)}`;
+      summary.reason = `defend_position central fail: ${(e?.message || e).toString().slice(0, 120)}`;
       summary.nextDelayMs = 20_000;
-      onLog?.("ERROR", `HC Thủ mỏ: ${summary.reason}`);
+      onLog?.("ERROR", `HC Thủ central: ${summary.reason}`);
     }
 
     try {
@@ -1367,7 +1329,7 @@ export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Pro
     summary.status = "ERROR";
     summary.reason = e?.message || String(e);
     summary.nextDelayMs = 45_000;
-    onLog?.("ERROR", `HC Thủ mỏ error: ${summary.reason}`);
+    onLog?.("ERROR", `HC Thủ mỏ/central error: ${summary.reason}`);
   }
 
   summary.finishedAt = new Date().toISOString();

@@ -280,7 +280,7 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     auto_place: true,
     auto_build: true,
     auto_defend: true,
-    /** Thủ mỏ — defend_position kind=resource */
+    /** Thủ central — defend_position kind/id central */
     auto_defend_mine: true,
     /** Phá cờ địch — mặc định tắt */
     auto_attack: false,

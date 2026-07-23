@@ -927,7 +927,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           result.phase === "defend"
             ? "Thủ cờ"
             : result.phase === "defend_mine"
-              ? "Thủ mỏ"
+              ? "Thủ central"
               : result.phase === "expand"
                 ? "Mở rộng"
                 : result.phase === "attack"
