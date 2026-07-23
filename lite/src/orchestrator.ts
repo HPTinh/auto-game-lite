@@ -899,43 +899,32 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         onLog: onLog(accountId, "HOANG_CO"),
       });
 
-      // Lưu focus cờ đang xây (siege_points → 600)
       store.setFeature(accountId, "hoang_co", {
         settings: {
           ...settings,
           focus_flag_id: result.focusFlagId ?? null,
+          self_placed_flag_ids: result.selfPlacedFlagIds ?? settings.self_placed_flag_ids ?? [],
         },
       });
 
-      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || settings.poll_ms || 20_000));
+      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 20_000));
       if (result.status === "ERROR") {
         status = "error";
         errMsg = result.reason || "Hoàng Cổ error";
-      } else if (result.status === "NO_EVENT") {
-        sysLog(accountId, "HOANG_CO", "INFO", `Hoàng Cổ: event chưa live · next ${Math.round(nextDelayMs / 1000)}s`);
-      } else if (result.status === "WAITING") {
-        const siege =
-          result.siegePoints != null
-            ? ` · siege ${result.siegePoints}/${result.siegeMax ?? 600}`
-            : "";
-        sysLog(
-          accountId,
-          "HOANG_CO",
-          "INFO",
-          `Hoàng Cổ chờ · ${result.action || "—"} · focus #${result.focusFlagId ?? "—"}${siege} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
-        );
       } else {
         const lvl =
-          (result.placed || 0) > 0 || (result.built || 0) > 0 ? "SUCCESS" : result.status === "SKIPPED" ? "WARN" : "INFO";
+          (result.placed || 0) > 0 || (result.built || 0) > 0 || result.action === "defend_flag"
+            ? "SUCCESS"
+            : result.status === "SKIPPED" || result.status === "NO_EVENT"
+              ? "WARN"
+              : "INFO";
         const siege =
-          result.siegePoints != null
-            ? ` · siege ${result.siegePoints}/${result.siegeMax ?? 600}`
-            : "";
+          result.siegePoints != null ? ` ${result.siegePoints}/${result.siegeMax ?? 600}` : "";
         sysLog(
           accountId,
           "HOANG_CO",
           lvl,
-          `Hoàng Cổ ${result.status} · place ${result.placed || 0} · build ${result.built || 0} · focus #${result.focusFlagId ?? "—"}${siege} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
+          `Hoàng Cổ · ${result.reason || result.status}${siege} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {

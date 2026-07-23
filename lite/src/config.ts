@@ -275,29 +275,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
-  /** Hoàng Cổ phase 1: mở rộng — place_flag + start_build */
+  /** Hoàng Cổ: cắm + xây (tham số nội bộ, UI chỉ 2 toggle) */
   hoang_co: {
-    mode: "expand",
     auto_place: true,
     auto_build: true,
-    /** An toàn → bám 1 cờ tới siege_points 600 rồi mới chuyển */
-    finish_one_first: true,
-    /** Chỉ chạy khi event live */
-    only_when_event_live: true,
-    prefer_own_region: true,
-    /** Khoảng cách ô cắm quanh cờ/home (1–8) */
-    place_gap: 3,
-    /** Bán kính coi là nguy hiểm (địch gần cờ) */
-    threat_radius: 3,
-    /** Giới hạn cờ đang xây dở cùng lúc (config game ~3) */
-    max_concurrent_build: 3,
-    max_place_per_tick: 1,
-    move_before_build: true,
-    /** Poll khi đang bám xây (theo dõi siege_points) */
-    build_poll_ms: 15000,
-    /** Poll khi idle (ms) */
-    poll_ms: 20000,
-    /** cờ đang focus xây (tự lưu) */
     focus_flag_id: null,
+    self_placed_flag_ids: [],
   },
 });
