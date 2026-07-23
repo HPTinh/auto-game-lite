@@ -275,12 +275,15 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
-  /** Hoàng Cổ: 1 feature — tick mục tiêu theo thứ tự mở rộng → thủ */
+  /** Hoàng Cổ: mở rộng → thủ → phá (1 timer) */
   hoang_co: {
     auto_place: true,
     auto_build: true,
     auto_defend: true,
+    /** Phá cờ địch — siege_flag side=attack (mặc định tắt) */
+    auto_attack: false,
     focus_flag_id: null,
+    focus_attack_flag_id: null,
     self_placed_flag_ids: [],
   },
 });

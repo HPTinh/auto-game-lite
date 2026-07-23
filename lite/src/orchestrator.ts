@@ -899,10 +899,21 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         onLog: onLog(accountId, "HOANG_CO"),
       });
 
+      const attackFocus =
+        result.phase === "attack" && result.flagId
+          ? result.flagId
+          : result.phase === "attack"
+            ? null
+            : settings.focus_attack_flag_id ?? null;
+
       store.setFeature(accountId, "hoang_co", {
         settings: {
           ...settings,
-          focus_flag_id: result.focusFlagId ?? settings.focus_flag_id ?? null,
+          focus_flag_id:
+            result.phase === "expand" || result.phase === "defend"
+              ? result.focusFlagId ?? settings.focus_flag_id ?? null
+              : settings.focus_flag_id ?? null,
+          focus_attack_flag_id: attackFocus,
           self_placed_flag_ids: result.selfPlacedFlagIds ?? settings.self_placed_flag_ids ?? [],
         },
       });
@@ -912,11 +923,19 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         status = "error";
         errMsg = result.reason || "Hoàng Cổ error";
       } else {
-        const phase = result.phase === "defend" ? "Thủ" : result.phase === "expand" ? "Mở rộng" : "";
+        const phaseLabel =
+          result.phase === "defend"
+            ? "Thủ"
+            : result.phase === "expand"
+              ? "Mở rộng"
+              : result.phase === "attack"
+                ? "Phá"
+                : "";
         const lvl =
           (result.placed || 0) > 0 ||
           (result.built || 0) > 0 ||
-          result.action === "siege_flag_defend"
+          result.action === "siege_flag_defend" ||
+          result.action === "siege_flag_attack"
             ? "SUCCESS"
             : result.status === "SKIPPED" || result.status === "NO_EVENT"
               ? "WARN"
@@ -925,7 +944,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "HOANG_CO",
           lvl,
-          `Hoàng Cổ${phase ? " · " + phase : ""} · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
+          `Hoàng Cổ${phaseLabel ? " · " + phaseLabel : ""} · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {
