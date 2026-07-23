@@ -890,13 +890,21 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
     } else if (featureId === "hoang_co") {
-      // Hoàng Cổ phase 1: mở rộng đất (place_flag + start_build + move)
+      // Hoàng Cổ phase 1: mở rộng — bám siege_points tới 600 rồi mới chuyển
       const result = await runHoangCoExpandAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings,
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "HOANG_CO"),
+      });
+
+      // Lưu focus cờ đang xây (siege_points → 600)
+      store.setFeature(accountId, "hoang_co", {
+        settings: {
+          ...settings,
+          focus_flag_id: result.focusFlagId ?? null,
+        },
       });
 
       nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || settings.poll_ms || 20_000));
@@ -906,20 +914,28 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       } else if (result.status === "NO_EVENT") {
         sysLog(accountId, "HOANG_CO", "INFO", `Hoàng Cổ: event chưa live · next ${Math.round(nextDelayMs / 1000)}s`);
       } else if (result.status === "WAITING") {
+        const siege =
+          result.siegePoints != null
+            ? ` · siege ${result.siegePoints}/${result.siegeMax ?? 600}`
+            : "";
         sysLog(
           accountId,
           "HOANG_CO",
           "INFO",
-          `Hoàng Cổ chờ · ${result.action || "—"} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
+          `Hoàng Cổ chờ · ${result.action || "—"} · focus #${result.focusFlagId ?? "—"}${siege} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       } else {
         const lvl =
           (result.placed || 0) > 0 || (result.built || 0) > 0 ? "SUCCESS" : result.status === "SKIPPED" ? "WARN" : "INFO";
+        const siege =
+          result.siegePoints != null
+            ? ` · siege ${result.siegePoints}/${result.siegeMax ?? 600}`
+            : "";
         sysLog(
           accountId,
           "HOANG_CO",
           lvl,
-          `Hoàng Cổ ${result.status} · place ${result.placed || 0} · build ${result.built || 0} · cờ clan ${result.clanFlags ?? "?"} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
+          `Hoàng Cổ ${result.status} · place ${result.placed || 0} · build ${result.built || 0} · focus #${result.focusFlagId ?? "—"}${siege} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {
