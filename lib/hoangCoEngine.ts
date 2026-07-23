@@ -120,17 +120,18 @@ function parseFlags(map: any): Flag[] {
   return raw
     .map((f: any) => {
       const siegeMax = Math.max(1, n(f.siege_max, 600) || 600);
-      // map_state: tiến độ xây chính là siege_points; build_progress thường mirror
-      const points = n(f.siege_points ?? f.build_progress, 0);
+      // siege_points: lúc xây = tiến độ; sau is_built=true = độ bền (bị phá thì tụt, địch có thể đã đi)
+      const siegePts = n(f.siege_points, 0);
+      const buildProg = n(f.build_progress, siegePts);
       return {
         flag_id: Math.floor(n(f.flag_id)),
         pos_x: Math.floor(n(f.pos_x)),
         pos_y: Math.floor(n(f.pos_y)),
         clan_id: f.clan_id ? String(f.clan_id) : undefined,
         is_built: f.is_built === true,
-        siege_points: points,
+        siege_points: siegePts,
         siege_max: siegeMax,
-        build_progress: n(f.build_progress, points),
+        build_progress: buildProg,
         hp_current: n(f.hp_current, 0),
         hp_max: n(f.hp_max, 10000),
         region_code: f.region_code ? String(f.region_code) : undefined,
@@ -140,31 +141,54 @@ function parseFlags(map: any): Flag[] {
     .filter((f: Flag) => f.flag_id > 0);
 }
 
-/** Tiến độ xây hiện tại (siege_points) */
+/** siege_points hiện tại */
 function flagProgress(f: Flag): number {
-  return Math.max(0, n(f.siege_points, n(f.build_progress, 0)));
-}
-
-/** Đã xây xong: siege_points >= siege_max (600) hoặc is_built */
-function isFlagBuildComplete(f: Flag): boolean {
-  const max = Math.max(1, n(f.siege_max, 600) || 600);
-  if (flagProgress(f) >= max) return true;
-  if (f.is_built === true && flagProgress(f) >= max * 0.99) return true;
-  return false;
-}
-
-/** Cờ clan chưa đủ 600 siege_points */
-function incompleteClanFlags(flags: Flag[], clanId: string): Flag[] {
-  return flags
-    .filter((f) => f.clan_id === clanId && !isFlagBuildComplete(f))
-    .sort((a, b) => flagProgress(b) - flagProgress(a)); // gần xong trước
+  return Math.max(0, n(f.siege_points, 0));
 }
 
 /**
- * Chỗ cờ có mối nguy?
- * - có besieger gắn flag_id
- * - có player địch (không ally / khác clan) trong threatRadius ô
- * - cờ đang decay / HP thấp bất thường
+ * Đã XÂY XONG (cắm xong giai trình build): is_built === true
+ * (kể cả đang bị phá — siege_points < 600 vẫn is_built true)
+ */
+function isFlagBuildComplete(f: Flag): boolean {
+  return f.is_built === true;
+}
+
+/**
+ * Cờ cần XÂY / tiếp quản: đã cắm, chưa build xong
+ * → is_built === false (siege_points đang 0→600)
+ */
+function incompleteClanFlags(flags: Flag[], clanId: string): Flag[] {
+  return flags
+    .filter((f) => f.clan_id === clanId && f.is_built !== true)
+    .sort((a, b) => flagProgress(b) - flagProgress(a));
+}
+
+/**
+ * Cờ đã xây xong nhưng BỊ PHÁ (địch có thể đã đi):
+ * is_built === true && siege_points < siege_max
+ * (build_progress thường vẫn 600)
+ */
+function damagedClanFlags(flags: Flag[], clanId: string): Flag[] {
+  return flags
+    .filter((f) => {
+      if (f.clan_id !== clanId) return false;
+      if (f.is_built !== true) return false;
+      const max = Math.max(1, n(f.siege_max, 600) || 600);
+      return flagProgress(f) < max;
+    })
+    .sort((a, b) => flagProgress(a) - flagProgress(b)); // hư nặng trước
+}
+
+function isFlagDamaged(f: Flag): boolean {
+  if (f.is_built !== true) return false;
+  const max = Math.max(1, n(f.siege_max, 600) || 600);
+  return flagProgress(f) < max;
+}
+
+/**
+ * Nguy tại chỗ (địch đang đứng) — dùng khi đang XÂY (is_built false)
+ * Không dùng một mình để biết "bị phá": địch có thể đã rời sau khi siege.
  */
 function isFlagSiteDangerous(
   map: any,
@@ -477,7 +501,7 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
     if (focus && isFlagBuildComplete(focus)) {
       onLog?.(
         "SUCCESS",
-        `HoàngCổ cờ #${focus.flag_id} XONG · siege ${flagProgress(focus)}/${focus.siege_max || cfgSiegeMax}`
+        `HoàngCổ cờ #${focus.flag_id} XÂY XONG (is_built=true) · siege ${flagProgress(focus)}/${focus.siege_max || cfgSiegeMax}`
       );
       focus = undefined;
       focusFlagId = 0;
@@ -580,10 +604,10 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
             summary.finishedAt = new Date().toISOString();
             return summary;
           }
-          // Đứng xây — chờ siege_points tăng, KHÔNG place cờ mới
+          // Đứng xây — chờ is_built=true (siege_points tăng 0→600), KHÔNG place mới
           summary.status = "WAITING";
           summary.nextDelayMs = buildPollMs;
-          summary.reason = `Đang xây #${focus.flag_id} · siege_points ${pts}/${maxPts} · poll ${Math.round(buildPollMs / 1000)}s tới đủ 600`;
+          summary.reason = `Đang xây #${focus.flag_id} · is_built=false · siege ${pts}/${maxPts} · tới khi is_built=true`;
           onLog?.("SUCCESS", summary.reason, { res });
           try {
             await rpc(
@@ -867,18 +891,27 @@ export async function runHoangCoDefendAuto(options: HoangCoAutoOptions): Promise
     const clanFlags = flags.filter((f) => f.clan_id === clanId);
     const besiegers = Array.isArray(map?.besiegers) ? map.besiegers : [];
 
-    // Ưu tiên: có besieger trên flag_id; phụ: địch gần / HP tụt
+    /**
+     * Cờ cần cứu / khôi phục:
+     * 1) is_built=true && siege_points < 600 → đã bị phá (địch có thể đã đi) — chính
+     * 2) đang có besieger / địch gần — đang bị công
+     * Không nhầm với cờ is_built=false (đó là việc XÂY của expand)
+     */
     const threatened = clanFlags
       .map((f) => {
         const siegeHit = besiegers.filter((b: any) => Math.floor(n(b.flag_id)) === f.flag_id);
         const danger = isFlagSiteDangerous(map, f, clanId, threatRadius);
+        const damaged = isFlagDamaged(f); // is_built + siege < max
+        const max = Math.max(1, n(f.siege_max, 600) || 600);
+        const missing = damaged ? max - flagProgress(f) : 0;
         const score =
-          siegeHit.length * 100 +
-          (danger.danger ? 10 : 0) +
-          (n(f.hp_max, 10000) - n(f.hp_current, 10000)) * 0.001;
-        return { f, siegeHit, danger, score };
+          (damaged ? 200 : 0) +
+          missing * 0.5 +
+          siegeHit.length * 80 +
+          (danger.danger ? 15 : 0);
+        return { f, siegeHit, danger, damaged, score };
       })
-      .filter((x) => x.siegeHit.length > 0 || x.danger.danger)
+      .filter((x) => x.damaged || x.siegeHit.length > 0 || x.danger.danger)
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         return manhattan(a.f.pos_x, a.f.pos_y, me.x, me.y) - manhattan(b.f.pos_x, b.f.pos_y, me.x, me.y);
@@ -889,9 +922,9 @@ export async function runHoangCoDefendAuto(options: HoangCoAutoOptions): Promise
 
     if (!threatened.length) {
       summary.status = "DONE";
-      summary.reason = "Không cờ nào bị địch áp";
+      summary.reason = "Không cờ bị phá / bị áp";
       summary.nextDelayMs = 25_000;
-      onLog?.("INFO", "HC Thủ: yên · không cờ bị áp");
+      onLog?.("INFO", "HC Thủ: yên · không cờ is_built+siege<600 / besieger");
       try {
         await rpc(
           "rpc_hoang_co_heartbeat",
@@ -913,7 +946,7 @@ export async function runHoangCoDefendAuto(options: HoangCoAutoOptions): Promise
 
     onLog?.(
       "INFO",
-      `HC Thủ: ${threatened.length} cờ bị áp · cứu #${tf.flag_id} @(${tf.pos_x},${tf.pos_y}) · siege ${flagProgress(tf)}/${tf.siege_max} · besieger ${pick.siegeHit.length}`
+      `HC Thủ: ${threatened.length} cờ cần cứu · #${tf.flag_id} is_built=${tf.is_built} siege ${flagProgress(tf)}/${tf.siege_max} · damaged=${pick.damaged} · besieger ${pick.siegeHit.length}`
     );
 
     const dist = manhattan(tf.pos_x, tf.pos_y, me.x, me.y);
@@ -986,8 +1019,10 @@ function expandStillBusy(r: HoangCoRunSummary): boolean {
   if ((r.placed || 0) > 0 || (r.built || 0) > 0) return true;
   if (r.moved) return true;
   if (r.action && /place|build|move_to_place|move_to_build|start_build|transit/i.test(r.action)) return true;
-  if (r.focusFlagId && r.siegePoints != null && r.siegeMax != null && r.siegePoints < r.siegeMax) return true;
-  if (r.buildingFlags && r.buildingFlags > 0 && /còn cờ|đang xây|chưa place|chờ xong/i.test(r.reason || "")) return true;
+  // Còn cờ is_built=false đang focus
+  if (r.focusFlagId && r.buildingFlags && r.buildingFlags > 0) return true;
+  if (r.buildingFlags && r.buildingFlags > 0 && /còn cờ|đang xây|chưa place|chờ xong|is_built/i.test(r.reason || ""))
+    return true;
   return false;
 }
 
