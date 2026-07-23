@@ -1,15 +1,11 @@
 /**
- * Hoàng Cổ — phase 1: MỞ RỘNG ĐẤT
- * - rpc_hoang_co_status / map_state / heartbeat
- * - rpc_hoang_co_move → tới ô
- * - rpc_hoang_co_place_flag → cắm cờ mới (x,y)
- * - rpc_hoang_co_start_build → xây tiếp cờ đã có (flag_id)
+ * Hoàng Cổ — 2 chức năng RIÊNG:
  *
- * Tiến độ xây = siege_points (map_state.flags), xong khi >= siege_max (thường 600).
+ * A) runHoangCoExpandAuto — CẮM + XÂY / TIẾP QUẢN
+ *    place_flag, start_build (siege_points → 600)
  *
- * Ưu tiên mỗi tick:
- * 1) Bám 1 cờ đang xây (focus) — an toàn → start_build / đứng xây tới 600 mới rời
- * 2) Không còn cờ dở an toàn → place_flag ô mới → rồi bám xây cờ đó
+ * B) runHoangCoDefendAuto — THỦ / CỨU CỜ GIA TỘC
+ *    move + rpc_hoang_co_siege_flag (side=defend) — KHÔNG dùng defend_position
  */
 
 export type HoangCoLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
@@ -36,6 +32,8 @@ export interface HoangCoRunSummary {
   myRegion?: string;
   clanFlags?: number;
   buildingFlags?: number;
+  threatenedCount?: number;
+  side?: string;
 }
 
 export interface HoangCoAutoOptions {
@@ -343,7 +341,6 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
   const buildPollMs = 15_000;
   const defaultPollMs = 20_000;
   const finishOneFirst = true;
-  const autoDefend = settings.auto_defend !== false; // thủ cờ khi bị siege (không hiện UI)
 
   let selfPlaced: number[] = [];
   if (Array.isArray(settings.self_placed_flag_ids)) {
@@ -614,77 +611,7 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
       }
     }
 
-    // 4) Thủ cờ — clan flag đang bị siege / địch áp sát
-    if (autoDefend && settings.auto_build !== false) {
-      const besiegers = Array.isArray(map?.besiegers) ? map.besiegers : [];
-      const threatened = clanFlags
-        .filter((f) => {
-          const hit = besiegers.some((b: any) => Math.floor(n(b.flag_id)) === f.flag_id);
-          const danger = isFlagSiteDangerous(map, f, clanId, threatRadius).danger;
-          return hit || danger;
-        })
-        .sort(
-          (a, b) => manhattan(a.pos_x, a.pos_y, me.x, me.y) - manhattan(b.pos_x, b.pos_y, me.x, me.y)
-        );
-
-      if (threatened.length > 0) {
-        const tf = threatened[0];
-        const dist = manhattan(tf.pos_x, tf.pos_y, me.x, me.y);
-        if (dist > 0) {
-          const mv = await rpc(
-            "rpc_hoang_co_move",
-            { p_character_id: characterId, p_dest_x: tf.pos_x, p_dest_y: tf.pos_y },
-            accessToken
-          );
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-          summary.moved = true;
-          summary.dest = { x: tf.pos_x, y: tf.pos_y };
-          summary.action = "move_to_defend";
-          summary.flagId = tf.flag_id;
-          summary.status = "WAITING";
-          summary.etaSeconds = eta;
-          summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-          summary.reason = `Đi thủ cờ #${tf.flag_id} · ETA ${eta}s`;
-          onLog?.("INFO", summary.reason);
-          summary.finishedAt = new Date().toISOString();
-          return summary;
-        }
-        // Thử defend_position kind=flag
-        try {
-          const res = await rpc(
-            "rpc_hoang_co_defend_position",
-            {
-              p_character_id: characterId,
-              p_target_kind: "flag",
-              p_target_id: String(tf.flag_id),
-            },
-            accessToken
-          );
-          summary.action = "defend_flag";
-          summary.flagId = tf.flag_id;
-          summary.status = "WAITING";
-          summary.nextDelayMs = buildPollMs;
-          summary.reason = `Thủ cờ #${tf.flag_id}`;
-          onLog?.("SUCCESS", summary.reason, { res });
-          summary.finishedAt = new Date().toISOString();
-          return summary;
-        } catch (e: any) {
-          onLog?.(
-            "WARN",
-            `HoàngCổ thủ cờ #${tf.flag_id} fail: ${(e?.message || "").slice(0, 100)} · đứng tại chỗ`
-          );
-          summary.action = "defend_stand";
-          summary.flagId = tf.flag_id;
-          summary.status = "WAITING";
-          summary.nextDelayMs = buildPollMs;
-          summary.reason = `Đứng thủ #${tf.flag_id}`;
-          summary.finishedAt = new Date().toISOString();
-          return summary;
-        }
-      }
-    }
-
-    // 5) place_flag — gần mình, vùng nhà; chỉ khi không còn cờ dở an toàn
+    // 4) place_flag — gần mình; chỉ khi không còn cờ dở an toàn (không trộn thủ cờ)
     const safeIncomplete = building.filter((f) => !isFlagSiteDangerous(map, f, clanId, threatRadius).danger);
     if (finishOneFirst && safeIncomplete.length > 0 && settings.auto_build !== false) {
       const f = [...safeIncomplete].sort(
@@ -856,6 +783,197 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
   }
 
   if (!summary.selfPlacedFlagIds) summary.selfPlacedFlagIds = [...selfPlaced];
+  summary.finishedAt = new Date().toISOString();
+  return summary;
+}
+
+/**
+ * Chức năng 2 — THỦ / CỨU CỜ GIA TỘC
+ * - Tìm cờ clan bị địch áp (besiegers / địch gần / HP tụt)
+ * - move tới cờ → rpc_hoang_co_siege_flag { p_flag_id } → side=defend
+ */
+export async function runHoangCoDefendAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
+  const settings = options.settings || {};
+  const onLog = options.onLog;
+  const characterId = options.characterId;
+  const accessToken = options.accessToken;
+
+  const threatRadius = 3;
+  const pollMs = 15_000;
+  const onlyWhenEventLive = settings.only_when_event_live !== false;
+
+  const summary: HoangCoRunSummary = {
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    status: "DONE",
+    nextDelayMs: pollMs,
+    threatenedCount: 0,
+  };
+
+  try {
+    const status = await rpc("rpc_hoang_co_status", { p_character_id: characterId }, accessToken);
+    const eventLive = status?.is_event_live === true || status?.season?.status === "event_live";
+    const eligible = status?.eligibility?.eligible !== false;
+    const clanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+
+    if (onlyWhenEventLive && !eventLive) {
+      summary.status = "NO_EVENT";
+      summary.reason = "Event chưa live";
+      summary.nextDelayMs = 5 * 60_000;
+      onLog?.("INFO", "HC Thủ: event chưa live");
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (!eligible || !clanId) {
+      summary.status = "SKIPPED";
+      summary.reason = "Không eligible / chưa có clan";
+      summary.nextDelayMs = 10 * 60_000;
+      onLog?.("WARN", `HC Thủ: ${summary.reason}`);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    const me = myPos(map);
+    if (!me) {
+      summary.status = "WAITING";
+      summary.reason = "Chưa có vị trí map";
+      summary.nextDelayMs = 60_000;
+      onLog?.("WARN", "HC Thủ: vào map Hoàng Cổ 1 lần");
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (me.dead) {
+      summary.status = "WAITING";
+      summary.reason = "Đang chết";
+      summary.nextDelayMs = 90_000;
+      onLog?.("WARN", "HC Thủ: đang chết");
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (me.inTransit && me.eta > 0) {
+      summary.status = "WAITING";
+      summary.action = "transit";
+      summary.etaSeconds = me.eta;
+      summary.nextDelayMs = Math.max(3_000, me.eta * 1000 + 1500);
+      summary.reason = `Đang đi · ETA ${me.eta}s`;
+      onLog?.("INFO", `HC Thủ: ${summary.reason}`);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const flags = parseFlags(map);
+    const clanFlags = flags.filter((f) => f.clan_id === clanId);
+    const besiegers = Array.isArray(map?.besiegers) ? map.besiegers : [];
+
+    // Ưu tiên: có besieger trên flag_id; phụ: địch gần / HP tụt
+    const threatened = clanFlags
+      .map((f) => {
+        const siegeHit = besiegers.filter((b: any) => Math.floor(n(b.flag_id)) === f.flag_id);
+        const danger = isFlagSiteDangerous(map, f, clanId, threatRadius);
+        const score =
+          siegeHit.length * 100 +
+          (danger.danger ? 10 : 0) +
+          (n(f.hp_max, 10000) - n(f.hp_current, 10000)) * 0.001;
+        return { f, siegeHit, danger, score };
+      })
+      .filter((x) => x.siegeHit.length > 0 || x.danger.danger)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return manhattan(a.f.pos_x, a.f.pos_y, me.x, me.y) - manhattan(b.f.pos_x, b.f.pos_y, me.x, me.y);
+      });
+
+    summary.threatenedCount = threatened.length;
+    summary.clanFlags = clanFlags.length;
+
+    if (!threatened.length) {
+      summary.status = "DONE";
+      summary.reason = "Không cờ nào bị địch áp";
+      summary.nextDelayMs = 25_000;
+      onLog?.("INFO", "HC Thủ: yên · không cờ bị áp");
+      try {
+        await rpc(
+          "rpc_hoang_co_heartbeat",
+          { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
+          accessToken
+        );
+      } catch {
+        /* ignore */
+      }
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const pick = threatened[0];
+    const tf = pick.f;
+    summary.flagId = tf.flag_id;
+    summary.siegePoints = flagProgress(tf);
+    summary.siegeMax = tf.siege_max;
+
+    onLog?.(
+      "INFO",
+      `HC Thủ: ${threatened.length} cờ bị áp · cứu #${tf.flag_id} @(${tf.pos_x},${tf.pos_y}) · siege ${flagProgress(tf)}/${tf.siege_max} · besieger ${pick.siegeHit.length}`
+    );
+
+    const dist = manhattan(tf.pos_x, tf.pos_y, me.x, me.y);
+    if (dist > 0) {
+      const mv = await rpc(
+        "rpc_hoang_co_move",
+        { p_character_id: characterId, p_dest_x: tf.pos_x, p_dest_y: tf.pos_y },
+        accessToken
+      );
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+      summary.moved = true;
+      summary.dest = { x: tf.pos_x, y: tf.pos_y };
+      summary.action = "move_to_rescue";
+      summary.status = "WAITING";
+      summary.etaSeconds = eta;
+      summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+      summary.reason = `Chạy cứu cờ #${tf.flag_id} · ETA ${eta}s`;
+      onLog?.("INFO", summary.reason);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // Đúng ô / đã tới → siege_flag (phe defend)
+    try {
+      const res = await rpc(
+        "rpc_hoang_co_siege_flag",
+        { p_character_id: characterId, p_flag_id: tf.flag_id },
+        accessToken
+      );
+      const side = String(res?.side || "");
+      summary.side = side || undefined;
+      summary.action = "siege_flag_defend";
+      summary.siegePoints = n(res?.siege_points, flagProgress(tf));
+      summary.siegeMax = n(res?.siege_max, tf.siege_max);
+      summary.status = "WAITING";
+      summary.nextDelayMs = pollMs;
+      summary.reason = `Cứu cờ #${tf.flag_id} · side=${side || "?"} · def ${n(res?.defender_count)} / atk ${n(res?.besieger_count)} · siege ${summary.siegePoints}/${summary.siegeMax}`;
+      onLog?.("SUCCESS", summary.reason, { res });
+    } catch (e: any) {
+      summary.status = "ERROR";
+      summary.reason = `siege_flag #${tf.flag_id} fail: ${(e?.message || e).toString().slice(0, 120)}`;
+      summary.nextDelayMs = 20_000;
+      onLog?.("ERROR", `HC Thủ: ${summary.reason}`);
+    }
+
+    try {
+      await rpc(
+        "rpc_hoang_co_heartbeat",
+        { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
+        accessToken
+      );
+    } catch {
+      /* ignore */
+    }
+  } catch (e: any) {
+    summary.status = "ERROR";
+    summary.reason = e?.message || String(e);
+    summary.nextDelayMs = 45_000;
+    onLog?.("ERROR", `HC Thủ error: ${summary.reason}`);
+  }
+
   summary.finishedAt = new Date().toISOString();
   return summary;
 }

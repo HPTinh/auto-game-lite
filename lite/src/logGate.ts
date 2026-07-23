@@ -156,12 +156,12 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     );
   }
 
-  if (module === "HOANG_CO") {
+  if (module === "HOANG_CO" || module === "HOANG_DEF") {
     return (
       lv === "ERROR" ||
       lv === "SUCCESS" ||
       lv === "WARN" ||
-      /place|build|cắm|xây|move|đi|ETA|event|cờ|expand|chờ/i.test(text)
+      /place|build|cắm|xây|thủ|cứu|siege|move|đi|ETA|event|cờ|expand|chờ/i.test(text)
     );
   }
 

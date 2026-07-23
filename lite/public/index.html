@@ -117,14 +117,15 @@
   <script>
     const FEATURES = [
       "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","rank_challenge","nhap_mong","khoi_loi","ki_ngo","vip_daily",
-      "auto_equip","craft","body_cult","hoang_co"
+      "auto_equip","craft","body_cult","hoang_co","hoang_co_defend"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
       achievement:"Thành tựu", mail:"Mail", maze:"Mê cung", pvp:"PVP", rank_challenge:"Buff PVP",
       nhap_mong:"Nhập Mộng", khoi_loi:"Khôi Lỗi",
       ki_ngo:"Kì ngộ", vip_daily:"VIP daily",
-      auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể", hoang_co:"Hoàng Cổ"
+      auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể",
+      hoang_co:"HC Mở rộng", hoang_co_defend:"HC Thủ cờ"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
 
@@ -252,6 +253,7 @@
         {k:"auto_place",l:"Cắm cờ",t:"bool"},
         {k:"auto_build",l:"Xây cờ",t:"bool"},
       ],
+      hoang_co_defend: [],
     };
 
     let API_KEY = new URLSearchParams(location.search).get("key") || localStorage.getItem("lite_api_key") || "";

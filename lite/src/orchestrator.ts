@@ -25,6 +25,7 @@ import {
   runWorldBossAuto,
   runRankChallengeAuto,
   runHoangCoExpandAuto,
+  runHoangCoDefendAuto,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -890,7 +891,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
     } else if (featureId === "hoang_co") {
-      // Hoàng Cổ phase 1: mở rộng — bám siege_points tới 600 rồi mới chuyển
+      // HC Mở rộng: cắm + xây/tiếp quản (không thủ)
       const result = await runHoangCoExpandAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
@@ -910,21 +911,47 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 20_000));
       if (result.status === "ERROR") {
         status = "error";
-        errMsg = result.reason || "Hoàng Cổ error";
+        errMsg = result.reason || "HC Mở rộng error";
       } else {
         const lvl =
-          (result.placed || 0) > 0 || (result.built || 0) > 0 || result.action === "defend_flag"
+          (result.placed || 0) > 0 || (result.built || 0) > 0
             ? "SUCCESS"
             : result.status === "SKIPPED" || result.status === "NO_EVENT"
               ? "WARN"
               : "INFO";
-        const siege =
-          result.siegePoints != null ? ` ${result.siegePoints}/${result.siegeMax ?? 600}` : "";
         sysLog(
           accountId,
           "HOANG_CO",
           lvl,
-          `Hoàng Cổ · ${result.reason || result.status}${siege} · next ${Math.round(nextDelayMs / 1000)}s`
+          `HC Mở rộng · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      }
+    } else if (featureId === "hoang_co_defend") {
+      // HC Thủ cờ: cứu cờ bị áp — rpc_hoang_co_siege_flag
+      const result = await runHoangCoDefendAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "HOANG_DEF"),
+      });
+
+      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 15_000));
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "HC Thủ error";
+      } else {
+        const lvl =
+          result.action === "siege_flag_defend"
+            ? "SUCCESS"
+            : result.status === "SKIPPED" || result.status === "NO_EVENT"
+              ? "WARN"
+              : "INFO";
+        sysLog(
+          accountId,
+          "HOANG_DEF",
+          lvl,
+          `HC Thủ · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {
