@@ -49,8 +49,7 @@ export type FeatureId =
   | "auto_equip"
   | "craft"
   | "body_cult"
-  | "hoang_co"
-  | "hoang_co_defend";
+  | "hoang_co";
 
 export const FEATURE_LABELS: Record<FeatureId, string> = {
   farm: "Farm quái",
@@ -70,8 +69,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
-  hoang_co: "HC Mở rộng",
-  hoang_co_defend: "HC Thủ cờ",
+  hoang_co: "Hoàng Cổ",
 };
 
 /** Setting mặc định tối ưu treo Render free */
@@ -277,13 +275,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
-  /** HC Mở rộng: cắm + xây / tiếp quản (không trộn thủ) */
+  /** Hoàng Cổ: 1 feature — tick mục tiêu theo thứ tự mở rộng → thủ */
   hoang_co: {
     auto_place: true,
     auto_build: true,
+    auto_defend: true,
     focus_flag_id: null,
     self_placed_flag_ids: [],
   },
-  /** HC Thủ cờ: cứu cờ bị áp — rpc_hoang_co_siege_flag */
-  hoang_co_defend: {},
 });

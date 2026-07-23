@@ -1,11 +1,10 @@
 /**
- * Hoàng Cổ — 2 chức năng RIÊNG:
+ * Hoàng Cổ — 1 feature, nhiều mục tiêu (setting):
+ * - Cắm cờ (auto_place) + Xây cờ (auto_build) → expand
+ * - Thủ cờ (auto_defend) → siege_flag defend
  *
- * A) runHoangCoExpandAuto — CẮM + XÂY / TIẾP QUẢN
- *    place_flag, start_build (siege_points → 600)
- *
- * B) runHoangCoDefendAuto — THỦ / CỨU CỜ GIA TỘC
- *    move + rpc_hoang_co_siege_flag (side=defend) — KHÔNG dùng defend_position
+ * runHoangCoAuto: 1 timer. Ưu tiên MỞ RỘNG xong (hết việc) mới THỦ.
+ * Nội bộ: runHoangCoExpandAuto / runHoangCoDefendAuto
  */
 
 export type HoangCoLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
@@ -34,6 +33,8 @@ export interface HoangCoRunSummary {
   buildingFlags?: number;
   threatenedCount?: number;
   side?: string;
+  /** expand | defend */
+  phase?: string;
 }
 
 export interface HoangCoAutoOptions {
@@ -976,4 +977,76 @@ export async function runHoangCoDefendAuto(options: HoangCoAutoOptions): Promise
 
   summary.finishedAt = new Date().toISOString();
   return summary;
+}
+
+/** Expand còn việc (đang build/place/đi) → chưa chuyển sang thủ */
+function expandStillBusy(r: HoangCoRunSummary): boolean {
+  if (r.status === "WAITING") return true;
+  if (r.status === "ERROR") return true;
+  if ((r.placed || 0) > 0 || (r.built || 0) > 0) return true;
+  if (r.moved) return true;
+  if (r.action && /place|build|move_to_place|move_to_build|start_build|transit/i.test(r.action)) return true;
+  if (r.focusFlagId && r.siegePoints != null && r.siegeMax != null && r.siegePoints < r.siegeMax) return true;
+  if (r.buildingFlags && r.buildingFlags > 0 && /còn cờ|đang xây|chưa place|chờ xong/i.test(r.reason || "")) return true;
+  return false;
+}
+
+/**
+ * Entry 1 feature Hoàng Cổ (1 timer):
+ * 1) Cắm/Xây bật → mở rộng; còn việc thì return
+ * 2) Hết việc mở rộng → Thủ cờ nếu bật
+ */
+export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
+  const settings = options.settings || {};
+  const onLog = options.onLog;
+
+  const placeOn = settings.auto_place !== false;
+  const buildOn = settings.auto_build !== false;
+  const defendOn = settings.auto_defend !== false;
+  const expandOn = placeOn || buildOn;
+
+  if (!expandOn && !defendOn) {
+    return {
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "SKIPPED",
+      reason: "Chưa bật Cắm/Xây/Thủ",
+      nextDelayMs: 60_000,
+      phase: "idle",
+    };
+  }
+
+  if (expandOn) {
+    const exp = await runHoangCoExpandAuto(options);
+    exp.phase = "expand";
+    if (expandStillBusy(exp) || exp.status === "NO_EVENT" || exp.status === "SKIPPED") {
+      return exp;
+    }
+    if (!defendOn) {
+      exp.reason = exp.reason || "Mở rộng xong / không còn việc";
+      return exp;
+    }
+    onLog?.("INFO", "HoàngCổ: mở rộng xong → chuyển Thủ cờ");
+  }
+
+  if (defendOn) {
+    const def = await runHoangCoDefendAuto(options);
+    def.phase = "defend";
+    if (!def.selfPlacedFlagIds && Array.isArray(settings.self_placed_flag_ids)) {
+      def.selfPlacedFlagIds = settings.self_placed_flag_ids;
+    }
+    if (def.focusFlagId === undefined && settings.focus_flag_id != null) {
+      def.focusFlagId = settings.focus_flag_id;
+    }
+    return def;
+  }
+
+  return {
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    status: "DONE",
+    reason: "Không còn việc",
+    nextDelayMs: 20_000,
+    phase: "idle",
+  };
 }

@@ -24,8 +24,7 @@ import {
   runPvpAuto,
   runWorldBossAuto,
   runRankChallengeAuto,
-  runHoangCoExpandAuto,
-  runHoangCoDefendAuto,
+  runHoangCoAuto,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -891,8 +890,8 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
     } else if (featureId === "hoang_co") {
-      // HC Mở rộng: cắm + xây/tiếp quản (không thủ)
-      const result = await runHoangCoExpandAuto({
+      // 1 feature: Cắm/Xây trước → hết việc mới Thủ (1 timer)
+      const result = await runHoangCoAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings,
@@ -903,7 +902,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       store.setFeature(accountId, "hoang_co", {
         settings: {
           ...settings,
-          focus_flag_id: result.focusFlagId ?? null,
+          focus_flag_id: result.focusFlagId ?? settings.focus_flag_id ?? null,
           self_placed_flag_ids: result.selfPlacedFlagIds ?? settings.self_placed_flag_ids ?? [],
         },
       });
@@ -911,10 +910,13 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 20_000));
       if (result.status === "ERROR") {
         status = "error";
-        errMsg = result.reason || "HC Mở rộng error";
+        errMsg = result.reason || "Hoàng Cổ error";
       } else {
+        const phase = result.phase === "defend" ? "Thủ" : result.phase === "expand" ? "Mở rộng" : "";
         const lvl =
-          (result.placed || 0) > 0 || (result.built || 0) > 0
+          (result.placed || 0) > 0 ||
+          (result.built || 0) > 0 ||
+          result.action === "siege_flag_defend"
             ? "SUCCESS"
             : result.status === "SKIPPED" || result.status === "NO_EVENT"
               ? "WARN"
@@ -923,35 +925,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "HOANG_CO",
           lvl,
-          `HC Mở rộng · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
-        );
-      }
-    } else if (featureId === "hoang_co_defend") {
-      // HC Thủ cờ: cứu cờ bị áp — rpc_hoang_co_siege_flag
-      const result = await runHoangCoDefendAuto({
-        characterId: runtime.characterId,
-        accessToken: runtime.accessToken,
-        settings,
-        shouldStop: () => !isAllowed(accountId, featureId, token),
-        onLog: onLog(accountId, "HOANG_DEF"),
-      });
-
-      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 15_000));
-      if (result.status === "ERROR") {
-        status = "error";
-        errMsg = result.reason || "HC Thủ error";
-      } else {
-        const lvl =
-          result.action === "siege_flag_defend"
-            ? "SUCCESS"
-            : result.status === "SKIPPED" || result.status === "NO_EVENT"
-              ? "WARN"
-              : "INFO";
-        sysLog(
-          accountId,
-          "HOANG_DEF",
-          lvl,
-          `HC Thủ · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
+          `Hoàng Cổ${phase ? " · " + phase : ""} · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {
