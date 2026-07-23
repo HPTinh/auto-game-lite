@@ -29,3 +29,4 @@ export { runKhoiLoiAuto } from "../../lib/khoiLoiEngine";
 export { runKiNgoAuto, msUntilNextVietnamNoon } from "../../lib/kiNgoEngine";
 export { runVipDailyAuto, msUntilNextVnMidnight as msUntilNextVnMidnightVip } from "../../lib/vipDailyEngine";
 export { runRankChallengeAuto } from "../../lib/rankChallengeEngine";
+export { runHoangCoExpandAuto } from "../../lib/hoangCoEngine";

@@ -156,6 +156,15 @@ export function shouldAcceptEngineLog(module: string, level: string, message: st
     );
   }
 
+  if (module === "HOANG_CO") {
+    return (
+      lv === "ERROR" ||
+      lv === "SUCCESS" ||
+      lv === "WARN" ||
+      /place|build|cắm|xây|move|đi|ETA|event|cờ|expand|chờ/i.test(text)
+    );
+  }
+
   if (module === "VIP_DAILY") {
     return (
       lv === "ERROR" ||

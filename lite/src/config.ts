@@ -48,7 +48,8 @@ export type FeatureId =
   | "vip_daily"
   | "auto_equip"
   | "craft"
-  | "body_cult";
+  | "body_cult"
+  | "hoang_co";
 
 export const FEATURE_LABELS: Record<FeatureId, string> = {
   farm: "Farm quái",
@@ -68,6 +69,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   auto_equip: "Auto trang bị",
   craft: "Chế tạo",
   body_cult: "Luyện thể",
+  hoang_co: "Hoàng Cổ",
 };
 
 /** Setting mặc định tối ưu treo Render free */
@@ -273,4 +275,22 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
+  /** Hoàng Cổ phase 1: mở rộng — place_flag + start_build */
+  hoang_co: {
+    mode: "expand",
+    auto_place: true,
+    auto_build: true,
+    /** Chỉ chạy khi event live */
+    only_when_event_live: true,
+    prefer_own_region: true,
+    /** Khoảng cách ô cắm quanh cờ/home (1–8) */
+    place_gap: 3,
+    /** Giới hạn cờ đang xây dở cùng lúc (config game ~3) */
+    max_concurrent_build: 3,
+    max_place_per_tick: 1,
+    max_build_per_tick: 2,
+    move_before_build: true,
+    /** Poll khi idle (ms) */
+    poll_ms: 20000,
+  },
 });

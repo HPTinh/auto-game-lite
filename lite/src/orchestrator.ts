@@ -24,6 +24,7 @@ import {
   runPvpAuto,
   runWorldBossAuto,
   runRankChallengeAuto,
+  runHoangCoExpandAuto,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -888,6 +889,39 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         onLog: onLog(accountId, "AUTO_EQUIP"),
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
+    } else if (featureId === "hoang_co") {
+      // Hoàng Cổ phase 1: mở rộng đất (place_flag + start_build + move)
+      const result = await runHoangCoExpandAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "HOANG_CO"),
+      });
+
+      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || settings.poll_ms || 20_000));
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Hoàng Cổ error";
+      } else if (result.status === "NO_EVENT") {
+        sysLog(accountId, "HOANG_CO", "INFO", `Hoàng Cổ: event chưa live · next ${Math.round(nextDelayMs / 1000)}s`);
+      } else if (result.status === "WAITING") {
+        sysLog(
+          accountId,
+          "HOANG_CO",
+          "INFO",
+          `Hoàng Cổ chờ · ${result.action || "—"} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      } else {
+        const lvl =
+          (result.placed || 0) > 0 || (result.built || 0) > 0 ? "SUCCESS" : result.status === "SKIPPED" ? "WARN" : "INFO";
+        sysLog(
+          accountId,
+          "HOANG_CO",
+          lvl,
+          `Hoàng Cổ ${result.status} · place ${result.placed || 0} · build ${result.built || 0} · cờ clan ${result.clanFlags ?? "?"} · ${result.reason || ""} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      }
     } else if (featureId === "craft") {
       // alchemy | forging | talisman | formation + craft nhanh VIP>=5 (rpc_craft_auto)
       const category = normalizeCraftCategory(settings.category || "alchemy");
