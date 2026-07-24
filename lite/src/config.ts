@@ -275,7 +275,7 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     recipe_cache_at: "",
   },
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
-  /** Hoàng Cổ: mở rộng → thủ cờ → thủ mỏ → phá */
+  /** Hoàng Cổ: central Thủ(còn lock) → Công(hết lock) → Thủ lại */
   hoang_co: {
     auto_place: true,
     auto_build: true,
