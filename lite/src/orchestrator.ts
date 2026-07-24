@@ -25,6 +25,7 @@ import {
   runWorldBossAuto,
   runRankChallengeAuto,
   runHoangCoAuto,
+  runNguHanhThapAuto,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -996,6 +997,60 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           "HOANG_CO",
           lvl,
           `Hoàng Cổ${phaseLabel ? " · " + phaseLabel : ""} · ${result.reason || result.status} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      }
+    } else if (featureId === "ngu_hanh_thap") {
+      // Ngũ Hành Tháp: win → leo tiếp; thua → pause; hết STA → uống đan
+      const result = await runNguHanhThapAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "TOWER"),
+      });
+
+      store.setFeature(accountId, "ngu_hanh_thap", {
+        settings: {
+          ...settings,
+          ...result.persist,
+          current_floor: result.currentFloor,
+          highest_floor: result.highestFloor,
+        },
+      });
+
+      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 15_000));
+
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Ngũ Hành Tháp error";
+        sysLog(accountId, "TOWER", "ERROR", errMsg);
+      } else if (result.status === "LOST") {
+        sysLog(
+          accountId,
+          "TOWER",
+          "WARN",
+          `Tháp thua T${result.currentFloor} · WIN ${result.wins} · pause ~${Math.ceil(nextDelayMs / 60_000)}p · highest ${result.highestFloor}`
+        );
+      } else if (result.status === "NO_STA") {
+        sysLog(
+          accountId,
+          "TOWER",
+          "WARN",
+          `Tháp hết STA T${result.currentFloor} · kiểm tra pill · next ${Math.ceil(nextDelayMs / 60_000)}p`
+        );
+      } else if (result.status === "WAITING") {
+        sysLog(
+          accountId,
+          "TOWER",
+          "INFO",
+          `Tháp chờ · T${result.currentFloor} · ${result.reason || ""} · next ${Math.ceil(nextDelayMs / 60_000)}p`
+        );
+      } else {
+        sysLog(
+          accountId,
+          "TOWER",
+          result.wins > 0 ? "SUCCESS" : "INFO",
+          `Tháp ${result.status} · +${result.wins}W · T${result.startFloor}→${result.currentFloor} · highest ${result.highestFloor} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {

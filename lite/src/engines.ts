@@ -37,3 +37,4 @@ export {
   runHoangCoAttackAuto,
   runHoangCoAttackCentralAuto,
 } from "../../lib/hoangCoEngine";
+export { runNguHanhThapAuto } from "../../lib/nguHanhThapEngine";

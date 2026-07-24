@@ -49,7 +49,8 @@ export type FeatureId =
   | "auto_equip"
   | "craft"
   | "body_cult"
-  | "hoang_co";
+  | "hoang_co"
+  | "ngu_hanh_thap";
 
 export const FEATURE_LABELS: Record<FeatureId, string> = {
   farm: "Farm quái",
@@ -70,6 +71,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   craft: "Chế tạo",
   body_cult: "Luyện thể",
   hoang_co: "Hoàng Cổ",
+  ngu_hanh_thap: "Ngũ Hành Tháp",
 };
 
 /** Setting mặc định tối ưu treo Render free */
@@ -294,5 +296,32 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     focus_flag_id: null,
     focus_attack_flag_id: null,
     self_placed_flag_ids: [],
+  },
+  /**
+   * Ngũ Hành Tháp — rpc_tower_challenge_floor (ngu_hanh_thap.txt)
+   * Thắng → leo tiếp; thua → ngưng; hết STA → pill_{tier}_sta
+   */
+  ngu_hanh_thap: {
+    /** Tầng bắt đầu (lần đầu / reset) */
+    start_floor: 1,
+    /** Tầng sẽ đánh tiếp (tự cập nhật) */
+    current_floor: 1,
+    /** Highest đã clear (tự) */
+    highest_floor: 0,
+    /** Delay giữa 2 tầng (ms) */
+    delay_ms: 1500,
+    /** Chu kỳ hẹn vòng sau khi còn leo (giây) */
+    interval_seconds: 15,
+    /** Số tầng tối đa mỗi vòng engine */
+    max_floors_per_run: 40,
+    /** Thua → pause (phút) rồi mới thử lại tầng đó */
+    pause_on_loss_minutes: 60,
+    auto_use_recovery_items: true,
+    stamina_pill_tier: "tc",
+    spirit_pill_tier: "tc",
+    stamina_item_code: "",
+    spirit_item_code: "",
+    max_recovery_uses: 8,
+    loss_pause_until: "",
   },
 });

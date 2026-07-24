@@ -117,7 +117,7 @@
   <script>
     const FEATURES = [
       "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","rank_challenge","nhap_mong","khoi_loi","ki_ngo","vip_daily",
-      "auto_equip","craft","body_cult","hoang_co"
+      "auto_equip","craft","body_cult","hoang_co","ngu_hanh_thap"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
@@ -125,7 +125,8 @@
       nhap_mong:"Nhập Mộng", khoi_loi:"Khôi Lỗi",
       ki_ngo:"Kì ngộ", vip_daily:"VIP daily",
       auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể",
-      hoang_co:"Hoàng Cổ"
+      hoang_co:"Hoàng Cổ",
+      ngu_hanh_thap:"Ngũ Hành Tháp"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
 
@@ -254,6 +255,19 @@
         {k:"auto_build",l:"Xây cờ",t:"bool"},
         {k:"auto_defend",l:"Thủ cờ",t:"bool"},
         {k:"auto_central",l:"Central (thủ ↔ công)",t:"bool"},
+      ],
+      ngu_hanh_thap: [
+        {k:"start_floor",l:"Tầng bắt đầu (lần đầu)",t:"number",min:1,max:9999},
+        {k:"current_floor",l:"Tầng sẽ đánh (tự cập nhật)",t:"number",min:1,max:9999},
+        {k:"highest_floor",l:"Highest đã clear (tự)",t:"number",min:0},
+        {k:"max_floors_per_run",l:"Max tầng / vòng",t:"number",min:1,max:200},
+        {k:"delay_ms",l:"Delay giữa tầng (ms)",t:"number",min:400},
+        {k:"interval_seconds",l:"Hẹn vòng sau khi còn leo (s)",t:"number",min:5},
+        {k:"pause_on_loss_minutes",l:"Thua → pause (phút)",t:"number",min:5},
+        {k:"auto_use_recovery_items",l:"Hết STA → uống đan",t:"bool"},
+        {k:"stamina_pill_tier",l:"Tier đan STA",t:"select",o:["lk","tc","kd","na","ht","lh"]},
+        {k:"spirit_pill_tier",l:"Tier đan thần hồn",t:"select",o:["lk","tc","kd","na","ht","lh"]},
+        {k:"max_recovery_uses",l:"Max viên / lần thiếu",t:"number",min:1,max:30},
       ],
     };
 
