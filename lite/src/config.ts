@@ -103,17 +103,25 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     no_mob_before_rotate: 1,
   },
   pvp: {
-    /** Số trận PVP mục tiêu mỗi ngày (reset 00:00 VN) */
+    /**
+     * free = chỉ 30 lượt free/ngày (attacks_remaining)
+     * pk   = free xong vẫn đánh (dùng thẻ pk_token nếu còn)
+     */
+    pvp_mode: "free",
+    free_per_day: 30,
+    /** mode free: = free_per_day; mode pk: trần trận/ngày (free+PK) */
     daily_target: 30,
-    /** alias — orchestrator dùng daily_target ưu tiên */
-    max_attacks: 30,
+    max_attacks: 10,
     delay_ms: 1500,
     hunt_on_win: true,
     prefer_hunt: true,
+    /** Có hunt → chỉ bem list đã thắng (giống F12 1 id) */
+    hunt_only: true,
     prefer_weaker: true,
+    /** Thua → bỏ khỏi hunt (tránh bem người mạnh) */
+    drop_hunt_on_loss: true,
     max_hunt: 15,
     hunt_list: [],
-    // tiến độ ngày (tự lưu)
     daily_date: "",
     daily_completed: 0,
     daily_locked: false,

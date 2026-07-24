@@ -625,8 +625,16 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         );
       }
     } else if (featureId === "pvp") {
-      // PVP theo ngày: daily_target (vd 30) → đủ thì khóa đến 00:00 VN
-      let daily = normalizePvpDaily(settings);
+      // PVP: mode free (30 free) | pk (free + thẻ PK); hunt bem dí người đã thắng
+      const mode = String(settings.pvp_mode || "free").toLowerCase() === "pk" ? "pk" : "free";
+      const freePerDay = Math.max(1, Math.min(50, Math.floor(Number(settings.free_per_day || 30)) || 30));
+      // free: target = free; pk: daily_target cao hơn
+      const dayTarget =
+        mode === "free"
+          ? freePerDay
+          : Math.max(freePerDay, Math.min(200, Math.floor(Number(settings.daily_target || freePerDay + 50)) || freePerDay + 50));
+
+      let daily = normalizePvpDaily({ ...settings, daily_target: dayTarget });
       const waitMidnight = () => {
         const wait = msUntilNextVnMidnight();
         nextDelayMs = wait;
@@ -635,11 +643,10 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "PVP",
           "INFO",
-          `PVP đủ ${daily.completed}/${daily.target} hôm nay (${daily.today}) · chờ ~${hrs}h đến 00:00 VN`
+          `PVP xong hôm nay ${daily.completed}/${daily.target} (${mode}) · chờ ~${hrs}h đến 00:00 VN`
         );
       };
 
-      // Đồng bộ state ngày
       if (
         settings.daily_date !== daily.today ||
         Number(settings.daily_completed || 0) !== daily.completed ||
@@ -654,7 +661,6 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         };
       }
 
-      // Đã khóa / đủ target hôm nay → không đánh (kể cả tăng daily_target khi đã lock)
       if (daily.locked || daily.completed >= daily.target) {
         if (!daily.locked && daily.completed >= daily.target) {
           daily = { ...daily, locked: true };
@@ -664,14 +670,21 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       } else {
         const remaining = daily.target - daily.completed;
         const huntList = Array.isArray(settings.hunt_list) ? settings.hunt_list : [];
-        sysLog(accountId, "PVP", "INFO", `PVP còn ${remaining}/${daily.target} trận hôm nay`);
+        sysLog(
+          accountId,
+          "PVP",
+          "INFO",
+          `PVP mode=${mode} · còn ${remaining}/${daily.target} · hunt ${huntList.length}`
+        );
 
         const result = await runPvpAuto({
           characterId: runtime.characterId,
           accessToken: runtime.accessToken,
           settings: {
             ...settings,
-            max_attacks: remaining, // chỉ đánh phần còn lại trong ngày
+            pvp_mode: mode,
+            free_per_day: freePerDay,
+            max_attacks: Math.min(15, remaining),
           },
           huntList,
           shouldStop: () => !isAllowed(accountId, featureId, token),
@@ -685,7 +698,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           locked: false,
           target: daily.target,
         };
-        if (daily.completed >= daily.target) {
+        // Hết free (mode free) hoặc hết PK → khóa ngày
+        if (
+          daily.completed >= daily.target ||
+          result.status === "NO_ATTACKS" ||
+          result.status === "NO_PK"
+        ) {
           daily.locked = true;
         }
 
@@ -703,19 +721,17 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         if (result.status === "ERROR") {
           status = "error";
           errMsg = result.reason || "PVP error";
-          // lỗi: thử lại sau 5p (vẫn trong ngày nếu chưa đủ)
           nextDelayMs = 5 * 60_000;
           sysLog(accountId, "PVP", "ERROR", errMsg);
         } else if (daily.locked || daily.completed >= daily.target) {
           waitMidnight();
-        } else if (result.status === "NO_ATTACKS") {
-          // hết lượt game — chờ midnight hoặc 1h
+        } else if (result.status === "NO_ATTACKS" || result.status === "NO_PK") {
           nextDelayMs = Math.min(msUntilNextVnMidnight(), 60 * 60_000);
           sysLog(
             accountId,
             "PVP",
             "WARN",
-            `Hết lượt game · đã ${daily.completed}/${daily.target} hôm nay · ${result.wins}W/${result.losses}L`
+            `${result.reason || "Hết lượt"} · ${daily.completed}/${daily.target} · ${result.wins}W/${result.losses}L · PK ${result.usedPkCount || 0}`
           );
         } else if (result.status === "NO_OPPONENT") {
           nextDelayMs = 15 * 60_000;
