@@ -285,7 +285,7 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** Phá cờ địch — mặc định tắt */
     auto_attack: false,
     /** Công central đang do địch giữ/thủ — mặc định tắt (khung sẵn, RPC tấn nếu cần) */
-    auto_attack_central: false,
+    auto_attack_central: true,
     focus_flag_id: null,
     focus_attack_flag_id: null,
     self_placed_flag_ids: [],
