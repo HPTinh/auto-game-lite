@@ -211,18 +211,15 @@ export async function runPvpAuto(options: PvpAutoOptions): Promise<PvpRunSummary
   const settings = options.settings || {};
   const onLog = options.onLog;
   const mode = resolveMode(settings);
-  const freeQuota = Math.max(1, Math.min(50, Math.floor(Number(settings.free_per_day ?? settings.free_quota ?? 30)) || 30));
-  // free mode: tối đa freeQuota; pk mode: daily_target hoặc pk_max (mặc định free+50)
-  const pkMax = Math.max(
-    freeQuota,
-    Math.min(200, Math.floor(Number(settings.daily_target ?? settings.pk_max ?? settings.max_attacks ?? freeQuota + 50)) || freeQuota + 50)
+  // Trần ngày = free_per_day (số user nhập). use_pk chỉ đổi nguồn lượt (free/thẻ), không tăng trần.
+  const dayCap = Math.max(
+    1,
+    Math.min(200, Math.floor(Number(settings.free_per_day ?? settings.daily_target ?? settings.free_quota ?? 30)) || 30)
   );
+  // Orchestrator truyền max_attacks = remaining trong ngày (đã ≤ dayCap)
   const batchMax = Math.max(
     1,
-    Math.min(
-      50,
-      Math.floor(Number(settings.max_attacks ?? (mode === "free" ? freeQuota : Math.min(20, pkMax)))) || 10
-    )
+    Math.min(50, Math.floor(Number(settings.max_attacks ?? Math.min(15, dayCap))) || 10)
   );
   const delayMs = Math.max(400, Number(settings.delay_ms || 1500));
   // 1 option: Thắng → lưu ID bem dí (thua → bỏ, có list → chỉ bem list)
@@ -253,7 +250,7 @@ export async function runPvpAuto(options: PvpAutoOptions): Promise<PvpRunSummary
   try {
     onLog?.(
       "INFO",
-      `PVP mode=${mode} · batch≤${batchMax} · free/ngày~${freeQuota}${mode === "pk" ? ` · pk max~${pkMax}` : " · chỉ free"} · hunt ${hunt.length}`
+      `PVP mode=${mode} · batch≤${batchMax} · trần ngày ${dayCap}${mode === "pk" ? " (free+PK trong trần)" : " (chỉ free)"} · hunt ${hunt.length}`
     );
 
     const listData = await rpc(

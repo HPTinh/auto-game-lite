@@ -103,9 +103,9 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     no_mob_before_rotate: 1,
   },
   pvp: {
-    /** Lượt free/ngày (attacks_remaining, thường 30) */
+    /** Số trận tối đa / ngày (user nhập) — free và PK đều nằm trong trần này */
     free_per_day: 30,
-    /** Hết free → tiếp tục bằng thẻ pk_token */
+    /** Hết free game → dùng thẻ PK (vẫn ≤ free_per_day) */
     use_pk: false,
     /** Thắng → lưu ID bem dí; thua → bỏ list, tìm người khác */
     hunt_on_win: true,
@@ -116,6 +116,7 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     daily_date: "",
     daily_completed: 0,
     daily_locked: false,
+    daily_target: 30,
   },
   rank_challenge: {
     /** board: auto | lk | tc | kd | na | ht | lh */

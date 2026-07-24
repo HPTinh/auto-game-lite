@@ -147,10 +147,10 @@
         {k:"mp_potion_shop_code",l:"Shop code",t:"text"},
       ],
       pvp: [
-        {k:"free_per_day",l:"Lượt free / ngày",t:"number",min:1,max:50},
-        {k:"use_pk",l:"Hết free → dùng thẻ PK",t:"bool"},
+        {k:"free_per_day",l:"Số trận tối đa / ngày",t:"number",min:1,max:200},
+        {k:"use_pk",l:"Hết free game → dùng thẻ PK (vẫn ≤ số trận trên)",t:"bool"},
         {k:"hunt_on_win",l:"Thắng → Lưu ID bem dí",t:"bool"},
-        {k:"daily_completed",l:"Đã đánh hôm nay (tự đếm)",t:"number",min:0},
+        {k:"daily_completed",l:"Đã đánh hôm nay (tự ≤ số trận)",t:"number",min:0},
         {k:"daily_date",l:"Ngày đếm (tự, VN)",t:"text"},
         {k:"daily_locked",l:"Đủ hôm nay — chờ 00h VN",t:"bool"},
       ],

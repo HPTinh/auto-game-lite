@@ -222,7 +222,7 @@ function persistMazeDaily(
   });
 }
 
-/** PVP quota theo ngày (00:00 VN) */
+/** PVP quota theo ngày (00:00 VN) — target = free_per_day (số user nhập) */
 function normalizePvpDaily(settings: Record<string, any>) {
   const today = vnDateString();
   const date = String(settings.daily_date || "");
@@ -232,17 +232,26 @@ function normalizePvpDaily(settings: Record<string, any>) {
     completed = 0;
     locked = false;
   }
+  // Ưu tiên free_per_day (UI); không cộng free+50 nữa
   const target = Math.max(
     1,
-    Math.min(100, Math.floor(Number(settings.daily_target ?? settings.max_attacks ?? settings.times ?? 30)) || 30)
+    Math.min(
+      200,
+      Math.floor(
+        Number(settings.free_per_day ?? settings.daily_target ?? settings.max_attacks ?? settings.times ?? 30)
+      ) || 30
+    )
   );
+  // Target giảm / bug cũ (completed > target) → kẹp lại
+  if (completed > target) completed = target;
+  if (completed >= target) locked = true;
   return { today, completed, locked, target };
 }
 
 function persistPvpDaily(
   accountId: string,
   settings: Record<string, any>,
-  daily: { today: string; completed: number; locked: boolean },
+  daily: { today: string; completed: number; locked: boolean; target?: number },
   extra?: Record<string, any>
 ) {
   store.setFeature(accountId, "pvp", {
@@ -252,7 +261,7 @@ function persistPvpDaily(
       daily_date: daily.today,
       daily_completed: daily.completed,
       daily_locked: daily.locked,
-      daily_target: daily.target ?? settings.daily_target ?? settings.max_attacks,
+      daily_target: daily.target ?? settings.daily_target ?? settings.free_per_day ?? settings.max_attacks,
     },
   });
 }
@@ -625,14 +634,18 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         );
       }
     } else if (featureId === "pvp") {
-      // PVP gọn: free/ngày + use_pk + Thắng→lưu ID bem dí
+      // PVP: trần ngày = free_per_day (số user nhập). use_pk chỉ cho phép dùng thẻ trong trần đó.
       const usePk = settings.use_pk === true || String(settings.pvp_mode || "").toLowerCase() === "pk";
       const mode = usePk ? "pk" : "free";
-      const freePerDay = Math.max(1, Math.min(50, Math.floor(Number(settings.free_per_day || 30)) || 30));
-      // free: đúng free_per_day; pk: free + thêm lượt PK (trần free+50)
-      const dayTarget = mode === "free" ? freePerDay : Math.min(200, freePerDay + 50);
+      const freePerDay = Math.max(1, Math.min(200, Math.floor(Number(settings.free_per_day || 30)) || 30));
+      // Luôn = free_per_day — KHÔNG free+50
+      const dayTarget = freePerDay;
 
-      let daily = normalizePvpDaily({ ...settings, daily_target: dayTarget });
+      let daily = normalizePvpDaily({
+        ...settings,
+        free_per_day: freePerDay,
+        daily_target: dayTarget,
+      });
       const waitMidnight = () => {
         const wait = msUntilNextVnMidnight();
         nextDelayMs = wait;
@@ -641,18 +654,21 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "PVP",
           "INFO",
-          `PVP xong hôm nay ${daily.completed}/${daily.target}${usePk ? " (+PK)" : " free"} · chờ ~${hrs}h`
+          `PVP đủ ${daily.completed}/${daily.target}${usePk ? " (free+PK)" : " free"} · chờ ~${hrs}h đến 00:00 VN`
         );
       };
 
       if (
         settings.daily_date !== daily.today ||
         Number(settings.daily_completed || 0) !== daily.completed ||
-        Boolean(settings.daily_locked) !== daily.locked
+        Boolean(settings.daily_locked) !== daily.locked ||
+        Number(settings.daily_target || 0) !== daily.target
       ) {
         persistPvpDaily(accountId, settings, daily);
         settings = {
           ...settings,
+          free_per_day: freePerDay,
+          daily_target: daily.target,
           daily_date: daily.today,
           daily_completed: daily.completed,
           daily_locked: daily.locked,
@@ -666,13 +682,18 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         }
         waitMidnight();
       } else {
-        const remaining = daily.target - daily.completed;
+        const remaining = Math.max(0, daily.target - daily.completed);
+        if (remaining <= 0) {
+          daily = { ...daily, locked: true };
+          persistPvpDaily(accountId, settings, daily);
+          waitMidnight();
+        } else {
         const huntList = Array.isArray(settings.hunt_list) ? settings.hunt_list : [];
         sysLog(
           accountId,
           "PVP",
           "INFO",
-          `PVP free ${freePerDay}${usePk ? " + thẻ PK" : ""} · còn ${remaining}/${daily.target} · bem ${huntList.length} id`
+          `PVP ${daily.completed}/${daily.target}${usePk ? " +PK" : " free"} · còn ${remaining} · bem ${huntList.length} id`
         );
 
         const result = await runPvpAuto({
@@ -682,6 +703,8 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
             ...settings,
             use_pk: usePk,
             free_per_day: freePerDay,
+            daily_target: dayTarget,
+            // Không vượt remaining (đã đánh + batch ≤ target)
             max_attacks: Math.min(15, remaining),
           },
           huntList,
@@ -690,13 +713,14 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         });
 
         const fought = Math.max(0, Number(result.fought || 0));
+        // Cứng: completed không bao giờ > target (số user nhập)
+        const nextCompleted = Math.min(daily.target, daily.completed + fought);
         daily = {
           today: daily.today,
-          completed: Math.min(daily.target, daily.completed + fought),
+          completed: nextCompleted,
           locked: false,
           target: daily.target,
         };
-        // Hết free (mode free) hoặc hết PK → khóa ngày
         if (
           daily.completed >= daily.target ||
           result.status === "NO_ATTACKS" ||
@@ -707,10 +731,13 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
 
         persistPvpDaily(accountId, settings, daily, {
           hunt_list: result.huntList || huntList,
+          free_per_day: freePerDay,
         });
         settings = {
           ...settings,
           hunt_list: result.huntList || huntList,
+          free_per_day: freePerDay,
+          daily_target: daily.target,
           daily_date: daily.today,
           daily_completed: daily.completed,
           daily_locked: daily.locked,
@@ -744,6 +771,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
             `PVP ${result.wins}W/${result.losses}L · ngày ${daily.completed}/${daily.target} · tiếp sau ${Math.round(nextDelayMs / 1000)}s`
           );
         }
+        } // end remaining > 0
       }
     } else if (featureId === "nhap_mong") {
       const result = await runNhapMongAuto({
