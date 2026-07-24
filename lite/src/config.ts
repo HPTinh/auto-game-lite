@@ -103,16 +103,10 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     smart_stop_when_quest_done: false,
     mob_cache_max_age_ms: 3000,
     no_mob_before_rotate: 1,
-    /**
-     * Phản đòn: auto = probe đánh thử + lưu theo realm (không cần chỉnh tay).
-     * on/off chỉ khi muốn ép tay.
-     */
-    apply_counter: "auto",
-    /** map realm_code → true/false (tool tự ghi sau probe) */
-    learned_apply_counter_by_realm: {},
-    learned_apply_counter: null,
-    /** join map → rpc_set_auto_config combat preferred + enabled */
-    sync_game_auto_config: true,
+    /** Phản đòn quái — chỉnh tay: on | off (mặc định off) */
+    apply_counter: "off",
+    /** Chỉ farm mob sống + không bị đánh (HP full / không combat flag) */
+    prefer_free_mobs: true,
   },
   pvp: {
     /** Số trận tối đa / ngày (user nhập) — free và PK đều nằm trong trần này */
