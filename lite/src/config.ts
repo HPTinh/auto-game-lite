@@ -298,30 +298,23 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     self_placed_flag_ids: [],
   },
   /**
-   * Ngũ Hành Tháp — rpc_tower_challenge_floor (ngu_hanh_thap.txt)
-   * Thắng → leo tiếp; thua → ngưng; hết STA → pill_{tier}_sta
+   * Ngũ Hành Tháp — zero-config (chỉ bật)
+   * status → leo win → thua → free sweep → chờ 00:00 VN → lặp
    */
   ngu_hanh_thap: {
-    /** Tầng bắt đầu (lần đầu / reset) */
-    start_floor: 1,
-    /** Tầng sẽ đánh tiếp (tự cập nhật) */
-    current_floor: 1,
-    /** Highest đã clear (tự) */
-    highest_floor: 0,
-    /** Delay giữa 2 tầng (ms) */
-    delay_ms: 1500,
-    /** Chu kỳ hẹn vòng sau khi còn leo (giây) */
-    interval_seconds: 15,
-    /** Số tầng tối đa mỗi vòng engine */
-    max_floors_per_run: 40,
-    /** Thua → pause (phút) rồi mới thử lại tầng đó */
-    pause_on_loss_minutes: 60,
     auto_use_recovery_items: true,
+    /** Đan STA khi hết (mặc định tc; có thể đổi 1 lần) */
     stamina_pill_tier: "tc",
-    spirit_pill_tier: "tc",
-    stamina_item_code: "",
-    spirit_item_code: "",
-    max_recovery_uses: 8,
-    loss_pause_until: "",
+    /** Hiển thị / tự cập nhật từ rpc_tower_get_status */
+    highest_cleared: 0,
+    highest_floor: 0,
+    next_floor: 1,
+    sweep_charges: 0,
+    display_highest: 0,
+    display_next: 1,
+    display_sweep_charges: 0,
+    lost_today: false,
+    swept_today: false,
+    daily_date: "",
   },
 });

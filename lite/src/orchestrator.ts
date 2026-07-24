@@ -1000,11 +1000,15 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         );
       }
     } else if (featureId === "ngu_hanh_thap") {
-      // Ngũ Hành Tháp: win → leo tiếp; thua → pause; hết STA → uống đan
+      // Zero-config: status → leo → thua → free sweep → 00:00 VN
       const result = await runNguHanhThapAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
-        settings,
+        settings: {
+          ...settings,
+          realm_tier: store.get(accountId)?.realmTier || settings.realm_tier || settings.stamina_pill_tier,
+        },
+        msUntilNextMidnight: msUntilNextVnMidnight(),
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "TOWER"),
       });
@@ -1013,44 +1017,47 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         settings: {
           ...settings,
           ...result.persist,
-          current_floor: result.currentFloor,
           highest_floor: result.highestFloor,
+          highest_cleared: result.highestFloor,
+          next_floor: result.nextFloor,
+          current_floor: result.currentFloor,
+          sweep_charges: result.sweepCharges,
+          display_highest: result.highestFloor,
+          display_next: result.nextFloor,
+          display_sweep_charges: result.sweepCharges,
         },
       });
 
-      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 15_000));
+      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || msUntilNextVnMidnight()));
 
+      const hi = result.highestFloor;
+      const nextF = result.nextFloor;
       if (result.status === "ERROR") {
         status = "error";
         errMsg = result.reason || "Ngũ Hành Tháp error";
         sysLog(accountId, "TOWER", "ERROR", errMsg);
-      } else if (result.status === "LOST") {
+      } else if (result.status === "SWEPT" || result.status === "LOST") {
         sysLog(
           accountId,
           "TOWER",
-          "WARN",
-          `Tháp thua T${result.currentFloor} · WIN ${result.wins} · pause ~${Math.ceil(nextDelayMs / 60_000)}p · highest ${result.highestFloor}`
+          result.swept ? "SUCCESS" : "WARN",
+          `Tháp ${result.status} · highest ${hi} · +${result.wins}W · ${result.swept ? "đã càn quét · " : ""}chờ ~${Math.ceil(nextDelayMs / 3600_000)}h → 00:00 VN`
         );
       } else if (result.status === "NO_STA") {
-        sysLog(
-          accountId,
-          "TOWER",
-          "WARN",
-          `Tháp hết STA T${result.currentFloor} · kiểm tra pill · next ${Math.ceil(nextDelayMs / 60_000)}p`
-        );
+        sysLog(accountId, "TOWER", "WARN", `Tháp hết STA T${result.currentFloor} · highest ${hi} · next 30p`);
       } else if (result.status === "WAITING") {
         sysLog(
           accountId,
           "TOWER",
           "INFO",
-          `Tháp chờ · T${result.currentFloor} · ${result.reason || ""} · next ${Math.ceil(nextDelayMs / 60_000)}p`
+          `Tháp chờ · highest ${hi} · next T${nextF} · ${result.reason || ""} · ~${Math.ceil(nextDelayMs / 3600_000)}h`
         );
       } else {
         sysLog(
           accountId,
           "TOWER",
           result.wins > 0 ? "SUCCESS" : "INFO",
-          `Tháp ${result.status} · +${result.wins}W · T${result.startFloor}→${result.currentFloor} · highest ${result.highestFloor} · next ${Math.round(nextDelayMs / 1000)}s`
+          `Tháp ${result.status} · highest ${hi} · next T${nextF} · +${result.wins}W · sweep ${result.sweepCharges} · next ${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {

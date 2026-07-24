@@ -256,18 +256,14 @@
         {k:"auto_defend",l:"Thủ cờ",t:"bool"},
         {k:"auto_central",l:"Central (thủ ↔ công)",t:"bool"},
       ],
+      /** Zero-config: chỉ bật feature. Các field dưới = trạng thái tự cập nhật */
       ngu_hanh_thap: [
-        {k:"start_floor",l:"Tầng bắt đầu (lần đầu)",t:"number",min:1,max:9999},
-        {k:"current_floor",l:"Tầng sẽ đánh (tự cập nhật)",t:"number",min:1,max:9999},
-        {k:"highest_floor",l:"Highest đã clear (tự)",t:"number",min:0},
-        {k:"max_floors_per_run",l:"Max tầng / vòng",t:"number",min:1,max:200},
-        {k:"delay_ms",l:"Delay giữa tầng (ms)",t:"number",min:400},
-        {k:"interval_seconds",l:"Hẹn vòng sau khi còn leo (s)",t:"number",min:5},
-        {k:"pause_on_loss_minutes",l:"Thua → pause (phút)",t:"number",min:5},
-        {k:"auto_use_recovery_items",l:"Hết STA → uống đan",t:"bool"},
-        {k:"stamina_pill_tier",l:"Tier đan STA",t:"select",o:["lk","tc","kd","na","ht","lh"]},
-        {k:"spirit_pill_tier",l:"Tier đan thần hồn",t:"select",o:["lk","tc","kd","na","ht","lh"]},
-        {k:"max_recovery_uses",l:"Max viên / lần thiếu",t:"number",min:1,max:30},
+        {k:"display_highest",l:"Highest đã clear (tự)",t:"number",min:0},
+        {k:"display_next",l:"Tầng sắp đánh (tự)",t:"number",min:1},
+        {k:"display_sweep_charges",l:"Càn quét free còn (tự)",t:"number",min:0},
+        {k:"lost_today",l:"Đã thua hôm nay — chờ 00h (tự)",t:"bool"},
+        {k:"swept_today",l:"Đã càn quét hôm nay (tự)",t:"bool"},
+        {k:"stamina_pill_tier",l:"Tier đan STA khi hết",t:"select",o:["lk","tc","kd","na","ht","lh"]},
       ],
     };
 
