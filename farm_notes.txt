@@ -1,0 +1,320 @@
+================================================================================
+AUTO FARM — GHI CHÉP BIẾN + NHẬN DẠNG HIỆN TẠI (để user bổ sung / redesign)
+Cập nhật: 2026-07-24
+File engine: lib/farmEngine.ts
+Lite: lite/src/config.ts (default settings), lite/src/orchestrator.ts (timer + map UI)
+================================================================================
+
+MỤC ĐÍCH FILE NÀY
+- Liệt kê RPC / payload / setting / runtime / lỗi mà code hiện dùng
+- Mô tả "cách bot hiểu farm" (luồng, kênh, mob, MP)
+- Chỗ trống [USER] để bạn điền capture thật / luật game / lỗi đang gặp
+- Sau khi bạn update, sẽ redesign farm cho ổn định hơn
+
+================================================================================
+1) RPC GAME (theo code hiện tại)
+================================================================================
+
+1.1 rpc_list_realm_channels
+  Body:
+    p_character_id: string (uuid character)
+    p_base_code: string   // vd sect_10_tc, hoặc template có {channel}
+  Mục đích: liệt kê channel của 1 vùng (base)
+  Code parse: channel_no / channelNo / channel / no
+              realm_code / realmCode / code
+
+1.2 rpc_join_secret_realm
+  Body:
+    p_character_id
+    p_realm_code: string  // vd sect_10_tc_c03 (base + _c{channel 2 số})
+  Mục đích: vào map/kênh
+  Lấy realm_id từ: realm_id | realmId | id
+
+1.3 rpc_leave_secret_realm
+  Body:
+    p_character_id
+    p_realm_id: string
+  Mục đích: rời map trước khi đổi kênh / rejoin
+
+1.4 rpc_get_secret_realm_snapshot
+  Body:
+    p_character_id
+    p_realm_id
+    p_limit_players: number  // default ~200 (settings.snapshot_limit_players)
+  Mục đích: lấy mobs (+ players) trên map hiện tại
+  Mob lấy từ: snapshot.mobs | realm.mobs | secret_realm.mobs | ...
+  Mob id: id | mob_id | mobId | realm_mob_id | monster_id | target_id
+  Mob sống: alive/is_alive, status dead/killed, hp > 0
+  Loại mob (đoán từ name/type): boss | elite | normal
+    - boss: chứa boss, thu_linh, thulinh
+    - elite: elite, tinh_anh, tinhanh
+    - normal: normal, quai_vat, thuong
+
+1.5 rpc_attack_realm_mob_v3   *** đòn farm chính ***
+  Body:
+    p_character_id
+    p_realm_id
+    p_mob_id
+    p_skill_slot: 0          // code CỐ ĐỊNH skill thường, không lấy UI
+    p_apply_counter: false  // không phản đòn quái (đổi 2026-07 — one-shot farm)
+  Thành công: code coi kill nếu hp_after = 0 / flags killed
+  Lỗi hay gặp (theo nhận dạng string trong message/reason):
+    - mob_dead / target_dead / already_dead / not_alive / killed / defeated
+    - no_mana / no_mp / not_enough mana...
+    - not_joined / not_join
+    - wrong_channel / channel_mismatch / invalid_realm / not_in_realm /
+      realm_mismatch / mob_not_found / invalid_mob  (nhánh "lệch kênh/realm")
+    - cooldown / too_soon
+    - daily_limit / online_limit / time_limit
+
+1.6 rpc_use_item  (hết mana)
+  Body ưu tiên: { p_character_id, p_item_code }  // vd pill_lk_mp
+  Fallback: p_item_id / p_inventory_item_id / p_qty...
+
+1.7 rpc_list_inventory
+  Body: p_character_id, p_locale: "vi"
+  Mục đích: tìm itemId bình MP nếu use theo code fail
+
+1.8 rpc_nh_shop_buy  (mua bình MP)
+  Body:
+    p_character_id
+    p_shop_code: "alchemy" (default)
+    p_item_code: cùng mã bình (pill_lk_mp...)
+    p_qty: 10 hoặc 1
+
+1.9 rpc_get_rebirth_quest_progress  (smart farm theo nhiệm vụ trùng sinh)
+  Body: p_character_id
+  Mục đích: biết còn cần giết normal/elite/boss bao nhiêu
+
+[USER] Paste response mẫu thành công/thất bại từng RPC (che token) vào đây:
+--------------------------------------------------------------------------------
+// join:
+// snapshot (1-2 mob mẫu + field quan trọng):
+// attack success:
+// attack mob_dead:
+// attack no_mana:
+// attack wrong channel / not same channel (message đúng 100%):
+// list_realm_channels 1 dòng channel:
+--------------------------------------------------------------------------------
+
+================================================================================
+2) SETTING UI / CONFIG (lite default)
+================================================================================
+
+File: lite/src/config.ts → defaultFeatureSettings().farm
+
+| Key                        | Default      | Ý nghĩa (theo code)                          |
+|----------------------------|--------------|----------------------------------------------|
+| multi_channel              | false        | false=1 kênh (channel); true=from→to         |
+| channel                    | 3            | Kênh đơn                                     |
+| from_channel               | 3            | Kênh đầu (đa)                                |
+| to_channel                 | 6            | Kênh cuối (đa)                               |
+| target_order               | boss_elite   | Ưu tiên mục tiêu (map → mode/priority)       |
+| farm_realm_tier_override   | auto         | auto\|lk\|tc\|kd\|na\|ht\|lh                 |
+| smart_rebirth_farm         | true         | Theo quest trùng sinh                        |
+| attack_delay_ms            | 4000         | Gợi ý delay; skill CD game ~5s               |
+| empty_scan_delay_ms        | 4000         | Chờ khi không mob                            |
+| farm_log_mode              | summary      | Log gọn                                      |
+| summary_log_interval_seconds | 1800       |                                              |
+| max_available_base_codes   | 2            | Học tối đa 2 base_code farmable              |
+| auto_use_mp_potion         | true         | Hết MP → uống pill                           |
+| mp_potion_item_code        | pill_lk_mp   | Mã bình MP                                   |
+| auto_buy_mp_potion         | true         | Hết pill → mua shop                          |
+| mp_potion_buy_qty          | 10           | 10 hoặc 1                                    |
+| mp_potion_shop_code        | alchemy      |                                              |
+| smart_stop_when_quest_done | false        | Đủ quest thì dừng feature                    |
+| mob_cache_max_age_ms       | 3000         | Cache queue mob (engine còn fallback 5s)     |
+| no_mob_before_rotate       | 1            | Hết mob N lần → leave + xoay kênh            |
+
+Setting engine/internal (có thể có, không hết trên UI lite):
+| Key                        | Default/ghi chú |
+|----------------------------|-----------------|
+| mode / priority            | map từ target_order |
+| boss_priority_mode         | true nếu boss_elite |
+| boss_priority_fast         | true: boss→elite rồi đổi kênh, ít dọn normal |
+| absolute_boss_only         | chỉ boss |
+| skill_slot                 | CODE CỨNG = 0 |
+| snapshot_limit_players     | 200 |
+| mob_reservation_ttl_ms     | 7000 (lock multi-acc full app) |
+| mob_dead_blacklist_ms      | 12000 |
+| mob_dead_rotate_after      | 3 (chuỗi mob_dead → xoay kênh) |
+| mp_potion_max_retry        | 2 |
+| verify_farm_kill_with_snapshot | true (snapshot sau attack) |
+| available_base_codes       | cache vùng farm được |
+| unavailable_base_codes     | vùng bỏ |
+| realm_code_prefix(es)      | custom map prefix |
+
+target_order → mode (orchestrator buildFarmEngineSettings):
+  boss / boss_only     → chỉ boss
+  boss_elite (default) → boss priority fast (boss + elite)
+  boss_elite_normal    → all
+  elite / normal / elite_normal / smart
+
+[USER] Setting bạn đang dùng khi lỗi (copy từ UI):
+--------------------------------------------------------------------------------
+multi_channel=
+channel / from-to=
+target_order=
+farm_realm_tier_override=
+mp_potion_item_code=
+ghi chú thêm:
+--------------------------------------------------------------------------------
+
+================================================================================
+3) RUNTIME TRONG BỘ NHỚ (FARM_RUNTIME per characterId)
+================================================================================
+
+currentRealm: { baseCode, label, realmCode, realmId, channelNo }
+mobQueue: [{ id, kind, name, raw }]
+mobQueueAt: timestamp cache queue
+currentMob + currentMobHits
+noMobCount → rotate
+availableBaseCodes / skippedBaseCodes  // học vùng
+channelCache: list channel theo baseCode (TTL dài ~24h)
+deadMobUntil: { [mobId]: expireAt }   // blacklist sau mob_dead
+mobDeadStreak / channelErrorStreak    // xoay kênh khi lặp lỗi
+
+[USER] Khi treo, log có hiện channelNo / realmCode không?
+--------------------------------------------------------------------------------
+
+================================================================================
+4) LUỒNG FARM (cách bot "hiểu" 1 vòng)
+================================================================================
+
+A. Orchestrator lite mỗi tick:
+   1. ensureRuntime (login, characterId, token)
+   2. buildFarmEngineSettings(UI)
+   3. runFarmAuto(...)
+   4. nextDelayMs:
+      - softRescan=true  → 400–3000ms (mob_dead / lệch kênh)
+      - attackCount>0    → max(minFarmDelay~5s, result.nextDelayMs)
+      - empty            → empty_scan_delay
+   5. Log summary 1 dòng (rate-limit)
+
+B. Engine runFarmAuto (rút gọn):
+   1. Xác định tier map (auto theo level/realm acc hoặc override)
+   2. regionPlan: chọn base_code (sect_... theo tier), học available (max 2)
+   3. channelRange: [channel] hoặc [from..to]
+   4. Nếu chưa currentRealm → join 1 candidate (base×channel)
+   5. Snapshot → extract mobs theo priority (boss/elite/normal)
+   6. Pick target (currentMob hoặc shift queue; bỏ blacklist)
+   7. Attack skill_slot=0
+   8. Lỗi:
+      - no_mana → use pill (+ buy) → attack lại trong cùng tick
+      - mob_dead → blacklist ~12s, clear queue, softRescan; streak≥3 leave+xoay kênh
+      - channel/realm → hardRejoin (leave+join); fail streak → xoay kênh
+      - cooldown → chờ attack CD
+   9. Thành công: đếm kill (response + optional snapshot delta)
+  10. Hết mob noMobCount≥N → leave + currentRealm=null → vòng sau kênh khác
+
+C. Giả định quan trọng (CÓ THỂ SAI — cần user xác nhận):
+   [?] realm_code = base_code + "_c" + channel 2 digit (sect_10_tc_c03)
+   [?] 1 character chỉ ở 1 secret realm tại 1 thời điểm
+   [?] Attack chỉ hợp lệ khi đã join đúng realm_id của kênh đó
+   [?] skill_slot=0 là đòn thường, CD server ~5 giây
+   [?] mob_id unique trong realm snapshot; chết → attack lại = mob_dead
+   [?] Không có API "ai đang đánh mob này" → bot không né người (trừ blacklist sau dead)
+   [?] Multi-channel = lần lượt leave/join, không farm song song 2 kênh 1 acc
+   [?] claimMobLock chỉ full app nhiều acc; lite thường KHÔNG lock → dễ cướp mob chung kênh
+
+[USER] Đúng/sai từng dòng C (ghi ĐÚNG / SAI / SỬA):
+--------------------------------------------------------------------------------
+realm_code format:
+1 character 1 realm:
+attack cần join:
+skill_slot 0:
+CD giây:
+mob_id:
+né người:
+multi channel:
+--------------------------------------------------------------------------------
+
+================================================================================
+5) TIER / BASE MAP (nhận dạng code)
+================================================================================
+
+Tier: lk | tc | kd | na | ht | lh
+Code map base lấy từ bảng regions theo tier (sect_*, ... trong farmEngine)
+Custom: realm_code_prefix / template có {channel}
+
+[USER] Acc bạn farm tier nào? base_code đúng trên game (1-2 ví dụ full realm_code):
+--------------------------------------------------------------------------------
+tier:
+realm_code ví dụ kênh 3:
+--------------------------------------------------------------------------------
+
+================================================================================
+6) LỖI ĐÃ XỬ LÝ / CHƯA CHẮC
+================================================================================
+
+ĐÃ CÓ NHÁNH:
+  mob_dead → soft rescan + blacklist + rotate sau 3
+  no_mana → pill + shop buy
+  not_joined / wrong_channel-ish → hard rejoin
+  cooldown
+  snapshot 409 conflict (retry join state)
+
+CÓ THỂ VẪN GÂY "FARM HỎNG":
+  - Pattern lỗi kênh game KHÔNG khớp regex → throw ERROR, dừng cảm giác
+  - softRescan + multi feature (WB/farm) tranh join
+  - join/leave race (409)
+  - pill MP sai tier (pill_lk_mp trên acc tc+)
+  - absolute_boss_only map không boss → chờ mãi
+  - learned available_base_codes sai → kẹt vùng
+  - orchestrator vẫn minFarmDelay khi không softRescan
+
+[USER] Copy 5–20 dòng log FARM khi "bị lỗi farm luôn" (che token):
+--------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------
+
+[USER] Farm hỏng nghĩa là gì với bạn? (tick)
+  [ ] Không attack gì cả
+  [ ] Attack spam mob_dead
+  [ ] Lỗi đỏ ERROR rồi dừng
+  [ ] Đứng 1 kênh không xoay
+  [ ] Vào sai map / không join
+  [ ] Hết MP không uống
+  [ ] Khác: _______________
+
+================================================================================
+7) BIẾN RESPONSE ATTACK (code đọc)
+================================================================================
+
+Kill / HP:
+  mob_hp_after, mob.hp, mob.hp_after, target_hp_after
+Drop:
+  drop_item_code, drop.item_code, reward.item_code
+Speed:
+  attack_speed / similar (attackSpeedSec)
+
+[USER] Paste 1 JSON attack success + 1 attack fail (mob_dead / channel):
+--------------------------------------------------------------------------------
+
+================================================================================
+8) ĐỀ XUẤT REDESIGN (sau khi bạn điền [USER])
+================================================================================
+
+Hướng dự kiến (chưa code lại cho đến khi có capture):
+1. State machine rõ: IDLE → JOIN → SNAPSHOT → ATTACK → (CD|RESCAN|ROTATE)
+2. Mọi lỗi unknown log FULL reason + không kill feature
+3. Channel lock: join xong verify snapshot realm_id khớp
+4. MP: cascade pill tier (lk→lh) giống craft
+5. Tách "farm config tối thiểu": channel + target_order + mp pill
+6. Capture-driven: chỉ handle reason server thật có
+
+================================================================================
+9) CHECKLIST BẠN GỬI LẠI
+================================================================================
+
+[ ] Capture join / leave / snapshot / attack (ok + fail)
+[ ] Message lỗi "không cùng kênh" đúng 100% text
+[ ] realm_code + channel bạn đang farm
+[ ] Setting UI hiện tại
+[ ] 10–20 dòng log khi farm hỏng
+[ ] Trả lời mục 4C (giả định ĐÚNG/SAI)
+[ ] (Tuỳ chọn) video/mô tả 1 vòng farm tay trên client
+
+END OF FILE — bổ sung dưới dòng này cũng được
+================================================================================

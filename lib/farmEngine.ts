@@ -1373,7 +1373,8 @@ async function attackMob(characterId: string, accessToken: string, realmId: stri
     p_realm_id: realmId,
     p_mob_id: mobId,
     p_skill_slot: skillSlot,
-    p_apply_counter: true,
+    // false: không áp phản đòn quái (acc mạnh one-shot / farm an toàn hơn)
+    p_apply_counter: false,
   }, accessToken);
 }
 
