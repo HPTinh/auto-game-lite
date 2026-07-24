@@ -313,7 +313,20 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
     if (featureId === "farm") {
       // Vòng lặp độc lập: mỗi tick farm 1 lần API → hẹn nextDelay (thường ~5s game CD)
       // Không đợi / không nhường World Boss — timer riêng
-      const farmSettings = buildFarmEngineSettings(settings);
+      const farmSettings = buildFarmEngineSettings({
+        ...settings,
+        // Chỉ số acc → auto apply_counter (yếu: true phản đòn · mạnh: false)
+        account_atk: acc.atk,
+        account_power: acc.power,
+        account_level: acc.level,
+        atk: acc.atk,
+        power: acc.power,
+        level: acc.level,
+        account_realm_code: acc.realmCode,
+        realm_code: settings.realm_code || acc.realmCode,
+        realm_label: settings.realm_label || acc.realmLabel,
+        account_realm_label: acc.realmLabel,
+      });
       const result = await runFarmAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,

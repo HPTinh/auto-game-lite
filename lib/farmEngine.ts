@@ -1367,14 +1367,61 @@ async function getRegionChannels(args: {
   return parsed.filter(row => wanted.has(row.channelNo));
 }
 
-async function attackMob(characterId: string, accessToken: string, realmId: string, mobId: string, skillSlot: number) {
+/**
+ * p_apply_counter:
+ * - true  = có phản đòn quái (nick yếu, combat 2 chiều, chờ vòng combat)
+ * - false = không phản (nick mạnh one-shot)
+ * Setting: apply_counter = auto | on/true | off/false
+ * auto: ATK/Power đủ ngưỡng → false, không thì true
+ */
+function resolveApplyCounter(settings: Record<string, any>): { apply: boolean; reason: string } {
+  const raw = settings.apply_counter ?? settings.p_apply_counter ?? settings.apply_counter_mode ?? "auto";
+  const s = String(raw).toLowerCase().trim();
+
+  if (s === "true" || s === "on" || s === "1" || s === "yes" || raw === true) {
+    return { apply: true, reason: "setting_on" };
+  }
+  if (s === "false" || s === "off" || s === "0" || s === "no" || raw === false) {
+    return { apply: false, reason: "setting_off" };
+  }
+
+  // auto
+  const atk = toNumber(firstDefined(settings.account_atk, settings.atk, settings.attack));
+  const power = toNumber(firstDefined(settings.account_power, settings.power, settings.combat_power));
+  const level = toNumber(firstDefined(settings.account_level, settings.level, settings.character_level));
+  // Ngưỡng: chỉnh được; mặc định khá thấp để nick mid+ one-shot dùng false
+  const atkMin = toNumber(settings.strong_atk_threshold) ?? 500_000;
+  const powerMin = toNumber(settings.strong_power_threshold) ?? 1_000_000;
+  const levelMin = toNumber(settings.strong_level_threshold) ?? 25; // ~kd+
+
+  if (atk !== null && atk >= atkMin) return { apply: false, reason: `auto_atk=${atk}≥${atkMin}` };
+  if (power !== null && power >= powerMin) return { apply: false, reason: `auto_power=${power}≥${powerMin}` };
+  if (level !== null && level >= levelMin) return { apply: false, reason: `auto_level=${level}≥${levelMin}` };
+
+  // Không có chỉ số → an toàn cho nick yếu: bật phản đòn
+  if (atk === null && power === null && level === null) {
+    return { apply: true, reason: "auto_no_stats_default_on" };
+  }
+  return {
+    apply: true,
+    reason: `auto_weak(atk=${atk ?? "?"},power=${power ?? "?"},lv=${level ?? "?"})`,
+  };
+}
+
+async function attackMob(
+  characterId: string,
+  accessToken: string,
+  realmId: string,
+  mobId: string,
+  skillSlot: number,
+  applyCounter: boolean
+) {
   return rpc("rpc_attack_realm_mob_v3", {
     p_character_id: characterId,
     p_realm_id: realmId,
     p_mob_id: mobId,
     p_skill_slot: skillSlot,
-    // false: không áp phản đòn quái (acc mạnh one-shot / farm an toàn hơn)
-    p_apply_counter: false,
+    p_apply_counter: applyCounter,
   }, accessToken);
 }
 
@@ -1385,6 +1432,7 @@ async function attackWithMpRecovery(args: {
   realmId: string;
   mobId: string;
   skillSlot: number;
+  applyCounter: boolean;
   autoUseMpPotion: boolean;
   mpPotionItemCode: string;
   autoBuyMpPotion?: boolean;
@@ -1400,6 +1448,7 @@ async function attackWithMpRecovery(args: {
     realmId,
     mobId,
     skillSlot,
+    applyCounter,
     autoUseMpPotion,
     mpPotionItemCode,
     autoBuyMpPotion = true,
@@ -1419,7 +1468,7 @@ async function attackWithMpRecovery(args: {
 
   for (let attempt = 0; attempt <= Math.max(0, maxPotionAttempts); attempt += 1) {
     try {
-      const attackResult = await attackMob(characterId, accessToken, realmId, mobId, skillSlot);
+      const attackResult = await attackMob(characterId, accessToken, realmId, mobId, skillSlot, applyCounter);
       return { attackResult, mpPotionUsedCount, mpPotionFailedCount, mpPotionBoughtCount, mpPotionBuySpent, lastMpPotionResult };
     } catch (error: any) {
       if (!isNotEnoughMpError(error) || !autoUseMpPotion) throw error;
@@ -1847,6 +1896,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const mpPotionBuyQty = resolveMpBuyQty(settings.mp_potion_buy_qty ?? 10);
   const mpPotionShopCode = String(settings.mp_potion_shop_code || "alchemy").trim() || "alchemy";
   const verifyFarmKillWithSnapshot = settings.verify_farm_kill_with_snapshot !== false;
+  const applyCounterResolved = resolveApplyCounter(settings);
+  const applyCounter = applyCounterResolved.apply;
 
   const errors: string[] = [];
   const regionSource = regionPlan(runtime, settings);
@@ -1882,6 +1933,10 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const smartQuestDone = mode === "smart" && quest?.extracted?.done === true;
   const questNeededTypes = quest?.extracted?.needed || [];
   const neededTypes = orderedTypesForMode(mode, priority, quest?.extracted ? { needed: quest.extracted.needed, done: quest.extracted.done } : null);
+  onLog?.(
+    "DEBUG",
+    `Farm apply_counter=${applyCounter} (${applyCounterResolved.reason}) · ${applyCounter ? "có phản đòn — nick yếu" : "không phản — nick mạnh/one-shot"}`
+  );
   const effectiveMode: FarmRunSummary["effectiveMode"] = smartQuestDone
     ? (stopSmartWhenQuestDone ? "smart_done_stopped" : "all_after_smart_done")
     : mode;
@@ -2242,6 +2297,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             realmId: realm.realmId,
             mobId: next.target.id,
             skillSlot,
+            applyCounter,
             autoUseMpPotion,
             mpPotionItemCode,
             autoBuyMpPotion,
@@ -2280,6 +2336,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
                   realmId: runtime.currentRealm.realmId,
                   mobId: next.target.id,
                   skillSlot,
+                  applyCounter,
                   autoUseMpPotion,
                   mpPotionItemCode,
                   autoBuyMpPotion,

@@ -103,6 +103,15 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     smart_stop_when_quest_done: false,
     mob_cache_max_age_ms: 3000,
     no_mob_before_rotate: 1,
+    /**
+     * Phản đòn quái (p_apply_counter):
+     * auto = nick mạnh (ATK/Power/level) → false; nick yếu → true
+     * on = luôn phản · off = không phản
+     */
+    apply_counter: "auto",
+    strong_atk_threshold: 500000,
+    strong_power_threshold: 1000000,
+    strong_level_threshold: 25,
   },
   pvp: {
     /** Số trận tối đa / ngày (user nhập) — free và PK đều nằm trong trần này */
