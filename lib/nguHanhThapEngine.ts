@@ -5,7 +5,7 @@
  * - rpc_tower_get_status  { p_character_id } → highest_cleared, sweep_charges, floors[]
  * - rpc_tower_challenge_floor { p_character_id, p_floor_number }
  * - rpc_tower_sweep { p_character_id } — càn quét free (sweep_charges)
- * - hết STA → rpc_use_item pill_{tier}_sta
+ * - hết STA → rpc_use_item pill lk→lh (thấp→cao)
  *
  * Vòng lặp ngày:
  * 1) Lấy status → biết highest / tầng kế
@@ -13,6 +13,8 @@
  * 3) Thua / không leo được → càn quét free 1 lần (nếu còn charge)
  * 4) Chờ 00:00 VN → ngày mới lặp lại
  */
+
+import { tryUsePillsLowToHigh } from "./pillUse";
 
 export type TowerLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
 
@@ -72,9 +74,6 @@ export interface TowerAutoOptions {
 const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
 const GAME_API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
 
-const TIER_ORDER = ["lk", "tc", "kd", "na", "ht", "lh"] as const;
-type PillTier = (typeof TIER_ORDER)[number];
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 
 const clamp = (n: number, min: number, max: number, fallback: number) => {
@@ -128,31 +127,6 @@ async function rpc(name: string, payload: Record<string, any>, accessToken: stri
     throw err;
   }
   return data;
-}
-
-function normalizePillTier(raw: any, fallback: PillTier = "tc"): PillTier {
-  const t = String(raw || "").toLowerCase().trim();
-  if ((TIER_ORDER as readonly string[]).includes(t)) return t as PillTier;
-  return fallback;
-}
-
-function staminaItemCode(settings: Record<string, any>): string {
-  const custom = String(settings.stamina_item_code || "").trim();
-  if (custom) return custom;
-  const tier = normalizePillTier(settings.stamina_pill_tier || settings.realm_tier || "tc");
-  return `pill_${tier}_sta`;
-}
-
-function isUseItemOk(used: any): boolean {
-  if (!used || typeof used !== "object") return false;
-  if (used.ok === false) return false;
-  const reason = reasonOf(used);
-  if (reason && /not_found|missing|no_item|item_not|insufficient|not_enough|không|het|hết|fail|error|invalid/.test(reason)) {
-    return false;
-  }
-  if (used.used || used.item_code || used.itemCode) return true;
-  if (used.heal_stamina != null || used.stamina_after != null) return true;
-  return used.ok === true;
 }
 
 function isStaminaError(msg: string, data?: any): boolean {
@@ -289,35 +263,35 @@ export async function runNguHanhThapAuto(options: TowerAutoOptions): Promise<Tow
       display_highest: summary.highestFloor,
       display_next: summary.nextFloor,
       display_sweep_charges: summary.sweepCharges,
+      ...(preferredStaPill ? { last_sta_pill: preferredStaPill } : {}),
     };
     return summary;
   };
 
+  /** Nhớ pill đã OK → thử trước, vẫn cascade lk→lh */
+  let preferredStaPill = String(settings.last_sta_pill || "").trim() || undefined;
+
   const useStaPill = async () => {
-    const itemCode = staminaItemCode(settings);
-    onLog?.("WARN", `Tháp hết STA → rpc_use_item ${itemCode}`);
-    let used: any;
-    try {
-      used = await rpc(
-        "rpc_use_item",
-        { p_character_id: options.characterId, p_item_code: itemCode },
-        options.accessToken
-      );
-    } catch (err: any) {
-      used = err?.data || { ok: false, reason: err?.message || "use_item_error" };
+    onLog?.("WARN", `Tháp hết STA → thử đan thấp→cao (pill_lk_sta → … → pill_lh_sta)`);
+    const result = await tryUsePillsLowToHigh({
+      kind: "stamina",
+      settings,
+      preferredCode: preferredStaPill,
+      sleepMs: 700,
+      rpcUse: (itemCode) =>
+        rpc("rpc_use_item", { p_character_id: options.characterId, p_item_code: itemCode }, options.accessToken),
+      onLog: (level, message, meta) => {
+        if (level === "DEBUG") onLog?.("DEBUG", message, meta);
+        else onLog?.(level, message, meta);
+      },
+    });
+    for (const t of result.tried) {
+      usedItems.push({ itemCode: t.itemCode, ok: t.ok, raw: t.raw });
     }
-    const ok = isUseItemOk(used);
-    usedItems.push({ itemCode, ok, raw: used });
-    if (!ok) onLog?.("WARN", `Dùng ${itemCode} fail: ${reasonOf(used) || "unknown"}`);
-    else {
-      const extra =
-        used?.heal_stamina != null
-          ? ` · +${used.heal_stamina} STA → ${used.stamina_after ?? "?"}/${used.stamina_max ?? "?"}`
-          : "";
-      onLog?.("SUCCESS", `Đã dùng ${itemCode}${extra}`);
+    if (result.ok && result.itemCode) {
+      preferredStaPill = result.itemCode;
     }
-    await sleep(700);
-    return ok;
+    return result.ok;
   };
 
   const doSweep = async (charges: number) => {

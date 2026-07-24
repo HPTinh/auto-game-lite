@@ -1,3 +1,5 @@
+import { tryUsePillsLowToHigh, type PillKind } from "./pillUse";
+
 export type CraftTierCode = "lk" | "tc" | "kd" | "na" | "ht" | "lh" | "unknown";
 export type CraftStatus = "SUCCESS" | "RATE_FAILED" | "PAUSED" | "ERROR" | "SKIPPED";
 export type CraftRecoveryKind = "material" | "stamina" | "spirit" | "unknown";
@@ -348,50 +350,6 @@ const recoveryKindsForReason = (reason: string): CraftRecoveryKind[] => {
   return kinds.length ? kinds : ["unknown"];
 };
 
-/** Tier pill hồi: lk / tc / kd / na / ht / lh (use_item: pill_{tier}_sta | pill_{tier}_spirit) */
-const normalizePillTier = (raw: any, fallback: CraftTierCode = "tc"): CraftTierCode => {
-  const t = String(raw || "").toLowerCase().trim();
-  if (TIER_ORDER.includes(t as CraftTierCode)) return t as CraftTierCode;
-  return TIER_ORDER.includes(fallback) ? fallback : "tc";
-};
-
-/**
- * Mã đan hồi:
- * - Ưu tiên item_code custom (stamina_item_code / spirit_item_code) nếu user gõ tay
- * - Không thì pill_{stamina_pill_tier}_sta / pill_{spirit_pill_tier}_spirit
- * - Tier pill mặc định: setting riêng → tier recipe → tc
- */
-const recoveryItemCode = (kind: CraftRecoveryKind, recipeTier: CraftTierCode, settings: Record<string, any>) => {
-  const recipeSafe = normalizePillTier(recipeTier, "tc");
-  if (kind === "stamina") {
-    const custom = String(settings.stamina_item_code || settings.recover_stamina_item_code || "").trim();
-    if (custom) return custom;
-    const tier = normalizePillTier(settings.stamina_pill_tier || settings.sta_pill_tier || settings.sta_tier, recipeSafe);
-    return `pill_${tier}_sta`;
-  }
-  if (kind === "spirit") {
-    const custom = String(settings.spirit_item_code || settings.soul_item_code || settings.recover_spirit_item_code || "").trim();
-    if (custom) return custom;
-    const tier = normalizePillTier(settings.spirit_pill_tier || settings.soul_pill_tier || settings.spirit_tier, recipeSafe);
-    return `pill_${tier}_spirit`;
-  }
-  return "";
-};
-
-/** use_item.txt: success trả { used, heal_stamina, heal_spirit, ... } — thường không có ok:true */
-const isUseItemOk = (used: any): boolean => {
-  if (!used || typeof used !== "object") return false;
-  if (used.ok === false) return false;
-  const reason = String(used.reason || used.error || used.message || "").toLowerCase();
-  if (reason && /not_found|missing|no_item|item_not|insufficient|not_enough|không|het|hết|fail|error|invalid/.test(reason)) {
-    return false;
-  }
-  if (used.used || used.item_code || used.itemCode) return true;
-  if (used.heal_stamina != null || used.heal_spirit != null) return true;
-  if (used.stamina_after != null || used.spirit_after != null) return true;
-  return used.ok === true;
-};
-
 const analyzeCraftData = (data: any): CraftAnalysis => {
   const successCount = Number(data?.success ?? data?.success_count ?? 0) || 0;
   const failCount = Number(data?.fail ?? data?.fail_count ?? 0) || 0;
@@ -580,35 +538,34 @@ export const runCraftAuto = async ({
     return opened;
   };
 
+  /** Nhớ mã đan đã OK trong phiên → lần sau thử trước, vẫn fallback thấp→cao */
+  const preferredPill: Partial<Record<"stamina" | "spirit", string>> = {};
+
   const useRecoveryItem = async (kind: CraftRecoveryKind) => {
-    const itemCode = recoveryItemCode(kind, tierCode, settings);
-    if (!itemCode) return { ok: false, reason: "missing_recovery_item_code" };
+    if (kind !== "stamina" && kind !== "spirit") {
+      return { ok: false, reason: "unsupported_recovery_kind" };
+    }
+    const pillKind = kind as PillKind;
     const label = kind === "spirit" ? "thần hồn/linh khí" : "thể lực (STA)";
-    onLog?.("WARN", `Craft thiếu ${label} → rpc_use_item ${itemCode}`, { recipeCode, itemCode, kind });
-    let used: any;
-    try {
-      // use_item.txt: { p_character_id, p_item_code: "pill_lk_sta" | "pill_tc_spirit" }
-      used = await rpc(accessToken, "rpc_use_item", { p_character_id: characterId, p_item_code: itemCode });
-    } catch (err: any) {
-      used = err?.data || { ok: false, reason: err?.message || "use_item_error" };
+    onLog?.("WARN", `Craft thiếu ${label} → thử đan thấp→cao (lk→…→lh)`, { recipeCode, kind });
+
+    const result = await tryUsePillsLowToHigh({
+      kind: pillKind,
+      settings,
+      preferredCode: preferredPill[pillKind],
+      sleepMs: retryDelayMs,
+      rpcUse: (itemCode) => rpc(accessToken, "rpc_use_item", { p_character_id: characterId, p_item_code: itemCode }),
+      onLog: (level, message, meta) => onLog?.(level === "DEBUG" ? "DEBUG" : level, message, meta),
+    });
+
+    for (const t of result.tried) {
+      usedItems.push({ itemCode: t.itemCode, ok: t.ok, raw: t.raw });
     }
-    const ok = isUseItemOk(used);
-    usedItems.push({ itemCode, ok, raw: used });
-    if (!ok) {
-      onLog?.("WARN", `Dùng ${itemCode} thất bại: ${reasonOf(used) || used?.message || "unknown"} (hết pill / sai mã?).`, { used });
-    } else {
-      const healSta = used?.heal_stamina;
-      const healSpi = used?.heal_spirit;
-      const extra =
-        kind === "stamina" && healSta != null
-          ? ` · +${healSta} STA → ${used?.stamina_after ?? "?"}/${used?.stamina_max ?? "?"}`
-          : kind === "spirit" && healSpi != null
-            ? ` · +${healSpi} spirit → ${used?.spirit_after ?? "?"}/${used?.spirit_max ?? "?"}`
-            : "";
-      onLog?.("SUCCESS", `Đã dùng ${itemCode}${extra}`, { used });
+    if (result.ok && result.itemCode) {
+      preferredPill[pillKind] = result.itemCode;
+      return { ...(result.used || {}), ok: true, itemCode: result.itemCode };
     }
-    await sleep(retryDelayMs);
-    return { ...used, ok };
+    return { ok: false, reason: "no_pill_worked" };
   };
 
   /** Uống đan (có thể nhiều viên) rồi craft lại cho đến khi OK / hết lý do thiếu / hết pill */

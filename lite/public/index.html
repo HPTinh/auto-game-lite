@@ -241,9 +241,7 @@
         {k:"pause_on_fail_minutes",l:"Nghỉ khi lỗi (phút)",t:"number",min:1},
         {k:"auto_load_recipes",l:"Tự tải list nếu rỗng",t:"bool"},
         {k:"auto_open_containers",l:"Thiếu NL → mở rương",t:"bool"},
-        {k:"auto_use_recovery_items",l:"Thiếu STA/thần hồn → dùng đan",t:"bool"},
-        {k:"stamina_pill_tier",l:"Tier đan STA (pill_X_sta)",t:"select",o:["lk","tc","kd","na","ht","lh"]},
-        {k:"spirit_pill_tier",l:"Tier đan thần hồn (pill_X_spirit)",t:"select",o:["lk","tc","kd","na","ht","lh"]},
+        {k:"auto_use_recovery_items",l:"Thiếu STA/thần hồn → đan thấp→cao",t:"bool"},
         {k:"max_recovery_uses",l:"Tối đa viên uống / lần thiếu",t:"number",min:1,max:30},
       ],
       body_cult: [
@@ -263,7 +261,6 @@
         {k:"display_sweep_charges",l:"Càn quét free còn (tự)",t:"number",min:0},
         {k:"lost_today",l:"Đã thua hôm nay — chờ 00h (tự)",t:"bool"},
         {k:"swept_today",l:"Đã càn quét hôm nay (tự)",t:"bool"},
-        {k:"stamina_pill_tier",l:"Tier đan STA khi hết",t:"select",o:["lk","tc","kd","na","ht","lh"]},
       ],
     };
 
@@ -684,27 +681,13 @@
         </div>
         <div class="f chk"><input type="checkbox" data-k="auto_load_recipes" ${bool("auto_load_recipes", true)?"checked":""}/><label>Tự tải list nếu cache rỗng khi Start</label></div>
         <div class="f chk"><input type="checkbox" data-k="auto_open_containers" ${bool("auto_open_containers", true)?"checked":""}/><label>Thiếu nguyên liệu → mở rương</label></div>
-        <div class="f chk"><input type="checkbox" data-k="auto_use_recovery_items" ${bool("auto_use_recovery_items", true)?"checked":""}/><label>Thiếu STA / thần hồn → dùng đan (rpc_use_item)</label></div>
-        <div class="grid2">
-          <div class="f">
-            <label>Tier đan STA · pill_X_sta</label>
-            <select data-k="stamina_pill_tier">
-              ${["lk","tc","kd","na","ht","lh"].map(t => `<option value="${t}" ${(draft.stamina_pill_tier||"tc")===t?"selected":""}>${t} → pill_${t}_sta</option>`).join("")}
-            </select>
-          </div>
-          <div class="f">
-            <label>Tier đan thần hồn · pill_X_spirit</label>
-            <select data-k="spirit_pill_tier">
-              ${["lk","tc","kd","na","ht","lh"].map(t => `<option value="${t}" ${(draft.spirit_pill_tier||"tc")===t?"selected":""}>${t} → pill_${t}_spirit</option>`).join("")}
-            </select>
-          </div>
-        </div>
+        <div class="f chk"><input type="checkbox" data-k="auto_use_recovery_items" ${bool("auto_use_recovery_items", true)?"checked":""}/><label>Thiếu STA / thần hồn → đan thấp→cao (lk→tc→…→lh)</label></div>
         <div class="f">
           <label>Tối đa viên uống / lần thiếu (1 viên có thể +5 STA)</label>
           <input data-k="max_recovery_uses" type="number" min="1" max="30" value="${esc(draft.max_recovery_uses ?? 8)}" />
         </div>
         <div class="mu" style="font-size:11px;color:#9ca3af;margin-top:4px">
-          VD: STA <b>pill_${esc(draft.stamina_pill_tier||"tc")}_sta</b> · spirit <b>pill_${esc(draft.spirit_pill_tier||"tc")}_spirit</b> · use_item.txt
+          Tự thử <b>pill_lk_sta/spirit</b> → tc → kd → na → ht → lh · hết cấp thấp mới dùng cấp cao
         </div>
         <input type="hidden" data-k="selected_output_code" id="craftOut" value="${esc(draft.selected_output_code||"")}" />
         <input type="hidden" data-k="selected_recipe_tier" id="craftSelTier" value="${esc(draft.selected_recipe_tier||"")}" />
