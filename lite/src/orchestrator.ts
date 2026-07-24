@@ -315,7 +315,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       // Không đợi / không nhường World Boss — timer riêng
       const farmSettings = buildFarmEngineSettings({
         ...settings,
-        // Chỉ số acc → auto apply_counter (yếu: true phản đòn · mạnh: false)
+        // Realm/level acc → auto map tier (khi override=auto)
         account_atk: acc.atk,
         account_power: acc.power,
         account_level: acc.level,
