@@ -943,17 +943,15 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
 
       const attackFocus =
-        result.phase === "attack" && result.flagId
-          ? result.flagId
-          : result.phase === "attack"
-            ? null
-            : settings.focus_attack_flag_id ?? null;
+        result.phase === "attack" || result.phase === "break_flag"
+          ? result.flagId ?? result.focusFlagId ?? settings.focus_attack_flag_id ?? null
+          : settings.focus_attack_flag_id ?? null;
 
       store.setFeature(accountId, "hoang_co", {
         settings: {
           ...settings,
           focus_flag_id:
-            result.phase === "expand" || result.phase === "defend"
+            result.phase === "expand" || result.phase === "defend" || result.phase === "break_flag"
               ? result.focusFlagId ?? settings.focus_flag_id ?? null
               : settings.focus_flag_id ?? null,
           focus_attack_flag_id: attackFocus,
@@ -967,22 +965,26 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         errMsg = result.reason || "Hoàng Cổ error";
       } else {
         const phaseLabel =
-          result.phase === "defend"
-            ? "Thủ cờ"
-            : result.phase === "defend_mine"
-              ? "Thủ central"
-              : result.phase === "expand"
-                ? "Mở rộng"
-                : result.phase === "attack"
-                  ? "Phá"
-                  : result.phase === "attack_central"
-                    ? "Công central"
-                    : "";
+          result.phase === "break_flag"
+            ? "Phá cờ (cắm→xây→phá)"
+            : result.phase === "defend"
+              ? "Thủ cờ"
+              : result.phase === "defend_mine"
+                ? "Thủ central"
+                : result.phase === "expand"
+                  ? "Mở rộng"
+                  : result.phase === "attack"
+                    ? "Phá"
+                    : result.phase === "attack_central"
+                      ? "Công central"
+                      : "";
         const lvl =
           (result.placed || 0) > 0 ||
           (result.built || 0) > 0 ||
           result.action === "siege_flag_defend" ||
           result.action === "siege_flag_attack" ||
+          result.action === "place_flag" ||
+          result.action === "start_build" ||
           result.action === "defend_mine" ||
           result.action === "defend_central" ||
           result.action === "attack_central_hold" ||

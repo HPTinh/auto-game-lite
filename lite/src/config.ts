@@ -283,6 +283,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   body_cult: { auto_start: true, body_cult_element: "metal", body_cult_session_type: "long" },
   /** Hoàng Cổ: central Thủ(còn lock) → Công(hết lock) → Thủ lại */
   hoang_co: {
+    /**
+     * Phá cờ (cắm → xây → phá cờ địch gần nhất).
+     * Bật cái này → chỉ chạy mission phá; tắt mới dùng mở rộng/thủ/central bên dưới.
+     */
+    auto_break_flag: false,
     auto_place: true,
     auto_build: true,
     auto_defend: true,

@@ -36,5 +36,6 @@ export {
   runHoangCoDefendMineAuto,
   runHoangCoAttackAuto,
   runHoangCoAttackCentralAuto,
+  runHoangCoBreakFlagAuto,
 } from "../../lib/hoangCoEngine";
 export { runNguHanhThapAuto } from "../../lib/nguHanhThapEngine";
