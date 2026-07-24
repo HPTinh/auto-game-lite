@@ -1452,13 +1452,82 @@ function getMobMaxHp(raw: any): number | null {
   return toNumber(firstDefined(raw?.hp_max, raw?.max_hp, raw?.maxHp, raw?.health_max, raw?.max_health, raw?.hpMax));
 }
 
-/** Attack — không gửi p_apply_counter (default server) */
+/**
+ * p_apply_counter: luôn gửi true|false (không omit).
+ * Học tự động theo kênh — không setting tay:
+ * - mặc định false
+ * - đã học kênh này → dùng
+ * - đổi kênh → mang giá trị kênh trước (last), nếu farm không kill → đảo & lưu kênh mới
+ */
+function getApplyCounterByChannel(settings: Record<string, any>): Record<string, boolean> {
+  const raw = settings.learned_apply_counter_by_channel;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === true || v === false) out[String(k)] = v;
+  }
+  return out;
+}
+
+function channelCounterKey(channelNo: number | undefined | null): string {
+  const n = Math.floor(Number(channelNo));
+  if (Number.isFinite(n) && n > 0) return `c${n}`;
+  return "c_default";
+}
+
+function resolveApplyCounterForChannel(
+  settings: Record<string, any>,
+  channelNo?: number | null
+): { apply: boolean; reason: string; key: string; fromCarry: boolean } {
+  const key = channelCounterKey(channelNo);
+  const map = getApplyCounterByChannel(settings);
+
+  // Kênh này đã học
+  if (Object.prototype.hasOwnProperty.call(map, key) && (map[key] === true || map[key] === false)) {
+    return { apply: map[key], reason: `learned_${key}=${map[key]}`, key, fromCarry: false };
+  }
+
+  // Đổi kênh: mang giá trị last (vd c7=true → c6 thử true trước)
+  if (settings.learned_apply_counter === true || settings.learned_apply_counter === false) {
+    return {
+      apply: settings.learned_apply_counter === true,
+      reason: `carry_last=${settings.learned_apply_counter}`,
+      key,
+      fromCarry: true,
+    };
+  }
+
+  // Acc mới: mặc định false
+  return { apply: false, reason: "default_false", key, fromCarry: false };
+}
+
+function questProgressFingerprint(questData: any): string {
+  if (!questData) return "";
+  const extracted = extractQuestNeededTypes(questData);
+  const c = (extracted as any)?.raw?.counters;
+  if (!c) {
+    // fallback deep-ish
+    return JSON.stringify({
+      n: questData?.quest?.mobs_killed ?? questData?.mobs_killed,
+      e: questData?.quest?.elites_killed ?? questData?.elites_killed,
+      b: questData?.quest?.bosses_killed ?? questData?.bosses_killed,
+    });
+  }
+  return JSON.stringify({
+    n: c.normal?.current,
+    e: c.elite?.current,
+    b: c.boss?.current,
+  });
+}
+
+/** Attack — luôn gửi p_apply_counter true|false */
 async function attackMob(
   characterId: string,
   accessToken: string,
   realmId: string,
   mobId: string,
-  skillSlot: number
+  skillSlot: number,
+  applyCounter: boolean
 ) {
   return rpc(
     "rpc_attack_realm_mob_v3",
@@ -1467,6 +1536,7 @@ async function attackMob(
       p_realm_id: realmId,
       p_mob_id: mobId,
       p_skill_slot: skillSlot,
+      p_apply_counter: applyCounter === true,
     },
     accessToken
   );
@@ -1479,6 +1549,7 @@ async function attackWithMpRecovery(args: {
   realmId: string;
   mobId: string;
   skillSlot: number;
+  applyCounter: boolean;
   autoUseMpPotion: boolean;
   settings?: Record<string, any>;
   autoBuyMpPotion?: boolean;
@@ -1494,6 +1565,7 @@ async function attackWithMpRecovery(args: {
     realmId,
     mobId,
     skillSlot,
+    applyCounter,
     autoUseMpPotion,
     settings = {},
     autoBuyMpPotion = true,
@@ -1513,7 +1585,7 @@ async function attackWithMpRecovery(args: {
 
   for (let attempt = 0; attempt <= Math.max(0, maxPotionAttempts); attempt += 1) {
     try {
-      const attackResult = await attackMob(characterId, accessToken, realmId, mobId, skillSlot);
+      const attackResult = await attackMob(characterId, accessToken, realmId, mobId, skillSlot, applyCounter);
       return { attackResult, mpPotionUsedCount, mpPotionFailedCount, mpPotionBoughtCount, mpPotionBuySpent, lastMpPotionResult };
     } catch (error: any) {
       if (!isNotEnoughMpError(error) || !autoUseMpPotion) throw error;
@@ -1964,6 +2036,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const mpPotionBuyQty = resolveMpBuyQty(settings.mp_potion_buy_qty ?? 10);
   const mpPotionShopCode = String(settings.mp_potion_shop_code || "alchemy").trim() || "alchemy";
   const verifyFarmKillWithSnapshot = settings.verify_farm_kill_with_snapshot !== false;
+  /** Số hit không kill → đảo p_apply_counter (mặc định 3) */
+  const noKillFlipAfter = Math.max(2, Math.min(10, Number(settings.apply_counter_no_kill_flip_after || 3) || 3));
 
   const errors: string[] = [];
   const regionSource = regionPlan(runtime, settings);
@@ -1990,10 +2064,46 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   let lastTarget: FarmAttackSummary | undefined;
   let questProgress: any = undefined;
 
+  // p_apply_counter: học theo kênh, mặc định false, mang last khi đổi kênh
+  const learnedByChannel = getApplyCounterByChannel(settings);
+  let applyCounterResolved = resolveApplyCounterForChannel(
+    settings,
+    Number(settings.channel || settings.from_channel) || undefined
+  );
+  let applyCounter = applyCounterResolved.apply;
+  let applyCounterKey = applyCounterResolved.key;
+  let noKillStreak = 0;
+  let persistFarm: Record<string, any> = {
+    learned_apply_counter_by_channel: { ...learnedByChannel },
+    learned_apply_counter:
+      settings.learned_apply_counter === true || settings.learned_apply_counter === false
+        ? settings.learned_apply_counter
+        : applyCounter,
+  };
+
+  const saveApplyCounter = (value: boolean, key: string, why: string) => {
+    learnedByChannel[key] = value;
+    applyCounter = value;
+    applyCounterKey = key;
+    noKillStreak = 0;
+    persistFarm = {
+      learned_apply_counter_by_channel: { ...learnedByChannel },
+      learned_apply_counter: value,
+      apply_counter_last_channel: key,
+      apply_counter_last_value: value,
+    };
+    onLog?.(
+      "SUCCESS",
+      `Farm học p_apply_counter=${value} · ${key} · ${why} · đã lưu (đổi kênh mang theo, fail mới check lại)`
+    );
+  };
+
   let quest: any = null;
+  let questFpBefore = "";
   if (mode === "smart" || smartRebirthEnabled) {
     quest = await loadQuestProgress(characterId, accessToken, runtime, onLog);
     questProgress = quest?.data;
+    questFpBefore = questProgressFingerprint(quest?.data);
   }
   const stopSmartWhenQuestDone = mode === "smart" && settings.smart_stop_when_quest_done === true;
   const smartQuestDone = mode === "smart" && quest?.extracted?.done === true;
@@ -2001,7 +2111,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const neededTypes = orderedTypesForMode(mode, priority, quest?.extracted ? { needed: quest.extracted.needed, done: quest.extracted.done } : null);
   onLog?.(
     "INFO",
-    `Farm · attack omit p_apply_counter · MP uống lk→lh · mua shop ${mpBuyItemCode(settings)} · free_mobs · snap sau kill`
+    `Farm · p_apply_counter=${applyCounter} (${applyCounterResolved.reason}) · MP lk→lh · mua ${mpBuyItemCode(settings)} · free_mobs · snap sau kill`
   );
   const effectiveMode: FarmRunSummary["effectiveMode"] = smartQuestDone
     ? (stopSmartWhenQuestDone ? "smart_done_stopped" : "all_after_smart_done")
@@ -2357,12 +2467,22 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         const beforeAttackSummary = runtime.lastSnapshotSummary;
         let attackResult: any;
         try {
+          // Đồng bộ counter theo kênh hiện tại (đổi kênh → carry last hoặc learned)
+          {
+            const r = resolveApplyCounterForChannel(
+              { ...settings, learned_apply_counter_by_channel: learnedByChannel, learned_apply_counter: persistFarm.learned_apply_counter },
+              realm.channelNo
+            );
+            applyCounter = r.apply;
+            applyCounterKey = r.key;
+          }
           const attack = await attackWithMpRecovery({
             characterId,
             accessToken,
             realmId: realm.realmId,
             mobId: next.target.id,
             skillSlot,
+            applyCounter,
             autoUseMpPotion,
             settings,
             autoBuyMpPotion,
@@ -2395,12 +2515,19 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             const ok = await hardRejoinRealm({ characterId, accessToken, runtime, onLog });
             if (ok && runtime.currentRealm?.realmId && !isMobBlacklisted(runtime, next.target.id)) {
               try {
+                const r2 = resolveApplyCounterForChannel(
+                  { ...settings, learned_apply_counter_by_channel: learnedByChannel, learned_apply_counter: persistFarm.learned_apply_counter },
+                  runtime.currentRealm.channelNo
+                );
+                applyCounter = r2.apply;
+                applyCounterKey = r2.key;
                 const attack = await attackWithMpRecovery({
                   characterId,
                   accessToken,
                   realmId: runtime.currentRealm.realmId,
                   mobId: next.target.id,
                   skillSlot,
+                  applyCounter,
                   autoUseMpPotion,
                   settings,
                   autoBuyMpPotion,
@@ -2737,6 +2864,28 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
           if (next.target.kind === "boss") killedBossCount += 1;
           else if (next.target.kind === "elite") killedEliteCount += 1;
           else if (next.target.kind === "normal") killedNormalCount += 1;
+          // Kill OK → khóa giá trị counter cho kênh này
+          noKillStreak = 0;
+          const ck = channelCounterKey(realm.channelNo);
+          if (learnedByChannel[ck] !== applyCounter) {
+            saveApplyCounter(applyCounter, ck, "kill_ok");
+          } else {
+            // vẫn cập nhật last global
+            persistFarm = {
+              ...persistFarm,
+              learned_apply_counter: applyCounter,
+              learned_apply_counter_by_channel: { ...learnedByChannel, [ck]: applyCounter },
+            };
+            learnedByChannel[ck] = applyCounter;
+          }
+        } else {
+          // Không kill → đếm streak; đủ N hit → đảo true/false & lưu kênh
+          noKillStreak += 1;
+          if (noKillStreak >= noKillFlipAfter) {
+            const ck = channelCounterKey(realm.channelNo);
+            const flipped = !applyCounter;
+            saveApplyCounter(flipped, ck, `no_kill_x${noKillStreak}`);
+          }
         }
 
         if (observed.observedKind) {
@@ -2843,6 +2992,29 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     onLog?.("ERROR", error?.message || "Farm quái lỗi không xác định.", error?.data || { message: error?.message });
   }
 
+  // smart_rebirth: đã attack nhưng không kill / quest không tăng → đảo counter
+  if (
+    smartRebirthEnabled &&
+    attackCount > 0 &&
+    killedCount === 0 &&
+    !shouldStop?.()
+  ) {
+    try {
+      runtime.lastQuestAt = 0;
+      const q2 = await loadQuestProgress(characterId, accessToken, runtime, onLog);
+      const fp2 = questProgressFingerprint(q2?.data);
+      if (questFpBefore && fp2 && fp2 === questFpBefore) {
+        const ch = runtime.currentRealm?.channelNo ?? Number(settings.channel || settings.from_channel) || 0;
+        const ck = channelCounterKey(ch);
+        if (learnedByChannel[ck] === undefined || noKillStreak >= 1) {
+          saveApplyCounter(!applyCounter, ck, "quest_progress_stuck");
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   const status: FarmRunSummary["status"] = shouldStop?.()
     ? "WAITING"
     : attackCount > 0
@@ -2882,6 +3054,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     scannedRealmCount,
     lastTarget,
     nextDelayMs: attackCount > 0 ? nextAttackDelayMs : emptyScanDelayMs,
+    persist: persistFarm,
     errors,
     questProgress: undefined,
   };

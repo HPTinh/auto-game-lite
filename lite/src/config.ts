@@ -105,6 +105,15 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     no_mob_before_rotate: 1,
     /** Chỉ farm mob sống + không bị đánh (HP full / không combat flag) */
     prefer_free_mobs: true,
+    /**
+     * p_apply_counter tự học theo kênh (không chỉnh tay):
+     * default false → không kill / quest không tăng → đảo true/false → lưu
+     * đổi kênh: mang last; fail mới học lại
+     */
+    learned_apply_counter: null,
+    learned_apply_counter_by_channel: {},
+    /** Số hit không kill rồi đảo counter (mặc định 3) */
+    apply_counter_no_kill_flip_after: 3,
   },
   pvp: {
     /** Số trận tối đa / ngày (user nhập) — free và PK đều nằm trong trần này */

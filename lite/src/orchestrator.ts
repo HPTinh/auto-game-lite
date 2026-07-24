@@ -351,6 +351,19 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           Number(farmSettings.empty_scan_delay_ms || 4000)
         );
       }
+      // Lưu p_apply_counter đã học theo kênh (không setting tay)
+      if (result.persist && typeof result.persist === "object") {
+        store.setFeature(accountId, "farm", {
+          settings: {
+            ...settings,
+            ...result.persist,
+            learned_apply_counter_by_channel: {
+              ...(settings.learned_apply_counter_by_channel || {}),
+              ...(result.persist.learned_apply_counter_by_channel || {}),
+            },
+          },
+        });
+      }
       const line = farmCycleSummary(result, farmSettings);
       if (result.status === "ERROR") {
         status = "error";
