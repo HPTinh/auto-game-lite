@@ -77,6 +77,8 @@ export interface FarmRunSummary {
    */
   softRescan?: boolean;
   rescanReason?: string;
+  /** Lưu setting farm (learned counter, không cần chỉnh tay) */
+  persist?: Record<string, any>;
   errors: string[];
   questProgress?: any;
 }
@@ -1288,6 +1290,14 @@ async function hardRejoinRealm(args: {
     }
     runtime.currentRealm = { ...cur, realmId };
     onLog?.("INFO", `Farm rejoin kênh ${cur.channelNo} · ${cur.realmCode}`);
+    await setGameCombatAutoConfig({
+      characterId,
+      accessToken,
+      realmCode: cur.realmCode,
+      realmName: cur.label || cur.realmCode,
+      enabled: true,
+      onLog,
+    });
     return true;
   } catch (e: any) {
     onLog?.("WARN", `Farm rejoin fail ${cur.realmCode}: ${(e?.message || e).toString().slice(0, 120)}`);
@@ -1368,44 +1378,92 @@ async function getRegionChannels(args: {
 }
 
 /**
- * p_apply_counter:
- * - true  = có phản đòn quái (nick yếu, combat 2 chiều, chờ vòng combat)
- * - false = không phản (nick mạnh one-shot)
- * Setting: apply_counter = auto | on/true | off/false
- * auto: ATK/Power đủ ngưỡng → false, không thì true
+ * p_apply_counter — không bắt buộc chỉnh tay:
+ * 1) setting on/off (override hiếm)
+ * 2) đã học theo realm_code (learned_apply_counter_by_realm) → dùng lại
+ * 3) chưa học → probe: đánh thử false; one-shot → false; còn sống → true; lưu
  */
-function resolveApplyCounter(settings: Record<string, any>): { apply: boolean; reason: string } {
+function getLearnedCounterMap(settings: Record<string, any>): Record<string, boolean> {
+  const raw = settings.learned_apply_counter_by_realm;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === true || v === false) out[String(k)] = v;
+  }
+  return out;
+}
+
+function resolveApplyCounter(
+  settings: Record<string, any>,
+  realmCode?: string
+): { apply: boolean; reason: string; needsProbe: boolean; realmKey: string } {
+  const realmKey = String(realmCode || settings.probe_realm_code || "_global").trim() || "_global";
   const raw = settings.apply_counter ?? settings.p_apply_counter ?? settings.apply_counter_mode ?? "auto";
   const s = String(raw).toLowerCase().trim();
 
   if (s === "true" || s === "on" || s === "1" || s === "yes" || raw === true) {
-    return { apply: true, reason: "setting_on" };
+    return { apply: true, reason: "setting_on", needsProbe: false, realmKey };
   }
   if (s === "false" || s === "off" || s === "0" || s === "no" || raw === false) {
-    return { apply: false, reason: "setting_off" };
+    return { apply: false, reason: "setting_off", needsProbe: false, realmKey };
   }
 
-  // auto
-  const atk = toNumber(firstDefined(settings.account_atk, settings.atk, settings.attack));
-  const power = toNumber(firstDefined(settings.account_power, settings.power, settings.combat_power));
-  const level = toNumber(firstDefined(settings.account_level, settings.level, settings.character_level));
-  // Ngưỡng: chỉnh được; mặc định khá thấp để nick mid+ one-shot dùng false
-  const atkMin = toNumber(settings.strong_atk_threshold) ?? 500_000;
-  const powerMin = toNumber(settings.strong_power_threshold) ?? 1_000_000;
-  const levelMin = toNumber(settings.strong_level_threshold) ?? 25; // ~kd+
-
-  if (atk !== null && atk >= atkMin) return { apply: false, reason: `auto_atk=${atk}≥${atkMin}` };
-  if (power !== null && power >= powerMin) return { apply: false, reason: `auto_power=${power}≥${powerMin}` };
-  if (level !== null && level >= levelMin) return { apply: false, reason: `auto_level=${level}≥${levelMin}` };
-
-  // Không có chỉ số → an toàn cho nick yếu: bật phản đòn
-  if (atk === null && power === null && level === null) {
-    return { apply: true, reason: "auto_no_stats_default_on" };
+  const learnedMap = getLearnedCounterMap(settings);
+  if (Object.prototype.hasOwnProperty.call(learnedMap, realmKey)) {
+    const v = learnedMap[realmKey];
+    return { apply: v, reason: `learned:${realmKey}=${v}`, needsProbe: false, realmKey };
   }
-  return {
-    apply: true,
-    reason: `auto_weak(atk=${atk ?? "?"},power=${power ?? "?"},lv=${level ?? "?"})`,
-  };
+  // Global fallback (học từ kênh trước)
+  if (settings.learned_apply_counter === true || settings.learned_apply_counter === false) {
+    return {
+      apply: settings.learned_apply_counter === true,
+      reason: `learned_global=${settings.learned_apply_counter}`,
+      needsProbe: false,
+      realmKey,
+    };
+  }
+
+  // Chưa biết: probe bắt đầu false (thử one-shot)
+  return { apply: false, reason: "probe_try_false", needsProbe: true, realmKey };
+}
+
+/** rpc_set_auto_config — preferred map + bật combat auto game (theo capture user) */
+async function setGameCombatAutoConfig(args: {
+  characterId: string;
+  accessToken: string;
+  realmCode: string;
+  realmName?: string;
+  enabled?: boolean;
+  onLog?: FarmAutoOptions["onLog"];
+}) {
+  const { characterId, accessToken, realmCode, realmName, onLog } = args;
+  const enabled = args.enabled !== false;
+  if (!realmCode) return false;
+  try {
+    await rpc(
+      "rpc_set_auto_config",
+      {
+        p_character_id: characterId,
+        p_config: {
+          combat: {
+            enabled,
+            auto_start_on_login: false,
+            preferred_realm_code: realmCode,
+            preferred_realm_name: realmName || realmCode,
+          },
+        },
+      },
+      accessToken
+    );
+    onLog?.(
+      "INFO",
+      `Farm rpc_set_auto_config · combat.enabled=${enabled} · preferred=${realmCode}`
+    );
+    return true;
+  } catch (e: any) {
+    onLog?.("DEBUG", `Farm set_auto_config fail: ${(e?.message || e).toString().slice(0, 100)}`);
+    return false;
+  }
 }
 
 async function attackMob(
@@ -1696,8 +1754,11 @@ async function joinRealmCandidate(args: {
   accessToken: string;
   runtime: FarmRuntimeState;
   candidate: RealmChannelInfo;
+  onLog?: FarmAutoOptions["onLog"];
+  /** Gọi rpc_set_auto_config preferred realm */
+  syncGameAutoConfig?: boolean;
 }) {
-  const { characterId, accessToken, runtime, candidate } = args;
+  const { characterId, accessToken, runtime, candidate, onLog, syncGameAutoConfig = true } = args;
   const joined = await joinRealm(characterId, accessToken, candidate.realmCode);
   const realmId = String(firstDefined(joined?.realm_id, joined?.realmId, joined?.id, candidate.realmId || ""));
   if (!realmId) return null;
@@ -1712,6 +1773,17 @@ async function joinRealmCandidate(args: {
   runtime.currentMob = null;
   runtime.currentMobHits = 0;
   runtime.noMobCount = 0;
+  if (syncGameAutoConfig) {
+    // preferred_realm + combat.enabled=true (capture user) — tool vẫn tự attack
+    await setGameCombatAutoConfig({
+      characterId,
+      accessToken,
+      realmCode: candidate.realmCode,
+      realmName: candidate.label || candidate.realmCode,
+      enabled: true,
+      onLog,
+    });
+  }
   return runtime.currentRealm;
 }
 
@@ -1722,9 +1794,10 @@ async function findAndJoinRealm(args: {
   channels: number[];
   settings: Record<string, any>;
   onRegionAvailability?: FarmAutoOptions["onRegionAvailability"];
+  onLog?: FarmAutoOptions["onLog"];
   shouldStop?: () => boolean;
 }) {
-  const { characterId, accessToken, runtime, channels, settings, onRegionAvailability, shouldStop } = args;
+  const { characterId, accessToken, runtime, channels, settings, onRegionAvailability, onLog, shouldStop } = args;
   const candidates = await buildRealmCandidates({ characterId, accessToken, runtime, channels, settings, onRegionAvailability, shouldStop });
   if (!candidates.length) return null;
 
@@ -1734,7 +1807,14 @@ async function findAndJoinRealm(args: {
     const idx = (runtime.scanCursor + i) % attempts;
     const candidate = candidates[idx];
     try {
-      const joined = await joinRealmCandidate({ characterId, accessToken, runtime, candidate });
+      const joined = await joinRealmCandidate({
+        characterId,
+        accessToken,
+        runtime,
+        candidate,
+        onLog,
+        syncGameAutoConfig: settings.sync_game_auto_config !== false,
+      });
       if (!joined?.realmId) continue;
       runtime.scanCursor = (idx + 1) % attempts;
       return joined;
@@ -1896,8 +1976,15 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const mpPotionBuyQty = resolveMpBuyQty(settings.mp_potion_buy_qty ?? 10);
   const mpPotionShopCode = String(settings.mp_potion_shop_code || "alchemy").trim() || "alchemy";
   const verifyFarmKillWithSnapshot = settings.verify_farm_kill_with_snapshot !== false;
-  const applyCounterResolved = resolveApplyCounter(settings);
-  const applyCounter = applyCounterResolved.apply;
+  // apply_counter: learned theo realm → probe (đánh thử) → không cần chỉnh tay
+  let applyCounterResolved = resolveApplyCounter(settings, settings.probe_realm_code);
+  let applyCounter = applyCounterResolved.apply;
+  let applyCounterNeedsProbe = applyCounterResolved.needsProbe;
+  const learnedCounterMap = getLearnedCounterMap(settings);
+  let persistFarm: Record<string, any> = {
+    learned_apply_counter_by_realm: { ...learnedCounterMap },
+    learned_apply_counter: settings.learned_apply_counter,
+  };
 
   const errors: string[] = [];
   const regionSource = regionPlan(runtime, settings);
@@ -1935,7 +2022,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const neededTypes = orderedTypesForMode(mode, priority, quest?.extracted ? { needed: quest.extracted.needed, done: quest.extracted.done } : null);
   onLog?.(
     "DEBUG",
-    `Farm apply_counter=${applyCounter} (${applyCounterResolved.reason}) · ${applyCounter ? "có phản đòn — nick yếu" : "không phản — nick mạnh/one-shot"}`
+    `Farm apply_counter=${applyCounter} (${applyCounterResolved.reason})${applyCounterNeedsProbe ? " · đang probe" : ""} · ${applyCounter ? "có phản đòn" : "không phản (one-shot)"}`
   );
   const effectiveMode: FarmRunSummary["effectiveMode"] = smartQuestDone
     ? (stopSmartWhenQuestDone ? "smart_done_stopped" : "all_after_smart_done")
@@ -2156,7 +2243,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     }
 
     if (!runtime.currentRealm?.realmId) {
-      await findAndJoinRealm({ characterId, accessToken, runtime, channels, settings, onRegionAvailability, shouldStop });
+      await findAndJoinRealm({ characterId, accessToken, runtime, channels, settings, onRegionAvailability, onLog, shouldStop });
     }
 
     if (!runtime.currentRealm?.realmId) {
@@ -2254,6 +2341,15 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         runtime.noMobCount = 0;
         // Luôn lấy currentRealm mới nhất (sau rejoin có thể đổi realmId)
         let realm = runtime.currentRealm;
+        // Cập nhật apply_counter theo realm (learned / probe)
+        if (realm?.realmCode) {
+          applyCounterResolved = resolveApplyCounter(
+            { ...settings, learned_apply_counter_by_realm: learnedCounterMap, learned_apply_counter: persistFarm.learned_apply_counter },
+            realm.realmCode
+          );
+          applyCounter = applyCounterResolved.apply;
+          applyCounterNeedsProbe = applyCounterResolved.needsProbe;
+        }
         if (!realm?.realmId) {
           clearTargetQueue(runtime);
           return {
@@ -2633,6 +2729,49 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         nextAttackDelayMs = attackDelayMsFromResult(attackResult, attackEveryMs);
         const targetKilled = isMobKilledByAttack(attackResult);
         const targetHpAfter = attackMobHpAfter(attackResult);
+
+        // Probe phản đòn: thử false trước → one-shot thì lưu false; còn sống → true
+        if (applyCounterNeedsProbe && realm?.realmCode) {
+          const rk = realm.realmCode;
+          if (targetKilled) {
+            learnedCounterMap[rk] = false;
+            applyCounter = false;
+            applyCounterNeedsProbe = false;
+            persistFarm = {
+              learned_apply_counter_by_realm: { ...learnedCounterMap },
+              learned_apply_counter: false,
+              apply_counter_last_realm: rk,
+              apply_counter_learned: false,
+            };
+            onLog?.(
+              "SUCCESS",
+              `Farm học phản đòn: ${rk} → apply_counter=false (one-shot, không cần phản) · lưu, không chỉnh tay nữa`
+            );
+          } else {
+            learnedCounterMap[rk] = true;
+            applyCounter = true;
+            applyCounterNeedsProbe = false;
+            persistFarm = {
+              learned_apply_counter_by_realm: { ...learnedCounterMap },
+              learned_apply_counter: true,
+              apply_counter_last_realm: rk,
+              apply_counter_learned: true,
+            };
+            onLog?.(
+              "SUCCESS",
+              `Farm học phản đòn: ${rk} → apply_counter=true (quái còn sống / cần phản) · lưu cho kênh này`
+            );
+          }
+          // Đồng bộ preferred realm + bật combat auto game sau khi đã biết
+          await setGameCombatAutoConfig({
+            characterId,
+            accessToken,
+            realmCode: rk,
+            realmName: realm.label || rk,
+            enabled: true,
+            onLog,
+          });
+        }
         const targetDropItemCode = attackDropItemCode(attackResult);
         const targetAttackSpeedSec = attackSpeedSec(attackResult);
 
@@ -2781,6 +2920,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     scannedRealmCount,
     lastTarget,
     nextDelayMs: attackCount > 0 ? nextAttackDelayMs : emptyScanDelayMs,
+    persist: persistFarm,
     errors,
     questProgress: undefined,
   };

@@ -351,6 +351,19 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           Number(farmSettings.empty_scan_delay_ms || 4000)
         );
       }
+      // Lưu learned apply_counter theo realm (probe) — không cần chỉnh tay
+      if (result.persist && typeof result.persist === "object") {
+        store.setFeature(accountId, "farm", {
+          settings: {
+            ...settings,
+            ...result.persist,
+            learned_apply_counter_by_realm: {
+              ...(settings.learned_apply_counter_by_realm || {}),
+              ...(result.persist.learned_apply_counter_by_realm || {}),
+            },
+          },
+        });
+      }
       const line = farmCycleSummary(result, farmSettings);
       if (result.status === "ERROR") {
         status = "error";
