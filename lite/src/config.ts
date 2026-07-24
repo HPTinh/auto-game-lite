@@ -295,10 +295,15 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
   /** Hoàng Cổ: central Thủ(còn lock) → Công(hết lock) → Thủ lại */
   hoang_co: {
     /**
-     * Phá cờ (cắm → xây → phá cờ địch gần nhất).
-     * Bật cái này → chỉ chạy mission phá; tắt mới dùng mở rộng/thủ/central bên dưới.
+     * Phá cờ (cắm → xây → phá).
+     * Bật → mission phá; tắt mới mở rộng/thủ/central.
      */
     auto_break_flag: false,
+    /** Tên bang hội cần phá (vd "Thập Phương Lâu") — trống = mọi địch */
+    target_clan_name: "",
+    /** Có địch trong bán kính (cheby, 1=3×3) → chạy cờ mình khác */
+    flee_on_enemy_near: true,
+    flee_radius: 1,
     auto_place: true,
     auto_build: true,
     auto_defend: true,

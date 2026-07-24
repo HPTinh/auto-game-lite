@@ -248,7 +248,9 @@
         {k:"body_cult_session_type",l:"Session",t:"select",o:["long","short"]},
       ],
       hoang_co: [
-        {k:"auto_break_flag",l:"Phá cờ (cắm → xây → phá cờ địch gần nhất)",t:"bool"},
+        {k:"auto_break_flag",l:"Phá cờ (cắm → xây → phá)",t:"bool"},
+        {k:"target_clan_name",l:"Bang hội cần phá (trống=mọi địch)",t:"text",hint:"vd Thập Phương Lâu — map_state.flags.clan_name"},
+        {k:"flee_on_enemy_near",l:"Địch trong 3 ô → chạy cờ mình",t:"bool"},
         {k:"auto_place",l:"Cắm cờ (mở rộng base)",t:"bool"},
         {k:"auto_build",l:"Xây cờ (mở rộng)",t:"bool"},
         {k:"auto_defend",l:"Thủ cờ",t:"bool"},
