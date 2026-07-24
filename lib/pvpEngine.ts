@@ -132,14 +132,11 @@ function normalizeHunt(list: any): PvpHuntTarget[] {
   return out;
 }
 
-/**
- * free = chỉ lượt free (attacks_remaining)
- * pk   = free xong vẫn đánh tiếp (dùng thẻ pk_token nếu server/auto cho)
- */
+/** free = chỉ lượt free; pk = free xong dùng thẻ PK */
 function resolveMode(settings: Record<string, any>): "free" | "pk" {
+  if (settings.use_pk === true || settings.use_pk_token === true) return "pk";
   const m = String(settings.pvp_mode || settings.mode || "").toLowerCase();
   if (m === "pk" || m === "use_pk" || m === "free_and_pk" || m === "ticket") return "pk";
-  if (settings.use_pk_token === true || settings.use_pk === true) return "pk";
   return "free";
 }
 
@@ -228,12 +225,13 @@ export async function runPvpAuto(options: PvpAutoOptions): Promise<PvpRunSummary
     )
   );
   const delayMs = Math.max(400, Number(settings.delay_ms || 1500));
+  // 1 option: Thắng → lưu ID bem dí (thua → bỏ, có list → chỉ bem list)
   const huntOnWin = settings.hunt_on_win !== false;
-  const preferHunt = settings.prefer_hunt !== false;
-  const preferWeaker = settings.prefer_weaker !== false;
+  const preferHunt = huntOnWin;
+  const preferWeaker = true;
   const maxHunt = Math.max(1, Math.min(50, Number(settings.max_hunt || 15)));
-  // Có list bem dí → chỉ đánh họ (giống F12 1 id)
-  const huntOnly = settings.hunt_only !== false && preferHunt;
+  const huntOnly = huntOnWin;
+  const dropHuntOnLoss = huntOnWin;
   const onlyNpc = settings.only_npc === true;
 
   let hunt = normalizeHunt(options.huntList ?? settings.hunt_list);
@@ -404,8 +402,8 @@ export async function runPvpAuto(options: PvpAutoOptions): Promise<PvpRunSummary
           );
         } else {
           summary.losses += 1;
-          // Thua → bỏ khỏi hunt ưu tiên (tránh bem người mạnh)
-          if (settings.drop_hunt_on_loss !== false) {
+          // Thua → bỏ khỏi list bem dí, tìm người khác
+          if (dropHuntOnLoss) {
             hunt = hunt.filter((h) => h.id !== defenderId);
           } else {
             const existing = hunt.find((h) => h.id === defenderId);

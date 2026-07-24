@@ -147,16 +147,9 @@
         {k:"mp_potion_shop_code",l:"Shop code",t:"text"},
       ],
       pvp: [
-        {k:"pvp_mode",l:"Chế độ",t:"select",o:["free","pk"], hint:"free=30 lượt free; pk=free xong dùng thẻ PK"},
         {k:"free_per_day",l:"Lượt free / ngày",t:"number",min:1,max:50},
-        {k:"daily_target",l:"Trần trận / ngày (mode pk)",t:"number",min:1,max:200},
-        {k:"delay_ms",l:"Delay giữa trận (ms)",t:"number",min:400},
-        {k:"hunt_on_win",l:"Thắng → lưu ID bem dí",t:"bool"},
-        {k:"prefer_hunt",l:"Ưu tiên list bem dí",t:"bool"},
-        {k:"hunt_only",l:"Có hunt → chỉ bem list đó",t:"bool"},
-        {k:"prefer_weaker",l:"Ưu tiên địch yếu hơn",t:"bool"},
-        {k:"drop_hunt_on_loss",l:"Thua → bỏ khỏi hunt",t:"bool"},
-        {k:"max_hunt",l:"Tối đa ID hunt",t:"number",min:1,max:50},
+        {k:"use_pk",l:"Hết free → dùng thẻ PK",t:"bool"},
+        {k:"hunt_on_win",l:"Thắng → Lưu ID bem dí",t:"bool"},
       ],
       rank_challenge: [
         {k:"board_code",l:"Board (auto/lk/tc/kd/na/ht/lh)",t:"select",o:["auto","lk","tc","kd","na","ht","lh"]},

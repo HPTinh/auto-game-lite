@@ -625,14 +625,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         );
       }
     } else if (featureId === "pvp") {
-      // PVP: mode free (30 free) | pk (free + thẻ PK); hunt bem dí người đã thắng
-      const mode = String(settings.pvp_mode || "free").toLowerCase() === "pk" ? "pk" : "free";
+      // PVP gọn: free/ngày + use_pk + Thắng→lưu ID bem dí
+      const usePk = settings.use_pk === true || String(settings.pvp_mode || "").toLowerCase() === "pk";
+      const mode = usePk ? "pk" : "free";
       const freePerDay = Math.max(1, Math.min(50, Math.floor(Number(settings.free_per_day || 30)) || 30));
-      // free: target = free; pk: daily_target cao hơn
-      const dayTarget =
-        mode === "free"
-          ? freePerDay
-          : Math.max(freePerDay, Math.min(200, Math.floor(Number(settings.daily_target || freePerDay + 50)) || freePerDay + 50));
+      // free: đúng free_per_day; pk: free + thêm lượt PK (trần free+50)
+      const dayTarget = mode === "free" ? freePerDay : Math.min(200, freePerDay + 50);
 
       let daily = normalizePvpDaily({ ...settings, daily_target: dayTarget });
       const waitMidnight = () => {
@@ -643,7 +641,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "PVP",
           "INFO",
-          `PVP xong hôm nay ${daily.completed}/${daily.target} (${mode}) · chờ ~${hrs}h đến 00:00 VN`
+          `PVP xong hôm nay ${daily.completed}/${daily.target}${usePk ? " (+PK)" : " free"} · chờ ~${hrs}h`
         );
       };
 
@@ -674,7 +672,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accountId,
           "PVP",
           "INFO",
-          `PVP mode=${mode} · còn ${remaining}/${daily.target} · hunt ${huntList.length}`
+          `PVP free ${freePerDay}${usePk ? " + thẻ PK" : ""} · còn ${remaining}/${daily.target} · bem ${huntList.length} id`
         );
 
         const result = await runPvpAuto({
@@ -682,7 +680,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           accessToken: runtime.accessToken,
           settings: {
             ...settings,
-            pvp_mode: mode,
+            use_pk: usePk,
             free_per_day: freePerDay,
             max_attacks: Math.min(15, remaining),
           },
