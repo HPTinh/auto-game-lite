@@ -348,11 +348,48 @@ const recoveryKindsForReason = (reason: string): CraftRecoveryKind[] => {
   return kinds.length ? kinds : ["unknown"];
 };
 
-const recoveryItemCode = (kind: CraftRecoveryKind, tier: CraftTierCode, settings: Record<string, any>) => {
-  const safeTier = TIER_ORDER.includes(tier) ? tier : "lk";
-  if (kind === "stamina") return String(settings.stamina_item_code || settings.recover_stamina_item_code || `pill_${safeTier}_sta`);
-  if (kind === "spirit") return String(settings.spirit_item_code || settings.soul_item_code || settings.recover_spirit_item_code || `pill_${safeTier}_spirit`);
+/** Tier pill hồi: lk / tc / kd / na / ht / lh (use_item: pill_{tier}_sta | pill_{tier}_spirit) */
+const normalizePillTier = (raw: any, fallback: CraftTierCode = "tc"): CraftTierCode => {
+  const t = String(raw || "").toLowerCase().trim();
+  if (TIER_ORDER.includes(t as CraftTierCode)) return t as CraftTierCode;
+  return TIER_ORDER.includes(fallback) ? fallback : "tc";
+};
+
+/**
+ * Mã đan hồi:
+ * - Ưu tiên item_code custom (stamina_item_code / spirit_item_code) nếu user gõ tay
+ * - Không thì pill_{stamina_pill_tier}_sta / pill_{spirit_pill_tier}_spirit
+ * - Tier pill mặc định: setting riêng → tier recipe → tc
+ */
+const recoveryItemCode = (kind: CraftRecoveryKind, recipeTier: CraftTierCode, settings: Record<string, any>) => {
+  const recipeSafe = normalizePillTier(recipeTier, "tc");
+  if (kind === "stamina") {
+    const custom = String(settings.stamina_item_code || settings.recover_stamina_item_code || "").trim();
+    if (custom) return custom;
+    const tier = normalizePillTier(settings.stamina_pill_tier || settings.sta_pill_tier || settings.sta_tier, recipeSafe);
+    return `pill_${tier}_sta`;
+  }
+  if (kind === "spirit") {
+    const custom = String(settings.spirit_item_code || settings.soul_item_code || settings.recover_spirit_item_code || "").trim();
+    if (custom) return custom;
+    const tier = normalizePillTier(settings.spirit_pill_tier || settings.soul_pill_tier || settings.spirit_tier, recipeSafe);
+    return `pill_${tier}_spirit`;
+  }
   return "";
+};
+
+/** use_item.txt: success trả { used, heal_stamina, heal_spirit, ... } — thường không có ok:true */
+const isUseItemOk = (used: any): boolean => {
+  if (!used || typeof used !== "object") return false;
+  if (used.ok === false) return false;
+  const reason = String(used.reason || used.error || used.message || "").toLowerCase();
+  if (reason && /not_found|missing|no_item|item_not|insufficient|not_enough|không|het|hết|fail|error|invalid/.test(reason)) {
+    return false;
+  }
+  if (used.used || used.item_code || used.itemCode) return true;
+  if (used.heal_stamina != null || used.heal_spirit != null) return true;
+  if (used.stamina_after != null || used.spirit_after != null) return true;
+  return used.ok === true;
 };
 
 const analyzeCraftData = (data: any): CraftAnalysis => {
@@ -461,6 +498,8 @@ export const runCraftAuto = async ({
   const autoOpenContainers = settings.auto_open_containers !== false;
   const autoUseRecoveryItems = settings.auto_use_recovery_items !== false;
   const retryDelayMs = clampNumber(settings.retry_delay_ms ?? 700, 200, 5000, 700);
+  /** Mỗi loại (STA/spirit) tối đa N lần uống nếu 1 viên chưa đủ (vd heal_stamina=5) */
+  const maxRecoveryUses = clampNumber(settings.max_recovery_uses ?? settings.recovery_max_uses ?? 8, 1, 30, 8);
 
   // VIP >= 5 + bật quick → rpc_craft_auto, delay ~3s (craft.txt)
   const vipLevel = Number(settings.vip_level ?? settings.vipLevel ?? settings.vip ?? 0);
@@ -544,19 +583,78 @@ export const runCraftAuto = async ({
   const useRecoveryItem = async (kind: CraftRecoveryKind) => {
     const itemCode = recoveryItemCode(kind, tierCode, settings);
     if (!itemCode) return { ok: false, reason: "missing_recovery_item_code" };
-    onLog?.("WARN", `Craft thiếu ${kind === "spirit" ? "thần hồn/linh khí" : "thể lực"}, dùng ${itemCode} rồi thử lại.`, { recipeCode, itemCode, kind });
+    const label = kind === "spirit" ? "thần hồn/linh khí" : "thể lực (STA)";
+    onLog?.("WARN", `Craft thiếu ${label} → rpc_use_item ${itemCode}`, { recipeCode, itemCode, kind });
     let used: any;
     try {
+      // use_item.txt: { p_character_id, p_item_code: "pill_lk_sta" | "pill_tc_spirit" }
       used = await rpc(accessToken, "rpc_use_item", { p_character_id: characterId, p_item_code: itemCode });
     } catch (err: any) {
       used = err?.data || { ok: false, reason: err?.message || "use_item_error" };
     }
-    const ok = used?.ok !== false;
+    const ok = isUseItemOk(used);
     usedItems.push({ itemCode, ok, raw: used });
-    if (!ok) onLog?.("WARN", `Dùng ${itemCode} thất bại: ${reasonOf(used) || "unknown"}.`, { used });
-    else onLog?.("SUCCESS", `Đã dùng ${itemCode}, chờ server cập nhật rồi craft lại.`, { used });
+    if (!ok) {
+      onLog?.("WARN", `Dùng ${itemCode} thất bại: ${reasonOf(used) || used?.message || "unknown"} (hết pill / sai mã?).`, { used });
+    } else {
+      const healSta = used?.heal_stamina;
+      const healSpi = used?.heal_spirit;
+      const extra =
+        kind === "stamina" && healSta != null
+          ? ` · +${healSta} STA → ${used?.stamina_after ?? "?"}/${used?.stamina_max ?? "?"}`
+          : kind === "spirit" && healSpi != null
+            ? ` · +${healSpi} spirit → ${used?.spirit_after ?? "?"}/${used?.spirit_max ?? "?"}`
+            : "";
+      onLog?.("SUCCESS", `Đã dùng ${itemCode}${extra}`, { used });
+    }
     await sleep(retryDelayMs);
-    return used;
+    return { ...used, ok };
+  };
+
+  /** Uống đan (có thể nhiều viên) rồi craft lại cho đến khi OK / hết lý do thiếu / hết pill */
+  const recoverAndRetryCraft = async (reason: string): Promise<CraftAnalysis | null> => {
+    if (!autoUseRecoveryItems) return null;
+    if (!isStaminaReason(reason) && !isSpiritReason(reason)) return null;
+    const kinds = recoveryKindsForReason(reason).filter((k) => k === "stamina" || k === "spirit") as CraftRecoveryKind[];
+    let lastAnalysis: CraftAnalysis | null = null;
+    let currentReason = reason;
+
+    for (const kind of kinds) {
+      if (shouldStop?.()) break;
+      for (let u = 0; u < maxRecoveryUses; u += 1) {
+        if (shouldStop?.()) break;
+        // Chỉ tiếp tục kind này nếu reason vẫn khớp
+        if (kind === "stamina" && !isStaminaReason(currentReason) && !hasAny(currentReason, ["not_enough_resources", "insufficient_resources"])) break;
+        if (kind === "spirit" && !isSpiritReason(currentReason) && !hasAny(currentReason, ["not_enough_resources", "insufficient_resources"])) break;
+
+        const used = await useRecoveryItem(kind);
+        if (used?.ok === false) break; // hết pill / lỗi → thử kind khác hoặc pause
+
+        lastAnalysis = await craftOnce();
+        if (lastAnalysis.status === "SUCCESS" || lastAnalysis.status === "RATE_FAILED") {
+          return lastAnalysis;
+        }
+        currentReason = lastAnalysis.reason || currentReason;
+
+        // Hết thiếu STA/spirit → nếu thiếu NL thì mở rương
+        if (autoOpenContainers && isMaterialReason(currentReason)) {
+          await openContainers();
+          lastAnalysis = await craftOnce();
+          if (lastAnalysis.status === "SUCCESS" || lastAnalysis.status === "RATE_FAILED") {
+            return lastAnalysis;
+          }
+          currentReason = lastAnalysis.reason || currentReason;
+        }
+
+        // Reason đã khác (vd hết STA rồi sang spirit) → thoát vòng use, vòng kind ngoài xử lý
+        if (kind === "stamina" && isSpiritReason(currentReason) && !isStaminaReason(currentReason)) break;
+        if (kind === "spirit" && isStaminaReason(currentReason) && !isSpiritReason(currentReason)) break;
+        if (!isStaminaReason(currentReason) && !isSpiritReason(currentReason) && !hasAny(currentReason, ["not_enough_resources", "insufficient_resources"])) {
+          break;
+        }
+      }
+    }
+    return lastAnalysis;
   };
 
   onLog?.(
@@ -595,35 +693,19 @@ export const runCraftAuto = async ({
     }
 
     if (autoUseRecoveryItems && (isStaminaReason(reason) || isSpiritReason(reason))) {
-      const kinds = recoveryKindsForReason(reason).filter(kind => kind === "stamina" || kind === "spirit");
-      for (const kind of kinds) {
-        if (shouldStop?.()) break;
-        const used = await useRecoveryItem(kind);
-        if (used?.ok === false) continue;
-        analysis = await craftOnce();
+      const recovered = await recoverAndRetryCraft(reason);
+      if (recovered) {
+        analysis = recovered;
         if (analysis.status === "SUCCESS") {
-          onLog?.("SUCCESS", `Craft OK sau khi hồi ${kind === "spirit" ? "thần hồn/linh khí" : "thể lực"} ${recipeCode}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data });
-          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, recoveryKind: kind, recoveryAction: "use_item", usedItems, openedContainers });
+          const lastKind = usedItems.length ? (String(usedItems[usedItems.length - 1]?.itemCode || "").includes("spirit") ? "spirit" : "stamina") : "stamina";
+          onLog?.("SUCCESS", `Craft OK sau khi hồi STA/thần hồn ${recipeCode}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data, usedItems });
+          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, recoveryKind: lastKind, recoveryAction: "use_item", usedItems, openedContainers });
         }
         if (analysis.status === "RATE_FAILED") {
-          onLog?.("WARN", `Hồi ${kind === "spirit" ? "thần hồn/linh khí" : "thể lực"} xong nhưng craft trượt do tỉ lệ; không pause.`, { recipeCode, raw: analysis.data });
-          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed_after_recovery", recoveryKind: kind, recoveryAction: "use_item", usedItems, openedContainers });
+          onLog?.("WARN", `Hồi STA/thần hồn xong nhưng craft trượt do tỉ lệ ${recipeCode}; không pause.`, { recipeCode, raw: analysis.data, usedItems });
+          return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed_after_recovery", recoveryKind: "stamina", recoveryAction: "use_item", usedItems, openedContainers });
         }
         reason = analysis.reason || reason;
-
-        if (autoOpenContainers && isMaterialReason(reason)) {
-          await openContainers();
-          analysis = await craftOnce();
-          if (analysis.status === "SUCCESS") {
-            onLog?.("SUCCESS", `Craft OK sau khi hồi và mở rương ${recipeCode}.`, { recipeCode, rewards: analysis.rewards, raw: analysis.data });
-            return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, recoveryKind: "material", recoveryAction: "use_item_then_open_containers", usedItems, openedContainers });
-          }
-          if (analysis.status === "RATE_FAILED") {
-            onLog?.("WARN", `Hồi/mở rương xong nhưng craft trượt do tỉ lệ; không pause.`, { recipeCode, raw: analysis.data });
-            return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: "craft_rate_failed_after_recovery", recoveryKind: "material", recoveryAction: "use_item_then_open_containers", usedItems, openedContainers });
-          }
-          reason = analysis.reason || reason;
-        }
       }
     }
 
@@ -660,15 +742,12 @@ export const runCraftAuto = async ({
 
       if (autoUseRecoveryItems && (isStaminaReason(reason) || isSpiritReason(reason))) {
         const fallbackAnalysis = analyzeCraftData(raw || { ok: false, reason });
-        for (const kind of recoveryKindsForReason(reason).filter(kind => kind === "stamina" || kind === "spirit")) {
-          const used = await useRecoveryItem(kind);
-          if (used?.ok === false) continue;
-          const analysis = await craftOnce();
-          if (analysis.status === "SUCCESS" || analysis.status === "RATE_FAILED") {
-            const isRate = analysis.status === "RATE_FAILED";
-            onLog?.(isRate ? "WARN" : "SUCCESS", isRate ? `Hồi ${kind} xong nhưng craft trượt do tỉ lệ; không pause.` : `Craft OK sau khi hồi ${kind} ${recipeCode}.`, { recipeCode, raw: analysis.data });
-            return summaryFromAnalysis({ analysis, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: isRate ? "craft_rate_failed_after_recovery" : undefined, recoveryKind: kind, recoveryAction: "use_item", usedItems, openedContainers });
-          }
+        const recovered = await recoverAndRetryCraft(reason);
+        if (recovered && (recovered.status === "SUCCESS" || recovered.status === "RATE_FAILED")) {
+          const isRate = recovered.status === "RATE_FAILED";
+          const lastKind = usedItems.length ? (String(usedItems[usedItems.length - 1]?.itemCode || "").includes("spirit") ? "spirit" : "stamina") : "stamina";
+          onLog?.(isRate ? "WARN" : "SUCCESS", isRate ? `Hồi STA/thần hồn xong nhưng craft trượt do tỉ lệ; không pause.` : `Craft OK sau khi hồi STA/thần hồn ${recipeCode}.`, { recipeCode, raw: recovered.data, usedItems });
+          return summaryFromAnalysis({ analysis: recovered, category, tierCode, recipeCode, times, nextDelayMs: intervalMs, reason: isRate ? "craft_rate_failed_after_recovery" : undefined, recoveryKind: lastKind as CraftRecoveryKind, recoveryAction: "use_item", usedItems, openedContainers });
         }
         onLog?.("WARN", `Craft pause ${Math.ceil(pauseMs / 60000)} phút ${recipeCode}: ${reason}.`, { recipeCode, reason, raw, usedItems });
         return summaryFromAnalysis({ analysis: fallbackAnalysis, status: "PAUSED", category, tierCode, recipeCode, times, nextDelayMs: pauseMs, reason, recoveryKind: isSpiritReason(reason) ? "spirit" : "stamina", usedItems, openedContainers });

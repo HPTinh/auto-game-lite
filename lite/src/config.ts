@@ -267,9 +267,17 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** tự tải rpc_list_recipes(category) nếu recipe_cache rỗng */
     auto_load_recipes: true,
     auto_open_containers: true,
+    /** Hết STA / thần hồn khi craft → rpc_use_item pill_{tier}_sta | pill_{tier}_spirit */
     auto_use_recovery_items: true,
+    /** Tier đan STA: pill_lk_sta … pill_lh_sta */
+    stamina_pill_tier: "tc",
+    /** Tier đan thần hồn: pill_lk_spirit … pill_lh_spirit */
+    spirit_pill_tier: "tc",
+    /** Override mã item (để trống = theo tier trên) */
     stamina_item_code: "",
     spirit_item_code: "",
+    /** Tối đa số viên uống / loại mỗi lần craft thiếu */
+    max_recovery_uses: 8,
     /** cache danh sách recipe theo category — server/UI tự điền */
     recipe_cache: [],
     recipe_cache_at: "",

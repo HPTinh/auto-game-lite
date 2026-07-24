@@ -691,7 +691,7 @@ export default function AutoGameDashboard() {
     me_cung: { enabled: false, status: "NOT_SELECTED", settings: { tier: 1, run_count: 3, auto_boss: true, auto_claim_final: true, skip_monster: true, skip_trap: true, skip_fire: true, skip_merchant: true, boss_hp_reserve: 5, max_passes: 5 } },
     buff: { enabled: false, status: "NOT_SELECTED", settings: { interval_seconds: 300, enable_formation_buff: true, formation_item_code: "formation_lk_dragon", enable_talisman_buff: true, talisman_item_code: "talisman_lk_crit" } },
     auto_equip: { enabled: false, status: "NOT_SELECTED", settings: { interval_seconds: 300, weight_preset: "highest_stats", min_score_gain: 0, dry_run: false, auto_equip: true, allow_zero_score: true, slot_filter: "", inventory_rpc: "rpc_get_equipment\nrpc_list_inventory", equipment_rpc: "rpc_get_equipment", equip_rpc: "" } },
-    craft: { enabled: false, status: "NOT_SELECTED", settings: { mode: "manual", category: "alchemy", tier: "lk", recipe_code: "", times_per_run: 1, interval_seconds: 20, pause_on_fail_minutes: 30, auto_open_containers: true, auto_use_recovery_items: true, stamina_item_code: "", spirit_item_code: "", recipe_search: "", recipe_cache: [], recipe_cache_at: null } },
+    craft: { enabled: false, status: "NOT_SELECTED", settings: { mode: "manual", category: "alchemy", tier: "lk", recipe_code: "", times_per_run: 1, interval_seconds: 20, pause_on_fail_minutes: 30, auto_open_containers: true, auto_use_recovery_items: true, stamina_pill_tier: "tc", spirit_pill_tier: "tc", stamina_item_code: "", spirit_item_code: "", max_recovery_uses: 8, recipe_search: "", recipe_cache: [], recipe_cache_at: null } },
     shop: { enabled: false, status: "NOT_SELECTED", settings: {} },
     origin: { enabled: false, status: "NOT_SELECTED", settings: { target: "auto" } },
     breakthrough: { enabled: false, status: "NOT_SELECTED", settings: { interval_seconds: 60, full_exp_threshold_percent: 99.99, pill_item_codes: "pill_lk_minor\npill_lk_major", auto_buy_pill: true, shop_code: "alchemy", buy_qty: 1, pause_on_fail_minutes: 30, retry_delay_ms: 700 } },
@@ -5226,33 +5226,75 @@ export default function AutoGameDashboard() {
                             onChange={(e) => updateTempSetting('auto_use_recovery_items', e.target.checked)}
                             className="w-4 h-4 bg-gray-900 border-gray-600 rounded text-orange-500"
                           />
-                          Hết thể lực/thần hồn thì dùng viên hồi
+                          Hết STA / thần hồn → dùng đan (rpc_use_item)
                         </label>
                         <div className="space-y-1">
-                          <label className="block text-xs uppercase tracking-wider text-gray-400">Viên hồi thể lực</label>
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Tier đan STA</label>
+                          <select
+                            value={tempSettings.stamina_pill_tier || 'tc'}
+                            onChange={(e) => updateTempSetting('stamina_pill_tier', e.target.value)}
+                            className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-orange-500 outline-none"
+                          >
+                            {['lk', 'tc', 'kd', 'na', 'ht', 'lh'].map((t) => (
+                              <option key={t} value={t}>{t} → pill_{t}_sta</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Tier đan thần hồn</label>
+                          <select
+                            value={tempSettings.spirit_pill_tier || 'tc'}
+                            onChange={(e) => updateTempSetting('spirit_pill_tier', e.target.value)}
+                            className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-orange-500 outline-none"
+                          >
+                            {['lk', 'tc', 'kd', 'na', 'ht', 'lh'].map((t) => (
+                              <option key={t} value={t}>{t} → pill_{t}_spirit</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Override mã STA (tuỳ chọn)</label>
                           <input
                             type="text"
                             value={tempSettings.stamina_item_code || ''}
                             onChange={(e) => updateTempSetting('stamina_item_code', e.target.value.trim())}
-                            placeholder="Trống = pill_{tier}_sta"
+                            placeholder={`Trống = pill_${tempSettings.stamina_pill_tier || 'tc'}_sta`}
                             className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-orange-500 outline-none font-mono"
                           />
                         </div>
                         <div className="space-y-1">
-                          <label className="block text-xs uppercase tracking-wider text-gray-400">Viên hồi thần hồn</label>
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Override mã spirit (tuỳ chọn)</label>
                           <input
                             type="text"
                             value={tempSettings.spirit_item_code || ''}
                             onChange={(e) => updateTempSetting('spirit_item_code', e.target.value.trim())}
-                            placeholder="Trống = pill_{tier}_spirit"
+                            placeholder={`Trống = pill_${tempSettings.spirit_pill_tier || 'tc'}_spirit`}
                             className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-orange-500 outline-none font-mono"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Tối đa viên / lần thiếu</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={30}
+                            value={tempSettings.max_recovery_uses ?? 8}
+                            onChange={(e) => updateTempSetting('max_recovery_uses', Math.max(1, Number(e.target.value) || 8))}
+                            className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-orange-500 outline-none"
                           />
                         </div>
                       </div>
 
                       <div className="rounded border border-gray-700 bg-gray-900/40 p-3 text-[11px] text-gray-500 space-y-1">
-                        <p>Logic hiện tại: craft thành công khi success &gt; 0. Nếu fail do tỉ lệ craft thì không pause, chỉ chờ vòng tiếp theo. Nếu thiếu nguyên liệu thì mở rương và retry; nếu thiếu thể lực/thần hồn thì dùng viên hồi theo tier rồi retry.</p>
-                        <p>Danh sách recipe được phân loại theo meta.realm_code/meta.tier hoặc theo ký tự trong mã recipe/nguyên liệu: lk, tc, kd, na, ht, lh.</p>
+                        <p>Hết STA/thần hồn khi craft → <code className="text-gray-300">rpc_use_item</code> với <code className="text-gray-300">pill_&#123;tier&#125;_sta</code> / <code className="text-gray-300">pill_&#123;tier&#125;_spirit</code> (use_item.txt). Có thể uống nhiều viên nếu 1 viên chưa đủ (vd +5 STA).</p>
+                        <p>Hiện dùng: STA <span className="text-amber-300 font-mono">{tempSettings.stamina_item_code || `pill_${tempSettings.stamina_pill_tier || 'tc'}_sta`}</span>
+                          {" · "}spirit <span className="text-amber-300 font-mono">{tempSettings.spirit_item_code || `pill_${tempSettings.spirit_pill_tier || 'tc'}_spirit`}</span>
+                          {tempSettings.stamina_item_code || tempSettings.spirit_item_code ? " (có override)" : ""}.
+                        </p>
+                        <p>Craft OK khi success &gt; 0. Fail tỉ lệ → không pause. Thiếu NL → mở rương. Thiếu STA/spirit → dùng đan rồi retry.</p>
                       </div>
 
                       <div className="pt-3 border-t border-gray-700"><button onClick={handleSaveSettings} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors">{viewingAccount ? 'Lưu Setting Auto Craft' : 'Lưu Setting Cho TK Đã Chọn'}</button></div>
