@@ -35,4 +35,5 @@ export {
   runHoangCoDefendAuto,
   runHoangCoDefendMineAuto,
   runHoangCoAttackAuto,
+  runHoangCoAttackCentralAuto,
 } from "../../lib/hoangCoEngine";

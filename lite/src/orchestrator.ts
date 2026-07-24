@@ -932,13 +932,18 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
                 ? "Mở rộng"
                 : result.phase === "attack"
                   ? "Phá"
-                  : "";
+                  : result.phase === "attack_central"
+                    ? "Công central"
+                    : "";
         const lvl =
           (result.placed || 0) > 0 ||
           (result.built || 0) > 0 ||
           result.action === "siege_flag_defend" ||
           result.action === "siege_flag_attack" ||
-          result.action === "defend_mine"
+          result.action === "defend_mine" ||
+          result.action === "defend_central" ||
+          result.action === "attack_central_hold" ||
+          result.action === "move_to_attack_central"
             ? "SUCCESS"
             : result.status === "SKIPPED" || result.status === "NO_EVENT"
               ? "WARN"

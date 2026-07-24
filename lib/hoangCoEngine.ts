@@ -4,9 +4,10 @@
  * - Thủ cờ → siege_flag side=defend
  * - Thủ mỏ → defend_position central (stack_order chỉ là hàng, không quan trọng)
  * - Phá cờ → siege_flag side=attack
+ * - Công central → địch đang giữ/thủ central (khung sẵn)
  * - leave_defense khi rời pin
  *
- * runHoangCoAuto: 1 timer. Thứ tự: Mở rộng → Thủ cờ → Thủ mỏ → Phá.
+ * runHoangCoAuto: 1 timer. Mở rộng → Thủ cờ → Thủ central → Phá cờ → Công central.
  */
 
 export type HoangCoLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
@@ -35,7 +36,7 @@ export interface HoangCoRunSummary {
   buildingFlags?: number;
   threatenedCount?: number;
   side?: string;
-  /** expand | defend | defend_mine | attack */
+  /** expand | defend | defend_mine | attack | attack_central */
   phase?: string;
   /** node_id mỏ đang thủ */
   mineId?: string | number;
@@ -1072,6 +1073,181 @@ function defendMineStillBusy(r: HoangCoRunSummary): boolean {
   return false;
 }
 
+function attackStillBusy(r: HoangCoRunSummary): boolean {
+  if (r.status === "WAITING") return true;
+  if (r.status === "ERROR") return true;
+  if (r.moved) return true;
+  if (r.action && /siege_flag_attack|move_to_attack/i.test(r.action || "")) return true;
+  return false;
+}
+
+/**
+ * Công central — địch đang giữ / đang thủ central.
+ * Hiện: di chuyển tới tâm + theo dõi defenders stack.
+ * Khi có RPC attack central riêng (nếu khác siege) sẽ gắn vào đây.
+ */
+export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
+  const settings = options.settings || {};
+  const onLog = options.onLog;
+  const characterId = options.characterId;
+  const accessToken = options.accessToken;
+
+  const threatRadius = 3;
+  const pollMs = 15_000;
+  const onlyWhenEventLive = settings.only_when_event_live !== false;
+
+  const summary: HoangCoRunSummary = {
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    status: "DONE",
+    nextDelayMs: pollMs,
+    phase: "attack_central",
+  };
+
+  try {
+    const status = await rpc("rpc_hoang_co_status", { p_character_id: characterId }, accessToken);
+    const eventLive = status?.is_event_live === true || status?.season?.status === "event_live";
+    const eligible = status?.eligibility?.eligible !== false;
+    const clanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+
+    if (onlyWhenEventLive && !eventLive) {
+      summary.status = "NO_EVENT";
+      summary.reason = "Event chưa live";
+      summary.nextDelayMs = 5 * 60_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (!eligible || !clanId) {
+      summary.status = "SKIPPED";
+      summary.reason = "Không eligible / chưa clan";
+      summary.nextDelayMs = 10 * 60_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    const me = myPos(map);
+    if (!me) {
+      summary.status = "WAITING";
+      summary.reason = "Chưa có vị trí map";
+      summary.nextDelayMs = 60_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (me.dead) {
+      summary.status = "WAITING";
+      summary.reason = "Đang chết";
+      summary.nextDelayMs = 90_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    if (me.inTransit && me.eta > 0) {
+      summary.status = "WAITING";
+      summary.action = "transit";
+      summary.etaSeconds = me.eta;
+      summary.nextDelayMs = Math.max(3_000, me.eta * 1000 + 1500);
+      summary.reason = `Đang đi · ETA ${me.eta}s`;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    const cx = Math.floor(n(map?.config?.center_x, 42));
+    const cy = Math.floor(n(map?.config?.center_y, 42));
+    const central = map?.central || {};
+    const holder = String(central.holder_clan_id || "");
+    const weHold = holder === clanId;
+
+    if (weHold) {
+      summary.status = "DONE";
+      summary.reason = "Clan mình đang giữ central · không công";
+      summary.nextDelayMs = 30_000;
+      onLog?.("INFO", `HC Công central: ${summary.reason}`);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    if (!holder) {
+      summary.status = "DONE";
+      summary.reason = "Central chưa có holder · chờ";
+      summary.nextDelayMs = 20_000;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // Địch đang thủ central (stack defenders target central)
+    const defenders = Array.isArray(map?.defenders) ? map.defenders : [];
+    const enemyDefs = defenders.filter(
+      (d: any) =>
+        String(d?.target_kind || "") === "central" &&
+        String(d?.clan_id || "") !== clanId &&
+        d?.is_ally !== true
+    );
+    const near = enemiesNearPoint(map, cx, cy, clanId, threatRadius);
+
+    summary.mineId = "central";
+    summary.dest = { x: cx, y: cy };
+    onLog?.(
+      "INFO",
+      `HC Công central: holder≠mình · defenders địch ${enemyDefs.length} · địch gần tâm ${near.count}`
+    );
+
+    const atCenter = manhattan(me.x, me.y, cx, cy) <= 1;
+    if (!atCenter) {
+      await leaveDefense(characterId, accessToken, onLog);
+      const mv = await rpc(
+        "rpc_hoang_co_move",
+        { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
+        accessToken
+      );
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+      summary.moved = true;
+      summary.action = "move_to_attack_central";
+      summary.status = "WAITING";
+      summary.etaSeconds = eta;
+      summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+      summary.reason = `Đi công central (${cx},${cy}) · ETA ${eta}s · holder địch`;
+      onLog?.("INFO", summary.reason);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // Đứng tại central — thử pin/join phía attack nếu server cho (cùng defend_position đôi khi join stack)
+    // Ưu tiên: nếu sau này có RPC riêng (vd attack_central) → thay block này
+    try {
+      // Một số client join combat central bằng cách đứng tại chỗ + heartbeat;
+      // capture thêm RPC khi bấm "tấn công" in-game nếu cần.
+      await rpc(
+        "rpc_hoang_co_heartbeat",
+        { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
+        accessToken
+      );
+      summary.action = "attack_central_hold";
+      summary.status = "WAITING";
+      summary.nextDelayMs = pollMs;
+      summary.reason = `Tại central địch · chờ/giữ vị trí công · def stack ${enemyDefs.length} (cần RPC attack nếu có)`;
+      onLog?.("SUCCESS", summary.reason, {
+        holder,
+        phase: central.phase,
+        boss_hp: central.boss_hp_current,
+        enemy_defenders: enemyDefs.length,
+      });
+    } catch (e: any) {
+      summary.status = "ERROR";
+      summary.reason = `Công central fail: ${(e?.message || e).toString().slice(0, 120)}`;
+      summary.nextDelayMs = 20_000;
+      onLog?.("ERROR", `HC Công central: ${summary.reason}`);
+    }
+  } catch (e: any) {
+    summary.status = "ERROR";
+    summary.reason = e?.message || String(e);
+    summary.nextDelayMs = 45_000;
+    onLog?.("ERROR", `HC Công central error: ${summary.reason}`);
+  }
+
+  summary.finishedAt = new Date().toISOString();
+  return summary;
+}
+
 type MineNode = {
   node_id: number | string;
   pos_x: number;
@@ -1547,15 +1723,16 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
   const buildOn = settings.auto_build !== false;
   const defendOn = settings.auto_defend !== false;
   const mineOn = settings.auto_defend_mine !== false;
-  const attackOn = settings.auto_attack === true; // phá cờ — mặc định tắt
+  const attackOn = settings.auto_attack === true;
+  const attackCentralOn = settings.auto_attack_central === true;
   const expandOn = placeOn || buildOn;
 
-  if (!expandOn && !defendOn && !mineOn && !attackOn) {
+  if (!expandOn && !defendOn && !mineOn && !attackOn && !attackCentralOn) {
     return {
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       status: "SKIPPED",
-      reason: "Chưa bật Cắm/Xây/Thủ cờ/Thủ mỏ/Phá",
+      reason: "Chưa bật mục tiêu Hoàng Cổ",
       nextDelayMs: 60_000,
       phase: "idle",
     };
@@ -1568,7 +1745,7 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
     if (expandStillBusy(exp) || exp.status === "NO_EVENT" || exp.status === "SKIPPED") {
       return exp;
     }
-    if (!defendOn && !mineOn && !attackOn) {
+    if (!defendOn && !mineOn && !attackOn && !attackCentralOn) {
       exp.reason = exp.reason || "Mở rộng xong / không còn việc";
       return exp;
     }
@@ -1586,11 +1763,11 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
     if (defendStillBusy(def) || (def.threatenedCount || 0) > 0) {
       return def;
     }
-    if (!mineOn && !attackOn) return def;
+    if (!mineOn && !attackOn && !attackCentralOn) return def;
     onLog?.("INFO", "HoàngCổ: không cờ cần thủ → phase sau");
   }
 
-  // 3) Thủ mỏ (defend_position resource)
+  // 3) Thủ central
   if (mineOn) {
     const mine = await runHoangCoDefendMineAuto(options);
     mine.phase = "defend_mine";
@@ -1598,16 +1775,26 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
     if (defendMineStillBusy(mine)) {
       return mine;
     }
-    // DONE không mỏ bị đe dọa (và không garrison) → sang phá
-    if (!attackOn) return mine;
-    onLog?.("INFO", "HoàngCổ: thủ mỏ xong / không mỏ nguy → Phá cờ");
+    if (!attackOn && !attackCentralOn) return mine;
+    onLog?.("INFO", "HoàngCổ: thủ central xong / không cần → phase sau");
   }
 
   // 4) Phá cờ địch
   if (attackOn) {
     const atk = await runHoangCoAttackAuto(options);
     atk.phase = "attack";
-    return atk;
+    if (attackStillBusy(atk) || atk.status === "WAITING" || atk.moved) {
+      return atk;
+    }
+    if (!attackCentralOn) return atk;
+    onLog?.("INFO", "HoàngCổ: phá cờ xong / không cờ → Công central");
+  }
+
+  // 5) Công central (địch đang giữ)
+  if (attackCentralOn) {
+    const ac = await runHoangCoAttackCentralAuto(options);
+    ac.phase = "attack_central";
+    return ac;
   }
 
   return {

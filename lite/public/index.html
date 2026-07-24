@@ -255,8 +255,18 @@
         {k:"auto_defend",l:"Thủ cờ",t:"bool"},
         {k:"auto_defend_mine",l:"Thủ central",t:"bool"},
         {k:"auto_attack",l:"Phá cờ",t:"bool"},
+        {k:"auto_attack_central",l:"Công central",t:"bool"},
       ],
     };
+
+    /** Feature chỉ hiện khi đã mở pass backup (giống Export/Import) */
+    const HIDDEN_FEATURES_UNTIL_BACKUP = new Set(["hoang_co"]);
+    function visibleFeatures() {
+      return FEATURES.filter((fid) => {
+        if (HIDDEN_FEATURES_UNTIL_BACKUP.has(fid) && !backupUnlocked) return false;
+        return true;
+      });
+    }
 
     let API_KEY = new URLSearchParams(location.search).get("key") || localStorage.getItem("lite_api_key") || "";
     if (new URLSearchParams(location.search).get("key")) localStorage.setItem("lite_api_key", API_KEY);
@@ -276,6 +286,10 @@
       const imp = $("btnImport");
       if (exp) exp.style.display = show ? "" : "none";
       if (imp) imp.style.display = show ? "" : "none";
+      // Hiện/ẩn chip Hoàng Cổ theo pass backup
+      try {
+        if (typeof render === "function" && Array.isArray(accounts) && accounts.length) render();
+      } catch (_) {}
     }
 
     async function unlockBackupWithPass(pass) {
@@ -454,7 +468,7 @@
             </td>
             <td>
               <div class="feats">
-                ${FEATURES.map(fid => {
+                ${visibleFeatures().map(fid => {
                   const f = acc.features?.[fid];
                   const on = !!f?.enabled;
                   return `<label class="chip ${on?"on":""}" title="${LABELS[fid]} [${f?.status||"OFF"}]">
@@ -1000,12 +1014,13 @@
     $("stopAll").onclick = async () => { try { await api("/api/stop-all",{method:"POST",body:"{}"}); msg("Stop all",true); await load(true);} catch(e){msg(e.message,false);} };
     $("refresh").onclick = () => load(true);
 
-    // Double-click "AUTO LITE" → nhập pass 2 (không lộ mục đích trên UI)
+    // Double-click "AUTO LITE" → nhập pass 2 (Export/Import + Hoàng Cổ)
     document.querySelector("h1")?.addEventListener("dblclick", async () => {
       if (backupUnlocked) {
         if (confirm("OK?")) {
           lockBackupUi();
           msg("", true);
+          try { render(); } catch (_) {}
         }
         return;
       }
@@ -1015,9 +1030,11 @@
       try {
         await unlockBackupWithPass(k);
         msg("", true);
+        try { render(); } catch (_) {}
       } catch {
         lockBackupUi();
         msg("Sai", false);
+        try { render(); } catch (_) {}
       }
     });
 
