@@ -1017,6 +1017,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         settings: {
           ...settings,
           ...result.persist,
+          // Luôn ghi đè trạng thái từ server/tool sau mỗi vòng
           highest_floor: result.highestFloor,
           highest_cleared: result.highestFloor,
           next_floor: result.nextFloor,
@@ -1025,6 +1026,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           display_highest: result.highestFloor,
           display_next: result.nextFloor,
           display_sweep_charges: result.sweepCharges,
+          lost_today: result.persist?.lost_today === true,
+          swept_today: result.persist?.swept_today === true,
+          daily_date: result.persist?.daily_date || settings.daily_date,
         },
       });
 

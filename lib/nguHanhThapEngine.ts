@@ -176,7 +176,10 @@ function parseStatus(data: any) {
   const sweepCharges = Math.max(0, Math.floor(Number(data?.sweep_charges ?? 0) || 0));
   const dailyUsed = Math.max(0, Math.floor(Number(data?.daily_challenges_used ?? 0) || 0));
   const dailyMax = Math.max(0, Math.floor(Number(data?.max_daily_challenges ?? 200) || 200));
+  const dailySweepsBought = Math.max(0, Math.floor(Number(data?.daily_sweeps_bought ?? 0) || 0));
+  const maxDailySweepBuys = Math.max(0, Math.floor(Number(data?.max_daily_sweep_buys ?? 10) || 10));
   const sweepRewardSs = Number(data?.sweep_reward_ss ?? 0) || 0;
+  const nextSweepPrice = Number(data?.next_sweep_price ?? 0) || 0;
   const floors = Array.isArray(data?.floors) ? data.floors : [];
   // next floor = highest+1; fallback từ floors cleared
   let fromFloors = 0;
@@ -187,6 +190,13 @@ function parseStatus(data: any) {
     }
   }
   const highestCleared = Math.max(highest, fromFloors);
+  /**
+   * Free càn quét / ngày: sweep_charges.
+   * - charges > 0 → còn free (chưa càn quét free, hoặc còn charge)
+   * - charges = 0 → free đã dùng (hoặc không còn) → coi như đã càn quét free hôm nay
+   */
+  const freeSweepAvailable = sweepCharges > 0;
+  const freeSweepLikelyUsed = !freeSweepAvailable && (highestCleared > 0 || dailyUsed > 0 || dailySweepsBought > 0);
   return {
     highestCleared,
     nextFloor: highestCleared + 1,
@@ -194,7 +204,12 @@ function parseStatus(data: any) {
     dailyUsed,
     dailyMax,
     challengesLeft: Math.max(0, dailyMax - dailyUsed),
+    dailySweepsBought,
+    maxDailySweepBuys,
     sweepRewardSs,
+    nextSweepPrice,
+    freeSweepAvailable,
+    freeSweepLikelyUsed,
     raw: data,
   };
 }
@@ -326,8 +341,8 @@ export async function runNguHanhThapAuto(options: TowerAutoOptions): Promise<Tow
   };
 
   try {
-    // 1) Status
-    onLog?.("INFO", "Ngũ Hành Tháp: rpc_tower_get_status...");
+    // ── 1) Luôn get status trước (tầng / càn quét / lượt) — nguồn sự thật từ server
+    onLog?.("INFO", "Ngũ Hành Tháp: lấy thông tin tháp (rpc_tower_get_status)...");
     let statusData: any;
     try {
       statusData = await rpc(
@@ -351,37 +366,61 @@ export async function runNguHanhThapAuto(options: TowerAutoOptions): Promise<Tow
     summary.endFloor = st.nextFloor;
     summary.sweepCharges = st.sweepCharges;
 
+    // ── 2) Đồng bộ cờ tool với server (mới bật / redeploy / chơi tay ngoài tool)
+    // Còn free charge → chưa càn quét free (reset cờ local nếu lệch)
+    if (st.freeSweepAvailable) {
+      if (sweptToday) {
+        onLog?.("INFO", `Server còn sweep_charges=${st.sweepCharges} → bỏ cờ "đã càn quét" local`);
+      }
+      sweptToday = false;
+    } else if (st.freeSweepLikelyUsed || st.sweepCharges <= 0) {
+      // Hết free charge → đánh dấu đã càn quét hôm nay (không gọi sweep nữa)
+      if (!sweptToday) {
+        onLog?.(
+          "INFO",
+          `Server sweep_charges=0 · đánh dấu tool: đã càn quét free hôm nay (${today})`
+        );
+      }
+      sweptToday = true;
+    }
+
     onLog?.(
-      "INFO",
-      `Tháp highest ${st.highestCleared} · sắp đánh T${st.nextFloor} · càn quét free ${st.sweepCharges} · challenge ${st.dailyUsed}/${st.dailyMax}`
+      "SUCCESS",
+      `Tháp sync · highest ${st.highestCleared} · sắp đánh T${st.nextFloor} · free càn quét ${st.sweepCharges}` +
+        ` · đã càn quét: ${sweptToday ? "CÓ" : "chưa"} · challenge ${st.dailyUsed}/${st.dailyMax}` +
+        (lostToday ? " · đã thua hôm nay" : "")
     );
 
-    // 2) Đã thua hôm nay → chỉ càn quét (nếu còn) rồi chờ 00h
+    // ── 3) Đã thua hôm nay → chỉ càn quét free (nếu server còn) rồi chờ 00h
     if (lostToday) {
       onLog?.("INFO", `Đã thua hôm nay (${today}) · không leo thêm`);
-      if (!sweptToday && st.sweepCharges > 0) {
+      if (!sweptToday && st.freeSweepAvailable) {
         await doSweep(st.sweepCharges);
         summary.status = "SWEPT";
         summary.reason = "lost_then_sweep";
       } else {
         summary.status = "WAITING";
         summary.reason = sweptToday ? "lost_already_swept" : "lost_no_sweep_charge";
+        if (sweptToday) {
+          onLog?.("INFO", "Hôm nay đã càn quét (theo server/tool) · bỏ qua sweep");
+        }
       }
       const hrs = Math.ceil(waitMidnightMs / 3600_000);
       onLog?.("INFO", `Chờ ~${hrs}h đến 00:00 VN rồi leo lại`);
       return finish({ nextDelayMs: waitMidnightMs });
     }
 
-    // 3) Hết lượt challenge ngày → sweep + chờ 00h
+    // ── 4) Hết lượt challenge ngày → sweep free (nếu còn) + chờ 00h
     if (st.challengesLeft <= 0) {
       onLog?.("WARN", `Hết lượt challenge ngày (${st.dailyUsed}/${st.dailyMax})`);
-      if (!sweptToday && st.sweepCharges > 0) {
+      if (!sweptToday && st.freeSweepAvailable) {
         await doSweep(st.sweepCharges);
         summary.status = "SWEPT";
         summary.reason = "daily_challenge_cap_sweep";
       } else {
         summary.status = "WAITING";
         summary.reason = "daily_challenge_cap";
+        if (sweptToday) onLog?.("INFO", "Hôm nay đã càn quét · chờ 00:00 VN");
       }
       return finish({ nextDelayMs: waitMidnightMs });
     }
@@ -563,7 +602,7 @@ export async function runNguHanhThapAuto(options: TowerAutoOptions): Promise<Tow
     const shouldEndDay = lostToday || summary.status === "LOST" || summary.status === "WAITING";
 
     if (shouldEndDay) {
-      // refresh charges before sweep
+      // Refresh status trước khi sweep / chờ ngày mới
       try {
         const again = await rpc(
           "rpc_tower_get_status",
@@ -574,21 +613,28 @@ export async function runNguHanhThapAuto(options: TowerAutoOptions): Promise<Tow
         summary.highestFloor = Math.max(summary.highestFloor, st.highestCleared);
         summary.sweepCharges = st.sweepCharges;
         summary.nextFloor = st.nextFloor;
+        if (st.freeSweepAvailable) {
+          // còn charge → chưa free-sweep
+        } else if (st.sweepCharges <= 0) {
+          sweptToday = true;
+        }
       } catch {
         /* ignore */
       }
 
-      if (!sweptToday && summary.sweepCharges > 0) {
+      if (!sweptToday && st.freeSweepAvailable && summary.sweepCharges > 0) {
         await doSweep(summary.sweepCharges);
         if (summary.status === "LOST" || summary.status === "WAITING") {
           summary.status = summary.swept ? "SWEPT" : summary.status;
         }
+      } else if (sweptToday) {
+        onLog?.("INFO", `Bỏ qua càn quét · đã càn quét hôm nay (highest ${summary.highestFloor})`);
       }
 
       const hrs = Math.ceil(waitMidnightMs / 3600_000);
       onLog?.(
         "INFO",
-        `Tháp xong ngày · highest ${summary.highestFloor} · WIN ${wins} · ${summary.swept ? "đã càn quét · " : ""}chờ ~${hrs}h → 00:00 VN`
+        `Tháp xong ngày · highest ${summary.highestFloor} · WIN ${wins} · càn quét: ${sweptToday || summary.swept ? "xong" : "không"} · chờ ~${hrs}h → 00:00 VN`
       );
       return finish({ nextDelayMs: waitMidnightMs });
     }
