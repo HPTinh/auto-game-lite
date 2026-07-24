@@ -943,6 +943,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           result.action === "defend_mine" ||
           result.action === "defend_central" ||
           result.action === "attack_central_hold" ||
+          result.action === "attack_position_central" ||
           result.action === "move_to_attack_central"
             ? "SUCCESS"
             : result.status === "SKIPPED" || result.status === "NO_EVENT"

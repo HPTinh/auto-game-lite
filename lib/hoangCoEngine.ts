@@ -4,10 +4,11 @@
  * - Thủ cờ → siege_flag side=defend
  * - Thủ mỏ → defend_position central (stack_order chỉ là hàng, không quan trọng)
  * - Phá cờ → siege_flag side=attack
- * - Công central → địch đang giữ/thủ central (khung sẵn)
+ * - Công central → attack_position kind=central (hết lock / địch giữ)
  * - leave_defense khi rời pin
  *
- * runHoangCoAuto: 1 timer. Mở rộng → Thủ cờ → Thủ central → Phá cờ → Công central.
+ * Central: còn lock_until → Thủ; hết lock → Công.
+ * runHoangCoAuto: Mở rộng → Thủ cờ → Thủ central → Phá cờ → Công central.
  */
 
 export type HoangCoLogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARN" | "ERROR";
@@ -1077,14 +1078,26 @@ function attackStillBusy(r: HoangCoRunSummary): boolean {
   if (r.status === "WAITING") return true;
   if (r.status === "ERROR") return true;
   if (r.moved) return true;
-  if (r.action && /siege_flag_attack|move_to_attack/i.test(r.action || "")) return true;
+  if (r.action && /siege_flag_attack|move_to_attack|attack_central|attack_position/i.test(r.action || ""))
+    return true;
   return false;
 }
 
+/** Còn bao lâu central lock (ms). null = không có lock_until */
+function centralLockRemainingMs(central: any, nowMs = Date.now()): number | null {
+  const lockUntil = central?.lock_until;
+  if (!lockUntil) return null;
+  const t = new Date(lockUntil).getTime();
+  if (!Number.isFinite(t)) return null;
+  return t - nowMs;
+}
+
 /**
- * Công central — địch đang giữ / đang thủ central.
- * Hiện: di chuyển tới tâm + theo dõi defenders stack.
- * Khi có RPC attack central riêng (nếu khác siege) sẽ gắn vào đây.
+ * Công central — rpc_hoang_co_attack_position
+ * p_target_kind: "central", p_target_id: "central"
+ * (resource cũng cùng RPC, phase sau)
+ *
+ * Công khi: địch giữ central, HOẶC mình giữ nhưng hết lock_until (cần đánh lại).
  */
 export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
@@ -1092,8 +1105,7 @@ export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): 
   const characterId = options.characterId;
   const accessToken = options.accessToken;
 
-  const threatRadius = 3;
-  const pollMs = 15_000;
+  const pollMs = 12_000;
   const onlyWhenEventLive = settings.only_when_event_live !== false;
 
   const summary: HoangCoRunSummary = {
@@ -1153,42 +1165,36 @@ export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): 
 
     const cx = Math.floor(n(map?.config?.center_x, 42));
     const cy = Math.floor(n(map?.config?.center_y, 42));
-    const central = map?.central || {};
+    // central có thể ở map.central hoặc status.central
+    const central = map?.central || status?.central || {};
     const holder = String(central.holder_clan_id || "");
     const weHold = holder === clanId;
+    const lockLeft = centralLockRemainingMs(central);
+    const lockActive = lockLeft != null && lockLeft > 0;
 
-    if (weHold) {
+    // Mình đang giữ + còn lock → để phase Thủ central, không công
+    if (weHold && lockActive) {
+      const mins = Math.ceil(lockLeft! / 60_000);
       summary.status = "DONE";
-      summary.reason = "Clan mình đang giữ central · không công";
-      summary.nextDelayMs = 30_000;
+      summary.reason = `Central mình giữ · còn lock ~${mins}p · ưu tiên Thủ`;
+      summary.nextDelayMs = Math.min(60_000, Math.max(15_000, lockLeft!));
       onLog?.("INFO", `HC Công central: ${summary.reason}`);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    if (!holder) {
-      summary.status = "DONE";
-      summary.reason = "Central chưa có holder · chờ";
-      summary.nextDelayMs = 20_000;
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // Địch đang thủ central (stack defenders target central)
-    const defenders = Array.isArray(map?.defenders) ? map.defenders : [];
-    const enemyDefs = defenders.filter(
-      (d: any) =>
-        String(d?.target_kind || "") === "central" &&
-        String(d?.clan_id || "") !== clanId &&
-        d?.is_ally !== true
-    );
-    const near = enemiesNearPoint(map, cx, cy, clanId, threatRadius);
+    const why =
+      !weHold
+        ? `holder địch/khác`
+        : lockLeft != null && lockLeft <= 0
+          ? `hết lock_until · cần công lại`
+          : `cần công`;
 
     summary.mineId = "central";
     summary.dest = { x: cx, y: cy };
     onLog?.(
       "INFO",
-      `HC Công central: holder≠mình · defenders địch ${enemyDefs.length} · địch gần tâm ${near.count}`
+      `HC Công central: ${why} · phase=${central.phase || "?"} · bossHP ${n(central.boss_hp_current)}/${n(central.boss_hp_max)} · lock_until=${central.lock_until || "—"}`
     );
 
     const atCenter = manhattan(me.x, me.y, cx, cy) <= 1;
@@ -1205,37 +1211,52 @@ export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): 
       summary.status = "WAITING";
       summary.etaSeconds = eta;
       summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-      summary.reason = `Đi công central (${cx},${cy}) · ETA ${eta}s · holder địch`;
+      summary.reason = `Đi công central (${cx},${cy}) · ${why} · ETA ${eta}s`;
       onLog?.("INFO", summary.reason);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
-    // Đứng tại central — thử pin/join phía attack nếu server cho (cùng defend_position đôi khi join stack)
-    // Ưu tiên: nếu sau này có RPC riêng (vd attack_central) → thay block này
+    // Đứng tại central → attack_position
     try {
-      // Một số client join combat central bằng cách đứng tại chỗ + heartbeat;
-      // capture thêm RPC khi bấm "tấn công" in-game nếu cần.
+      const res = await rpc(
+        "rpc_hoang_co_attack_position",
+        {
+          p_character_id: characterId,
+          p_target_kind: "central",
+          p_target_id: "central",
+        },
+        accessToken
+      );
+      summary.action = "attack_position_central";
+      summary.status = "WAITING";
+      // captured / remaining_hp giống resource
+      const captured = res?.captured === true;
+      const rem = n(res?.remaining_hp, -1);
+      const maxHp = n(res?.struct_hp_max || res?.boss_hp_max, 0);
+      if (captured || rem === 0) {
+        summary.reason = `Công central OK · captured · chip ${n(res?.chip)}`;
+        summary.nextDelayMs = 10_000;
+      } else {
+        summary.reason = `Công central · HP còn ${rem}${maxHp ? "/" + maxHp : ""} · chip ${n(res?.chip)}`;
+        summary.nextDelayMs = pollMs;
+      }
+      onLog?.("SUCCESS", summary.reason, { res });
+    } catch (e: any) {
+      summary.status = "ERROR";
+      summary.reason = `attack_position central fail: ${(e?.message || e).toString().slice(0, 140)}`;
+      summary.nextDelayMs = 20_000;
+      onLog?.("ERROR", `HC Công central: ${summary.reason}`);
+    }
+
+    try {
       await rpc(
         "rpc_hoang_co_heartbeat",
         { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
         accessToken
       );
-      summary.action = "attack_central_hold";
-      summary.status = "WAITING";
-      summary.nextDelayMs = pollMs;
-      summary.reason = `Tại central địch · chờ/giữ vị trí công · def stack ${enemyDefs.length} (cần RPC attack nếu có)`;
-      onLog?.("SUCCESS", summary.reason, {
-        holder,
-        phase: central.phase,
-        boss_hp: central.boss_hp_current,
-        enemy_defenders: enemyDefs.length,
-      });
-    } catch (e: any) {
-      summary.status = "ERROR";
-      summary.reason = `Công central fail: ${(e?.message || e).toString().slice(0, 120)}`;
-      summary.nextDelayMs = 20_000;
-      onLog?.("ERROR", `HC Công central: ${summary.reason}`);
+    } catch {
+      /* ignore */
     }
   } catch (e: any) {
     summary.status = "ERROR";
@@ -1378,22 +1399,38 @@ export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Pro
     // Tọa độ central
     const cx = Math.floor(n(map?.config?.center_x, 42));
     const cy = Math.floor(n(map?.config?.center_y, 42));
-    const central = map?.central || {};
+    const central = map?.central || status?.central || {};
     const holder = String(central.holder_clan_id || "");
     const weHoldCentral = holder === clanId;
+    const lockLeft = centralLockRemainingMs(central);
+    const lockActive = lockLeft != null && lockLeft > 0;
+    const lockMins = lockLeft != null ? Math.max(0, Math.ceil(lockLeft / 60_000)) : null;
 
-    // Chỉ thủ central khi clan mình đang giữ (hoặc phase held và là holder)
+    // Chỉ thủ khi mình giữ + còn lock_until (còn thời gian thủ)
     if (!weHoldCentral && settings.mine_require_hold !== false) {
       summary.status = "DONE";
-      summary.reason = `Central không phải clan mình (holder khác) · không thủ mỏ`;
-      summary.nextDelayMs = 30_000;
-      onLog?.("INFO", `HC Thủ mỏ/central: ${summary.reason}`);
+      summary.reason = `Central không phải clan mình · nhường Công central`;
+      summary.nextDelayMs = 15_000;
+      onLog?.("INFO", `HC Thủ central: ${summary.reason}`);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // Hết lock → không thủ nữa, chuyển phase Công (attack_position)
+    if (weHoldCentral && lockLeft != null && lockLeft <= 0) {
+      summary.status = "DONE";
+      summary.reason = `Hết lock_until (${central.lock_until}) · chuyển Công central`;
+      summary.nextDelayMs = 8_000;
+      onLog?.("WARN", `HC Thủ central: ${summary.reason}`);
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
     summary.mineId = "central";
     summary.dest = { x: cx, y: cy };
+    if (lockMins != null) {
+      onLog?.("INFO", `HC Thủ central: còn lock ~${lockMins}p · lock_until=${central.lock_until}`);
+    }
 
     const near = enemiesNearPoint(map, cx, cy, clanId, threatRadius);
     const atCentral = manhattan(me.x, me.y, cx, cy) <= 1; // gần tâm (0–1 ô)
@@ -1479,11 +1516,16 @@ export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Pro
       // stack_order/size = thứ tự hàng (1,2,3…) — log nhẹ, không dùng logic
       summary.action = "defend_central";
       summary.status = "WAITING";
-      summary.nextDelayMs = pollMs;
-      summary.reason = `Thủ central · ghim OK`;
+      // Poll theo lock còn lại (tối đa 60s)
+      const nextByLock =
+        lockLeft != null && lockLeft > 0 ? Math.min(60_000, Math.max(pollMs, Math.floor(lockLeft / 3))) : pollMs;
+      summary.nextDelayMs = nextByLock;
+      summary.reason = `Thủ central · ghim OK${lockMins != null ? ` · còn ~${lockMins}p` : ""}`;
       onLog?.("SUCCESS", summary.reason, {
+        // stack chỉ là hàng 1,2,3… — không dùng quyết định
         stack_order: res?.stack_order,
         stack_size: res?.stack_size,
+        lock_until: central.lock_until,
       });
     } catch (e: any) {
       summary.status = "ERROR";
