@@ -3004,7 +3004,9 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
       const q2 = await loadQuestProgress(characterId, accessToken, runtime, onLog);
       const fp2 = questProgressFingerprint(q2?.data);
       if (questFpBefore && fp2 && fp2 === questFpBefore) {
-        const ch = runtime.currentRealm?.channelNo ?? Number(settings.channel || settings.from_channel) || 0;
+        const ch =
+          runtime.currentRealm?.channelNo ??
+          (Number(settings.channel || settings.from_channel) || 0);
         const ck = channelCounterKey(ch);
         if (learnedByChannel[ck] === undefined || noKillStreak >= 1) {
           saveApplyCounter(!applyCounter, ck, "quest_progress_stuck");
