@@ -280,12 +280,9 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     auto_place: true,
     auto_build: true,
     auto_defend: true,
-    /** Thủ central — defend_position kind/id central */
-    auto_defend_mine: true,
-    /** Phá cờ địch — mặc định tắt */
+    /** 1 chu ky central: thu (con lock) <-> cong (het lock / dich giu) */
+    auto_central: true,
     auto_attack: false,
-    /** Công central đang do địch giữ/thủ — mặc định tắt (khung sẵn, RPC tấn nếu cần) */
-    auto_attack_central: true,
     focus_flag_id: null,
     focus_attack_flag_id: null,
     self_placed_flag_ids: [],

@@ -1755,9 +1755,8 @@ export async function runHoangCoAttackAuto(options: HoangCoAutoOptions): Promise
 /**
  * Entry 1 feature Hoàng Cổ (1 timer):
  * 1) Cắm/Xây (tuỳ chọn)
- * 2) Thủ cờ (tuỳ chọn)
- * 3) Central cycle: Thủ (còn lock) → hết lock → Công → giữ lại → Thủ lại
- *    (không dùng Phá cờ cho vòng central; auto_attack ẩn/tắt)
+ * 2) Thủ cờ map (tuỳ chọn)
+ * 3) Central — 1 option auto_central: Thủ (còn lock) → hết lock → Công → Thủ lại
  */
 export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
@@ -1766,13 +1765,15 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
   const placeOn = settings.auto_place !== false;
   const buildOn = settings.auto_build !== false;
   const defendOn = settings.auto_defend !== false;
-  const mineOn = settings.auto_defend_mine !== false;
-  // Phá cờ map — chỉ khi bật tay (không hiện UI, mặc định false)
+  // 1 option central = chu kỳ thủ ↔ công (tương thích setting cũ)
+  const centralOn =
+    settings.auto_central !== undefined
+      ? settings.auto_central !== false
+      : settings.auto_defend_mine !== false || settings.auto_attack_central !== false;
   const attackOn = settings.auto_attack === true;
-  const attackCentralOn = settings.auto_attack_central !== false;
   const expandOn = placeOn || buildOn;
 
-  if (!expandOn && !defendOn && !mineOn && !attackOn && !attackCentralOn) {
+  if (!expandOn && !defendOn && !centralOn && !attackOn) {
     return {
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
@@ -1783,21 +1784,19 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
     };
   }
 
-  // 1) Mở rộng (cắm/xây)
   if (expandOn) {
     const exp = await runHoangCoExpandAuto(options);
     exp.phase = "expand";
     if (expandStillBusy(exp) || exp.status === "NO_EVENT" || exp.status === "SKIPPED") {
       return exp;
     }
-    if (!defendOn && !mineOn && !attackCentralOn && !attackOn) {
-      exp.reason = exp.reason || "Mở rộng xong / không còn việc";
+    if (!defendOn && !centralOn && !attackOn) {
+      exp.reason = exp.reason || "Mở rộng xong";
       return exp;
     }
     onLog?.("INFO", "HoàngCổ: mở rộng xong → phase sau");
   }
 
-  // 2) Thủ cờ (map flags — tuỳ chọn, không liên quan central)
   if (defendOn) {
     const def = await runHoangCoDefendAuto(options);
     def.phase = "defend";
@@ -1808,47 +1807,28 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
     if (defendStillBusy(def) || (def.threatenedCount || 0) > 0) {
       return def;
     }
-    if (!mineOn && !attackCentralOn && !attackOn) return def;
+    if (!centralOn && !attackOn) return def;
     onLog?.("INFO", "HoàngCổ: không cờ cần thủ → phase sau");
   }
 
-  // 3) Central cycle (không liên quan Phá cờ):
-  //    Thủ khi mình giữ + còn lock_until
-  //    → hết lock / địch giữ → Công (attack_position)
-  //    → chiếm lại + có lock mới → tick sau Thủ lại
-  if (mineOn || attackCentralOn) {
-    if (mineOn) {
-      const mine = await runHoangCoDefendMineAuto(options);
-      mine.phase = "defend_mine";
-      if (mine.status === "NO_EVENT" || mine.status === "SKIPPED") return mine;
-      // Đang ghim / flee / di chuyển → bám Thủ, chưa Công
-      if (defendMineStillBusy(mine)) return mine;
-      // DONE: còn lock & an toàn đã xong vòng; hoặc hết lock / không holder
-      const switchToAttack =
-        attackCentralOn &&
-        /hết lock|không phải clan|nhường Công|chuyển Công/i.test(mine.reason || "");
-      if (!switchToAttack) {
-        // Thủ xong vòng (vẫn còn lock) hoặc không bật Công
-        if (!attackCentralOn) return mine;
-        // Có Công bật nhưng reason không phải hết lock — vẫn thử Công (địch giữ)
-        if (!/hết lock|không phải clan|nhường Công|chuyển Công/i.test(mine.reason || "")) {
-          // Nếu reason là thủ OK kiểu khác đã DONE — có thể lock vẫn còn
-          // Attack sẽ tự skip nếu còn lock + mình giữ
-        }
-      } else {
-        onLog?.("INFO", `HoàngCổ: ${mine.reason} → Công central`);
-      }
-    }
+  // Central — 1 chu kỳ (1 option)
+  if (centralOn) {
+    const defC = await runHoangCoDefendMineAuto(options);
+    defC.phase = "defend_mine";
+    if (defC.status === "NO_EVENT" || defC.status === "SKIPPED") return defC;
+    if (defendMineStillBusy(defC)) return defC;
 
-    if (attackCentralOn) {
-      const ac = await runHoangCoAttackCentralAuto(options);
-      ac.phase = "attack_central";
-      // captured / giữ lại → tick sau phase Thủ chạy trước
-      return ac;
+    const needCong = /hết lock|không phải clan|nhường Công|chuyển Công/i.test(defC.reason || "");
+    if (!needCong) {
+      // Còn cửa sổ thủ / chờ an toàn — không công
+      return defC;
     }
+    onLog?.("INFO", `HoàngCổ Central: ${defC.reason} → Công`);
+    const ac = await runHoangCoAttackCentralAuto(options);
+    ac.phase = "attack_central";
+    return ac;
   }
 
-  // 4) Phá cờ map — ẩn UI, chỉ auto_attack=true trong JSON (không dùng cho central)
   if (attackOn) {
     const atk = await runHoangCoAttackAuto(options);
     atk.phase = "attack";
