@@ -860,66 +860,77 @@ async function buyMpPotion(args: {
   return { ok: true, itemCode, qty: bought, spent, payload, result };
 }
 
+/**
+ * Uống MP: thử pill_lk_mp → tc → … → lh.
+ * Hết sạch → mua CHỈ pill_lk_mp rồi uống lại.
+ */
 async function ensureMpPotionAndUse(args: {
   characterId: string;
   accessToken: string;
-  itemCode: string;
+  settings?: Record<string, any>;
   autoBuy: boolean;
   buyQty: number;
   shopCode?: string;
   onLog?: FarmAutoOptions["onLog"];
 }) {
-  const { characterId, accessToken, itemCode, autoBuy, buyQty, shopCode, onLog } = args;
+  const { characterId, accessToken, settings = {}, autoBuy, buyQty, shopCode, onLog } = args;
   let boughtCount = 0;
   let buySpent = 0;
   let buyResult: any = undefined;
+  const codes = orderedMpPillCodes(settings);
+  const buyCode = mpBuyItemCode(settings);
+
+  onLog?.("INFO", `Farm hết MP → thử đan thấp→cao (${codes.slice(0, 3).join(" → ")}…)`);
+
+  for (const itemCode of codes) {
+    try {
+      const used = await useMpPotion(characterId, accessToken, itemCode, onLog);
+      return { used, boughtCount, buySpent, buyResult, itemCode };
+    } catch {
+      /* thử cấp cao hơn */
+    }
+  }
+
+  if (!autoBuy) {
+    const err: any = new Error(`Hết bình MP (đã thử ${codes.join(",")}) · auto_buy tắt`);
+    err.data = { reason: "no_mp_pill", tried: codes };
+    throw err;
+  }
+
+  // Mua chỉ LK
+  const preferQty = resolveMpBuyQty(buyQty);
+  onLog?.("INFO", `Farm hết mọi pill MP → mua shop ${buyCode} ×${preferQty} (chỉ ưu tiên LK)`);
 
   try {
-    const used = await useMpPotion(characterId, accessToken, itemCode, onLog);
-    return { used, boughtCount, buySpent, buyResult };
-  } catch (useError: any) {
-    // Hết bình / không dùng được → mua đúng loại itemCode đang cấu hình farm
-    if (!autoBuy) throw useError;
-
-    const preferQty = resolveMpBuyQty(buyQty);
-    onLog?.(
-      "INFO",
-      `Farm hết ${itemCode} → mua shop alchemy ×${preferQty} (cùng loại đang bơm MP).`,
-      { itemCode, preferQty, useError: useError?.message }
-    );
-
-    try {
+    buyResult = await buyMpPotion({
+      characterId,
+      accessToken,
+      itemCode: buyCode,
+      qty: preferQty,
+      shopCode,
+      onLog,
+    });
+  } catch (buyError: any) {
+    if (preferQty !== 1) {
+      onLog?.("WARN", `Farm mua ${buyCode} ×${preferQty} fail → thử ×1`, buyError?.data || { message: buyError?.message });
       buyResult = await buyMpPotion({
         characterId,
         accessToken,
-        itemCode,
-        qty: preferQty,
+        itemCode: buyCode,
+        qty: 1,
         shopCode,
         onLog,
       });
-    } catch (buyError: any) {
-      // Mua 10 fail (thiếu bạc/giới hạn) → thử mua 1 để cứu farm
-      if (preferQty !== 1) {
-        onLog?.("WARN", `Farm mua ×${preferQty} fail → thử ×1 ${itemCode}.`, buyError?.data || { message: buyError?.message });
-        buyResult = await buyMpPotion({
-          characterId,
-          accessToken,
-          itemCode,
-          qty: 1,
-          shopCode,
-          onLog,
-        });
-      } else {
-        throw buyError;
-      }
+    } else {
+      throw buyError;
     }
-
-    boughtCount += Number(buyResult?.qty || 0);
-    buySpent += Number(buyResult?.spent || 0);
-    await cancellableSleep(350);
-    const used = await useMpPotion(characterId, accessToken, itemCode, onLog);
-    return { used, boughtCount, buySpent, buyResult };
   }
+
+  boughtCount += Number(buyResult?.qty || 0);
+  buySpent += Number(buyResult?.spent || 0);
+  await cancellableSleep(350);
+  const used = await useMpPotion(characterId, accessToken, buyCode, onLog);
+  return { used, boughtCount, buySpent, buyResult, itemCode: buyCode };
 }
 
 function collectMobs(snapshot: any): any[] {
@@ -1380,27 +1391,30 @@ async function getRegionChannels(args: {
   return parsed.filter(row => wanted.has(row.channelNo));
 }
 
-/**
- * Phản đòn p_apply_counter — test / chỉnh tay:
- * - on / true  → gửi true
- * - off / false → gửi false
- * - omit / default / none / auto → KHÔNG gửi field (default server)
- */
-function resolveApplyCounter(settings: Record<string, any>): {
-  apply: boolean | null;
-  reason: string;
-  omit: boolean;
-} {
-  const raw = settings.apply_counter ?? settings.p_apply_counter ?? settings.apply_counter_mode ?? "omit";
-  const s = String(raw).toLowerCase().trim();
-  if (s === "true" || s === "on" || s === "1" || s === "yes" || raw === true) {
-    return { apply: true, reason: "send_true", omit: false };
-  }
-  if (s === "false" || s === "off" || s === "0" || s === "no" || raw === false) {
-    return { apply: false, reason: "send_false", omit: false };
-  }
-  // omit | default | none | auto | empty
-  return { apply: null, reason: "omit_field_server_default", omit: true };
+/** Bình MP: ưu tiên dùng từ thấp → cao (lk → … → lh) */
+const MP_PILL_TIERS = ["lk", "tc", "kd", "na", "ht", "lh"] as const;
+const MP_BUY_CODE_DEFAULT = "pill_lk_mp";
+
+function orderedMpPillCodes(settings: Record<string, any> = {}): string[] {
+  const codes: string[] = [];
+  const push = (c: string) => {
+    const x = String(c || "").trim();
+    if (x && !codes.includes(x)) codes.push(x);
+  };
+  // preferred từ lần trước dùng OK
+  push(String(settings.last_mp_pill || ""));
+  for (const t of MP_PILL_TIERS) push(`pill_${t}_mp`);
+  // custom user (nếu có) thử sau cascade thấp→cao? User: ưu tiên thấp→cao; custom để cuối
+  const custom = String(settings.mp_potion_item_code || "").trim();
+  if (custom && !/^pill_(lk|tc|kd|na|ht|lh)_mp$/i.test(custom)) push(custom);
+  return codes;
+}
+
+/** Mua shop: chỉ pill_lk_mp (hoặc override buy code) */
+function mpBuyItemCode(settings: Record<string, any> = {}): string {
+  const buy = String(settings.mp_potion_buy_item_code || settings.mp_buy_item_code || "").trim();
+  if (buy) return buy;
+  return MP_BUY_CODE_DEFAULT;
 }
 
 /** Mob đang bị đánh / combat (né nếu detect được từ snapshot) */
@@ -1438,25 +1452,24 @@ function getMobMaxHp(raw: any): number | null {
   return toNumber(firstDefined(raw?.hp_max, raw?.max_hp, raw?.maxHp, raw?.health_max, raw?.max_health, raw?.hpMax));
 }
 
+/** Attack — không gửi p_apply_counter (default server) */
 async function attackMob(
   characterId: string,
   accessToken: string,
   realmId: string,
   mobId: string,
-  skillSlot: number,
-  applyCounter: boolean | null
+  skillSlot: number
 ) {
-  const payload: Record<string, any> = {
-    p_character_id: characterId,
-    p_realm_id: realmId,
-    p_mob_id: mobId,
-    p_skill_slot: skillSlot,
-  };
-  // null = không gửi p_apply_counter (test default server)
-  if (applyCounter === true || applyCounter === false) {
-    payload.p_apply_counter = applyCounter;
-  }
-  return rpc("rpc_attack_realm_mob_v3", payload, accessToken);
+  return rpc(
+    "rpc_attack_realm_mob_v3",
+    {
+      p_character_id: characterId,
+      p_realm_id: realmId,
+      p_mob_id: mobId,
+      p_skill_slot: skillSlot,
+    },
+    accessToken
+  );
 }
 
 
@@ -1466,9 +1479,8 @@ async function attackWithMpRecovery(args: {
   realmId: string;
   mobId: string;
   skillSlot: number;
-  applyCounter: boolean | null;
   autoUseMpPotion: boolean;
-  mpPotionItemCode: string;
+  settings?: Record<string, any>;
   autoBuyMpPotion?: boolean;
   mpPotionBuyQty?: number;
   mpPotionShopCode?: string;
@@ -1482,9 +1494,8 @@ async function attackWithMpRecovery(args: {
     realmId,
     mobId,
     skillSlot,
-    applyCounter,
     autoUseMpPotion,
-    mpPotionItemCode,
+    settings = {},
     autoBuyMpPotion = true,
     mpPotionBuyQty = 10,
     mpPotionShopCode = "alchemy",
@@ -1502,7 +1513,7 @@ async function attackWithMpRecovery(args: {
 
   for (let attempt = 0; attempt <= Math.max(0, maxPotionAttempts); attempt += 1) {
     try {
-      const attackResult = await attackMob(characterId, accessToken, realmId, mobId, skillSlot, applyCounter);
+      const attackResult = await attackMob(characterId, accessToken, realmId, mobId, skillSlot);
       return { attackResult, mpPotionUsedCount, mpPotionFailedCount, mpPotionBoughtCount, mpPotionBuySpent, lastMpPotionResult };
     } catch (error: any) {
       if (!isNotEnoughMpError(error) || !autoUseMpPotion) throw error;
@@ -1526,18 +1537,18 @@ async function attackWithMpRecovery(args: {
         const recovery = await ensureMpPotionAndUse({
           characterId,
           accessToken,
-          itemCode: mpPotionItemCode,
+          settings,
           autoBuy: Boolean(autoBuyMpPotion),
           buyQty: mpPotionBuyQty,
           shopCode: mpPotionShopCode,
           onLog,
         });
-        lastMpPotionResult = { used: recovery.used, buyResult: recovery.buyResult };
+        lastMpPotionResult = { used: recovery.used, buyResult: recovery.buyResult, itemCode: recovery.itemCode };
         mpPotionUsedCount += 1;
         mpPotionBoughtCount += recovery.boughtCount;
         mpPotionBuySpent += recovery.buySpent;
-        // Bơm/mua xong đánh lại ngay trong cùng vòng, không chờ tick 5 giây tiếp theo.
-        // Delay ngắn để server kịp cập nhật MP sau rpc_use_item.
+        if (recovery.itemCode) settings.last_mp_pill = recovery.itemCode;
+        // Bơm/mua xong đánh lại ngay trong cùng vòng
         await cancellableSleep(700, shouldStop);
         continue;
       } catch (potionError: any) {
@@ -1547,7 +1558,6 @@ async function attackWithMpRecovery(args: {
           reason: "mp_potion_failed",
           attackError: lastNoManaError?.data || { message: lastNoManaError?.message },
           potionError: potionError?.data || { message: potionError?.message },
-          mpPotionItemCode,
           autoBuyMpPotion,
           mpPotionBuyQty,
         };
@@ -1949,17 +1959,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const maxHitsSameMobBeforeRefresh = Math.max(1, Number(settings.max_hits_same_mob_before_refresh || 60));
   const skillSlot = 0;
   const autoUseMpPotion = settings.auto_use_mp_potion !== false;
-  // Cùng mã bình đang bơm (pill_lk_mp / …) — hết thì mua đúng loại ở shop alchemy
-  const mpPotionItemCode = String(settings.mp_potion_item_code || "pill_lk_mp").trim() || "pill_lk_mp";
-  // Mặc định BẬT mua khi hết; chỉ tắt khi user set false
+  // Uống MP: cascade lk→lh; mua shop chỉ pill_lk_mp
   const autoBuyMpPotion = settings.auto_buy_mp_potion !== false;
-  // Shop chỉ 1 hoặc 10 — mặc định 10
   const mpPotionBuyQty = resolveMpBuyQty(settings.mp_potion_buy_qty ?? 10);
   const mpPotionShopCode = String(settings.mp_potion_shop_code || "alchemy").trim() || "alchemy";
   const verifyFarmKillWithSnapshot = settings.verify_farm_kill_with_snapshot !== false;
-  // Phản đòn: chỉnh tay on/off (mặc định off)
-  const applyCounterResolved = resolveApplyCounter(settings);
-  const applyCounter = applyCounterResolved.apply;
 
   const errors: string[] = [];
   const regionSource = regionPlan(runtime, settings);
@@ -1997,9 +2001,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const neededTypes = orderedTypesForMode(mode, priority, quest?.extracted ? { needed: quest.extracted.needed, done: quest.extracted.done } : null);
   onLog?.(
     "INFO",
-    applyCounterResolved.omit
-      ? `Farm attack: KHÔNG gửi p_apply_counter (${applyCounterResolved.reason}) · test default server`
-      : `Farm attack: p_apply_counter=${applyCounter} (${applyCounterResolved.reason}) · free_mobs · snap sau kill`
+    `Farm · attack omit p_apply_counter · MP uống lk→lh · mua shop ${mpBuyItemCode(settings)} · free_mobs · snap sau kill`
   );
   const effectiveMode: FarmRunSummary["effectiveMode"] = smartQuestDone
     ? (stopSmartWhenQuestDone ? "smart_done_stopped" : "all_after_smart_done")
@@ -2361,9 +2363,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             realmId: realm.realmId,
             mobId: next.target.id,
             skillSlot,
-            applyCounter,
             autoUseMpPotion,
-            mpPotionItemCode,
+            settings,
             autoBuyMpPotion,
             mpPotionBuyQty,
             mpPotionShopCode,
@@ -2400,9 +2401,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
                   realmId: runtime.currentRealm.realmId,
                   mobId: next.target.id,
                   skillSlot,
-                  applyCounter,
                   autoUseMpPotion,
-                  mpPotionItemCode,
+                  settings,
                   autoBuyMpPotion,
                   mpPotionBuyQty,
                   mpPotionShopCode,
@@ -2541,7 +2541,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             // Không log ERROR liên tục; giữ mob hiện tại và thử lại vòng sau.
             mpPotionFailedCount += 1;
             lastMpPotionResult = error?.data || { message: error?.message };
-            onLog?.("WARN", `Farm vẫn thiếu MP sau khi thử dùng ${mpPotionItemCode}, sẽ thử lại vòng sau.`, lastMpPotionResult);
+            onLog?.("WARN", `Farm vẫn thiếu MP sau cascade pill_lk→lh (+ mua LK), sẽ thử lại vòng sau.`, lastMpPotionResult);
             return {
               startedAt,
               finishedAt: new Date().toISOString(),

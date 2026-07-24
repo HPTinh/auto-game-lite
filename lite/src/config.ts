@@ -93,22 +93,16 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     summary_log_interval_seconds: 1800,
     max_available_base_codes: 2,
     auto_use_mp_potion: true,
-    /** Mã bình MP đang bơm — hết thì mua đúng mã này ở shop alchemy */
-    mp_potion_item_code: "pill_lk_mp",
-    /** Hết bình → tự mua (rpc_nh_shop_buy) */
+    /** Hết bình → tự mua pill_lk_mp (rpc_nh_shop_buy) */
     auto_buy_mp_potion: true,
     /** Số lượng mỗi lần mua shop: 10 (mặc định) hoặc 1 */
     mp_potion_buy_qty: 10,
     mp_potion_shop_code: "alchemy",
+    /** Mã mua shop — luôn ưu tiên LK */
+    mp_potion_buy_item_code: "pill_lk_mp",
     smart_stop_when_quest_done: false,
     mob_cache_max_age_ms: 3000,
     no_mob_before_rotate: 1,
-    /**
-     * p_apply_counter trên attack:
-     * omit = không gửi field (default server) — dùng để test
-     * on = true · off = false
-     */
-    apply_counter: "omit",
     /** Chỉ farm mob sống + không bị đánh (HP full / không combat flag) */
     prefer_free_mobs: true,
   },
