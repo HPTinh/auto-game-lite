@@ -1948,6 +1948,35 @@ export async function runHoangCoAttackAuto(options: HoangCoAutoOptions): Promise
   return summary;
 }
 
+/** Danh sách bang hội địch trên map (để UI chọn, không gõ tay) */
+export async function listHoangCoEnemyClans(options: {
+  characterId: string;
+  accessToken: string;
+}): Promise<{
+  clans: Array<{ clan_id: string; clan_name: string; flag_count: number }>;
+  myClanId?: string;
+  myClanName?: string;
+}> {
+  const status = await rpc("rpc_hoang_co_status", { p_character_id: options.characterId }, options.accessToken);
+  const myClanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+  const myClanName = String(status?.my_clan_score?.clan_name || "").trim() || undefined;
+  const map = await rpc("rpc_hoang_co_map_state", { p_character_id: options.characterId }, options.accessToken);
+  const flags = parseFlags(map);
+  const by = new Map<string, { clan_id: string; clan_name: string; flag_count: number }>();
+  for (const f of flags) {
+    if (!f.clan_id || f.clan_id === myClanId) continue;
+    const name = (f.clan_name || f.clan_id).trim() || f.clan_id;
+    const key = f.clan_id;
+    const cur = by.get(key);
+    if (cur) cur.flag_count += 1;
+    else by.set(key, { clan_id: f.clan_id, clan_name: name, flag_count: 1 });
+  }
+  const clans = [...by.values()].sort(
+    (a, b) => b.flag_count - a.flag_count || a.clan_name.localeCompare(b.clan_name, "vi")
+  );
+  return { clans, myClanId: myClanId || undefined, myClanName };
+}
+
 /**
  * Phá cờ (cắm → xây → phá) — tối ưu tới cờ bang đích
  *

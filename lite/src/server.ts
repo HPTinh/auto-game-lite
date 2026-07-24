@@ -12,7 +12,7 @@ import {
   stopAccount,
   stopAll,
 } from "./orchestrator";
-import { listCraftRecipes, filterCraftRecipes, normalizeCraftCategory } from "./engines";
+import { listCraftRecipes, filterCraftRecipes, normalizeCraftCategory, listHoangCoEnemyClans } from "./engines";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -283,6 +283,43 @@ app.patch("/api/accounts/:id/features", (req, res) => {
   }
   const acc = store.get(id);
   res.json({ ok: true, account: acc ? store.toPublic(acc) : null });
+});
+
+/**
+ * Danh sách bang hội địch trên map Hoàng Cổ (flags[].clan_name)
+ * — UI chọn phá cờ, không gõ tay.
+ */
+app.get("/api/accounts/:id/hoang-co/clans", async (req, res) => {
+  const id = req.params.id;
+  const acc = store.get(id);
+  if (!acc) return res.status(404).json({ ok: false, error: "Account not found" });
+  try {
+    const runtime = await ensureRuntime(id);
+    if (!runtime?.accessToken || !runtime.characterId) {
+      return res.status(400).json({ ok: false, error: "Chưa login — bấm Check account trước" });
+    }
+    const data = await listHoangCoEnemyClans({
+      characterId: runtime.characterId,
+      accessToken: runtime.accessToken,
+    });
+    const settings = acc.features?.hoang_co?.settings || {};
+    store.setFeature(id, "hoang_co", {
+      settings: {
+        ...settings,
+        enemy_clan_list: data.clans,
+        enemy_clan_list_at: new Date().toISOString(),
+      },
+    });
+    res.json({
+      ok: true,
+      clans: data.clans,
+      myClanId: data.myClanId,
+      myClanName: data.myClanName,
+      at: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    res.status(400).json({ ok: false, error: e?.message || "Lấy list bang fail" });
+  }
 });
 
 /**

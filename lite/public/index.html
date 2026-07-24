@@ -247,9 +247,10 @@
         {k:"body_cult_element",l:"Hệ",t:"select",o:["metal","wood","water","fire","earth"]},
         {k:"body_cult_session_type",l:"Session",t:"select",o:["long","short"]},
       ],
+      // hoang_co: UI riêng (load list bang) — FIELDS fallback
       hoang_co: [
         {k:"auto_break_flag",l:"Phá cờ (cắm → xây → phá)",t:"bool"},
-        {k:"target_clan_name",l:"Bang hội cần phá (trống=mọi địch)",t:"text",hint:"vd Thập Phương Lâu — map_state.flags.clan_name"},
+        {k:"target_clan_name",l:"Bang hội cần phá",t:"text"},
         {k:"flee_on_enemy_near",l:"Địch trong 3 ô → chạy cờ mình",t:"bool"},
         {k:"auto_place",l:"Cắm cờ (mở rộng base)",t:"bool"},
         {k:"auto_build",l:"Xây cờ (mở rộng)",t:"bool"},
@@ -837,6 +838,10 @@
             • Tier theo rank account (<code>rpc_wb_channels</code>)<br/>
             • Chỉ cần <b>tick W.Boss</b> + Start
           </div>`;
+      } else if (featureId === "hoang_co") {
+        modalEl.classList.remove("wide");
+        $("modalBody").innerHTML = hoangCoModalHtml(cur);
+        bindHoangCoModalEvents();
       } else {
         modalEl.classList.remove("wide");
         const fields = FIELDS[featureId] || [];
@@ -847,6 +852,92 @@
         }
       }
       $("mask").classList.add("show");
+    }
+
+    function hoangCoClanOptions(draft) {
+      const list = Array.isArray(draft.enemy_clan_list) ? draft.enemy_clan_list : [];
+      const cur = String(draft.target_clan_name || "");
+      let opts = `<option value="">— Mọi bang địch —</option>`;
+      for (const c of list) {
+        const name = c.clan_name || c.clan_id || "?";
+        const sel = cur === name || cur === c.clan_id ? "selected" : "";
+        opts += `<option value="${esc(name)}" ${sel}>${esc(name)} (${c.flag_count || 0} cờ)</option>`;
+      }
+      // Giữ giá trị đã lưu nếu chưa có trong list
+      if (cur && !list.some((c) => c.clan_name === cur || c.clan_id === cur)) {
+        opts += `<option value="${esc(cur)}" selected>${esc(cur)} (đã lưu)</option>`;
+      }
+      return opts;
+    }
+
+    function hoangCoModalHtml(draft) {
+      const bool = (k, def) => {
+        const v = draft[k];
+        if (v === undefined || v === null) return def;
+        return v === true || v === "true" || v === 1 || v === "1";
+      };
+      const at = draft.enemy_clan_list_at
+        ? String(draft.enemy_clan_list_at).slice(0, 19).replace("T", " ")
+        : "";
+      const n = Array.isArray(draft.enemy_clan_list) ? draft.enemy_clan_list.length : 0;
+      return `
+        <div class="f chk"><input type="checkbox" data-k="auto_break_flag" ${bool("auto_break_flag", false)?"checked":""}/><label><b>Phá cờ</b> (cắm → xây → phá)</label></div>
+        <div class="f">
+          <label>Bang hội cần phá (chọn từ map)</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select data-k="target_clan_name" id="hcClanSelect" style="flex:1">${hoangCoClanOptions(draft)}</select>
+            <button type="button" class="p" id="btnLoadHcClans" style="white-space:nowrap">Tải list</button>
+          </div>
+          <div class="mu" style="font-size:10px;margin-top:4px" id="hcClanHint">
+            ${n ? `Đã tải <b>${n}</b> bang · ${esc(at)}` : "Bấm <b>Tải list</b> (cần Check account + event map)"}
+          </div>
+        </div>
+        <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", true)?"checked":""}/><label>Địch trong 3 ô → chạy cờ mình</label></div>
+        <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
+        <div class="mu" style="font-size:11px;margin-bottom:6px">Chế độ khác (khi <b>tắt</b> Phá cờ):</div>
+        <div class="f chk"><input type="checkbox" data-k="auto_place" ${bool("auto_place", true)?"checked":""}/><label>Cắm cờ (mở rộng)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_build" ${bool("auto_build", true)?"checked":""}/><label>Xây cờ (mở rộng)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_defend" ${bool("auto_defend", true)?"checked":""}/><label>Thủ cờ</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_central" ${bool("auto_central", true)?"checked":""}/><label>Central (thủ ↔ công)</label></div>
+      `;
+    }
+
+    function bindHoangCoModalEvents() {
+      const loadBtn = $("btnLoadHcClans");
+      if (!loadBtn || !modal || modal.featureId !== "hoang_co") return;
+      loadBtn.onclick = async () => {
+        if (busy) return;
+        busy = true;
+        loadBtn.disabled = true;
+        loadBtn.textContent = "Đang tải…";
+        try {
+          const data = await api(`/api/accounts/${modal.accId}/hoang-co/clans`);
+          const clans = data.clans || [];
+          modal.draft.enemy_clan_list = clans;
+          modal.draft.enemy_clan_list_at = data.at || new Date().toISOString();
+          // giữ selection nếu vẫn còn
+          const sel = $("hcClanSelect");
+          const prev = sel ? sel.value : modal.draft.target_clan_name || "";
+          if (sel) {
+            modal.draft.target_clan_name = prev;
+            sel.innerHTML = hoangCoClanOptions(modal.draft);
+            if (prev) sel.value = prev;
+          }
+          const hint = $("hcClanHint");
+          if (hint) {
+            hint.innerHTML = `Đã tải <b>${clans.length}</b> bang địch` +
+              (data.myClanName ? ` · mình: ${esc(data.myClanName)}` : "") +
+              (clans.length ? "" : " — map trống / chưa event?");
+          }
+          msg(clans.length ? `List bang: ${clans.map(c=>c.clan_name).slice(0,5).join(", ")}${clans.length>5?"…":""}` : "Không có bang địch trên map", true);
+        } catch (e) {
+          msg(e.message || "Tải list bang fail", false);
+        } finally {
+          busy = false;
+          loadBtn.disabled = false;
+          loadBtn.textContent = "Tải list";
+        }
+      };
     }
 
     function fieldHtml(f, val) {
@@ -919,6 +1010,10 @@
           if (Array.isArray(modal.draft?.recipe_cache)) settings.recipe_cache = modal.draft.recipe_cache;
           if (modal.draft?.recipe_cache_at) settings.recipe_cache_at = modal.draft.recipe_cache_at;
           if (!settings.recipe_code && modal.draft?.recipe_code) settings.recipe_code = modal.draft.recipe_code;
+        }
+        if (modal.featureId === "hoang_co") {
+          if (Array.isArray(modal.draft?.enemy_clan_list)) settings.enemy_clan_list = modal.draft.enemy_clan_list;
+          if (modal.draft?.enemy_clan_list_at) settings.enemy_clan_list_at = modal.draft.enemy_clan_list_at;
         }
         const { accId, featureId } = modal;
         await api(`/api/accounts/${accId}/features`, {

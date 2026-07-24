@@ -299,8 +299,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      * Bật → mission phá; tắt mới mở rộng/thủ/central.
      */
     auto_break_flag: false,
-    /** Tên bang hội cần phá (vd "Thập Phương Lâu") — trống = mọi địch */
+    /** Tên bang hội cần phá — chọn từ list API (trống = mọi địch) */
     target_clan_name: "",
+    /** Cache list bang địch (GET /hoang-co/clans) */
+    enemy_clan_list: [],
+    enemy_clan_list_at: "",
     /** Có địch trong bán kính (cheby, 1=3×3) → chạy cờ mình khác */
     flee_on_enemy_near: true,
     flee_radius: 1,
