@@ -103,8 +103,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     smart_stop_when_quest_done: false,
     mob_cache_max_age_ms: 3000,
     no_mob_before_rotate: 1,
-    /** Phản đòn quái — chỉnh tay: on | off (mặc định off) */
-    apply_counter: "off",
+    /**
+     * p_apply_counter trên attack:
+     * omit = không gửi field (default server) — dùng để test
+     * on = true · off = false
+     */
+    apply_counter: "omit",
     /** Chỉ farm mob sống + không bị đánh (HP full / không combat flag) */
     prefer_free_mobs: true,
   },

@@ -1381,20 +1381,26 @@ async function getRegionChannels(args: {
 }
 
 /**
- * Phản đòn — chỉnh tay: on/true | off/false (mặc định off)
- * Không còn probe / rpc_set_auto_config
+ * Phản đòn p_apply_counter — test / chỉnh tay:
+ * - on / true  → gửi true
+ * - off / false → gửi false
+ * - omit / default / none / auto → KHÔNG gửi field (default server)
  */
-function resolveApplyCounter(settings: Record<string, any>): { apply: boolean; reason: string } {
-  const raw = settings.apply_counter ?? settings.p_apply_counter ?? settings.apply_counter_mode ?? "off";
+function resolveApplyCounter(settings: Record<string, any>): {
+  apply: boolean | null;
+  reason: string;
+  omit: boolean;
+} {
+  const raw = settings.apply_counter ?? settings.p_apply_counter ?? settings.apply_counter_mode ?? "omit";
   const s = String(raw).toLowerCase().trim();
   if (s === "true" || s === "on" || s === "1" || s === "yes" || raw === true) {
-    return { apply: true, reason: "manual_on" };
+    return { apply: true, reason: "send_true", omit: false };
   }
-  // auto / off / false → không phản (user chỉnh tay khi cần on)
-  if (s === "auto") {
-    return { apply: false, reason: "auto_default_off_manual" };
+  if (s === "false" || s === "off" || s === "0" || s === "no" || raw === false) {
+    return { apply: false, reason: "send_false", omit: false };
   }
-  return { apply: false, reason: "manual_off" };
+  // omit | default | none | auto | empty
+  return { apply: null, reason: "omit_field_server_default", omit: true };
 }
 
 /** Mob đang bị đánh / combat (né nếu detect được từ snapshot) */
@@ -1438,15 +1444,19 @@ async function attackMob(
   realmId: string,
   mobId: string,
   skillSlot: number,
-  applyCounter: boolean
+  applyCounter: boolean | null
 ) {
-  return rpc("rpc_attack_realm_mob_v3", {
+  const payload: Record<string, any> = {
     p_character_id: characterId,
     p_realm_id: realmId,
     p_mob_id: mobId,
     p_skill_slot: skillSlot,
-    p_apply_counter: applyCounter,
-  }, accessToken);
+  };
+  // null = không gửi p_apply_counter (test default server)
+  if (applyCounter === true || applyCounter === false) {
+    payload.p_apply_counter = applyCounter;
+  }
+  return rpc("rpc_attack_realm_mob_v3", payload, accessToken);
 }
 
 
@@ -1456,7 +1466,7 @@ async function attackWithMpRecovery(args: {
   realmId: string;
   mobId: string;
   skillSlot: number;
-  applyCounter: boolean;
+  applyCounter: boolean | null;
   autoUseMpPotion: boolean;
   mpPotionItemCode: string;
   autoBuyMpPotion?: boolean;
@@ -1986,8 +1996,10 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const questNeededTypes = quest?.extracted?.needed || [];
   const neededTypes = orderedTypesForMode(mode, priority, quest?.extracted ? { needed: quest.extracted.needed, done: quest.extracted.done } : null);
   onLog?.(
-    "DEBUG",
-    `Farm apply_counter=${applyCounter} (${applyCounterResolved.reason}) · free_mobs_only · snapshot sau mỗi kill`
+    "INFO",
+    applyCounterResolved.omit
+      ? `Farm attack: KHÔNG gửi p_apply_counter (${applyCounterResolved.reason}) · test default server`
+      : `Farm attack: p_apply_counter=${applyCounter} (${applyCounterResolved.reason}) · free_mobs · snap sau kill`
   );
   const effectiveMode: FarmRunSummary["effectiveMode"] = smartQuestDone
     ? (stopSmartWhenQuestDone ? "smart_done_stopped" : "all_after_smart_done")
