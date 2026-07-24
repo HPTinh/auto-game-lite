@@ -71,6 +71,12 @@ export interface FarmRunSummary {
   scannedRealmCount: number;
   lastTarget?: FarmAttackSummary;
   nextDelayMs: number;
+  /**
+   * soft_rescan: orchestrator cho delay ngắn (mob_dead / lệch kênh),
+   * không ép min 5s farm CD.
+   */
+  softRescan?: boolean;
+  rescanReason?: string;
   errors: string[];
   questProgress?: any;
 }
@@ -120,6 +126,12 @@ interface FarmRuntimeState {
   lastSnapshotSummary?: FarmSnapshotSummary;
   lastSnapshotConflictAt?: number;
   lastSnapshotConflictCount?: number;
+  /** mobId → expireAt ms — không pick lại mob vừa dead */
+  deadMobUntil: Record<string, number>;
+  /** Chuỗi mob_dead liên tiếp → rotate kênh */
+  mobDeadStreak: number;
+  /** Chuỗi lỗi kênh/realm → hard rejoin / rotate */
+  channelErrorStreak: number;
 }
 
 interface RealmChannelInfo {
@@ -526,9 +538,17 @@ function getRuntime(characterId: string, settings: Record<string, any>): FarmRun
       channelCache: {},
       lastSnapshot: undefined,
       lastSnapshotSummary: undefined,
+      deadMobUntil: {},
+      mobDeadStreak: 0,
+      channelErrorStreak: 0,
     };
     FARM_RUNTIME.set(characterId, rt);
   }
+
+  // migrate runtime cũ (thiếu field mới)
+  if (!rt.deadMobUntil) rt.deadMobUntil = {};
+  if (rt.mobDeadStreak == null) rt.mobDeadStreak = 0;
+  if (rt.channelErrorStreak == null) rt.channelErrorStreak = 0;
 
   if (rt.realmTier !== tier) {
     rt.realmTier = tier;
@@ -545,6 +565,9 @@ function getRuntime(characterId: string, settings: Record<string, any>): FarmRun
     rt.lastSnapshotSummary = undefined;
     rt.lastSnapshotConflictAt = undefined;
     rt.lastSnapshotConflictCount = 0;
+    rt.deadMobUntil = {};
+    rt.mobDeadStreak = 0;
+    rt.channelErrorStreak = 0;
   }
 
   for (const code of normalizeBaseCodeList(settings.available_base_codes || settings.farm_available_base_codes, tierRegions)) rt.availableBaseCodes.add(code);
@@ -628,6 +651,60 @@ function isMobDeadError(error: any) {
 function isNotJoinedError(error: any) {
   const raw = errorText(error);
   return raw.includes("not_joined") || raw.includes("notjoined") || raw.includes("not_join");
+}
+
+/** Lệch kênh / realm / không còn trong secret realm */
+function isChannelRealmError(error: any) {
+  const raw = errorText(error);
+  return (
+    isNotJoinedError(error) ||
+    raw.includes("wrong_channel") ||
+    raw.includes("not_same_channel") ||
+    raw.includes("channel_mismatch") ||
+    raw.includes("invalid_realm") ||
+    raw.includes("not_in_realm") ||
+    raw.includes("realm_mismatch") ||
+    raw.includes("wrong_realm") ||
+    raw.includes("not_in_secret") ||
+    raw.includes("not_in_secret_realm") ||
+    raw.includes("leave_first") ||
+    raw.includes("already_in_other") ||
+    raw.includes("different_channel") ||
+    raw.includes("khong_cung_kenh") ||
+    raw.includes("khongcungkenh") ||
+    raw.includes("sai_kenh") ||
+    raw.includes("saikenh") ||
+    raw.includes("mob_not_found") ||
+    raw.includes("mobnotfound") ||
+    raw.includes("invalid_mob") ||
+    raw.includes("unknown_mob")
+  );
+}
+
+function purgeDeadMobBlacklist(runtime: FarmRuntimeState) {
+  const now = Date.now();
+  for (const [id, exp] of Object.entries(runtime.deadMobUntil || {})) {
+    if (!exp || exp <= now) delete runtime.deadMobUntil[id];
+  }
+}
+
+function blacklistDeadMob(runtime: FarmRuntimeState, mobId: string, ttlMs = 12_000) {
+  if (!mobId) return;
+  if (!runtime.deadMobUntil) runtime.deadMobUntil = {};
+  runtime.deadMobUntil[mobId] = Date.now() + Math.max(3000, ttlMs);
+}
+
+function isMobBlacklisted(runtime: FarmRuntimeState, mobId: string) {
+  purgeDeadMobBlacklist(runtime);
+  const exp = runtime.deadMobUntil?.[mobId];
+  return Boolean(exp && exp > Date.now());
+}
+
+function clearTargetQueue(runtime: FarmRuntimeState) {
+  runtime.currentMob = null;
+  runtime.currentMobHits = 0;
+  runtime.mobQueue = [];
+  runtime.mobQueueAt = 0;
 }
 
 function isLimitError(error: any) {
@@ -1030,7 +1107,14 @@ function learnFarmableRegion(args: {
   }
 }
 
-function extractMobs(snapshot: any, wantedTypes: FarmMobType[], claimMobLock?: FarmAutoOptions["claimMobLock"], realm?: FarmRuntimeState["currentRealm"], lockTtlMs = 7000) {
+function extractMobs(
+  snapshot: any,
+  wantedTypes: FarmMobType[],
+  claimMobLock?: FarmAutoOptions["claimMobLock"],
+  realm?: FarmRuntimeState["currentRealm"],
+  lockTtlMs = 7000,
+  runtime?: FarmRuntimeState
+) {
   const mobs = collectMobs(snapshot);
   const alive: FarmQueueMob[] = [];
   let skippedLocked = 0;
@@ -1039,6 +1123,7 @@ function extractMobs(snapshot: any, wantedTypes: FarmMobType[], claimMobLock?: F
     if (!isMobAlive(raw)) continue;
     const id = getMobId(raw);
     if (!id) continue;
+    if (runtime && isMobBlacklisted(runtime, id)) continue;
     const kind = getMobType(raw);
     if (kind === "unknown" || !wantedTypes.includes(kind)) continue;
     if (realm?.realmId) {
@@ -1176,6 +1261,38 @@ async function leaveRealm(characterId: string, accessToken: string, realmId: str
     });
   } catch {
     return null;
+  }
+}
+
+/** leave → clear queue → join lại realm_code → cập nhật realmId */
+async function hardRejoinRealm(args: {
+  characterId: string;
+  accessToken: string;
+  runtime: FarmRuntimeState;
+  onLog?: FarmAutoOptions["onLog"];
+}): Promise<boolean> {
+  const { characterId, accessToken, runtime, onLog } = args;
+  const cur = runtime.currentRealm;
+  if (!cur?.realmCode) return false;
+  clearTargetQueue(runtime);
+  if (cur.realmId) {
+    await leaveRealm(characterId, accessToken, cur.realmId);
+  }
+  try {
+    const joined = await joinRealm(characterId, accessToken, cur.realmCode);
+    const realmId = String(firstDefined(joined?.realm_id, joined?.realmId, joined?.id, cur.realmId, ""));
+    if (!realmId) {
+      onLog?.("WARN", `Farm rejoin ${cur.realmCode}: không lấy được realm_id`);
+      runtime.currentRealm = null;
+      return false;
+    }
+    runtime.currentRealm = { ...cur, realmId };
+    onLog?.("INFO", `Farm rejoin kênh ${cur.channelNo} · ${cur.realmCode}`);
+    return true;
+  } catch (e: any) {
+    onLog?.("WARN", `Farm rejoin fail ${cur.realmCode}: ${(e?.message || e).toString().slice(0, 120)}`);
+    runtime.currentRealm = null;
+    return false;
   }
 }
 
@@ -1410,9 +1527,12 @@ async function refreshMobQueue(args: {
   const { characterId, accessToken, runtime, wantedTypes, settings, claimMobLock, onRegionAvailability } = args;
   if (!runtime.currentRealm?.realmId) return { queue: [], skippedLocked: 0, scanned: 0 };
 
-  const mobCacheMaxAgeMs = Math.max(3000, Number(settings.mob_cache_max_age_ms || 15000));
+  // Cache ngắn hơn (5s) — giảm đánh mob_dead do queue cũ; multi-channel map đông nên tươi
+  const mobCacheMaxAgeMs = Math.max(2000, Number(settings.mob_cache_max_age_ms || 5000));
   if (runtime.mobQueue.length && Date.now() - runtime.mobQueueAt < mobCacheMaxAgeMs) {
-    return { queue: runtime.mobQueue, skippedLocked: 0, scanned: 0 };
+    // Lọc blacklist khỏi cache
+    runtime.mobQueue = runtime.mobQueue.filter((m) => !isMobBlacklisted(runtime, m.id));
+    if (runtime.mobQueue.length) return { queue: runtime.mobQueue, skippedLocked: 0, scanned: 0 };
   }
 
   const limitPlayers = Math.max(20, Math.min(300, Number(settings.snapshot_limit_players || 200)));
@@ -1421,7 +1541,14 @@ async function refreshMobQueue(args: {
   runtime.lastSnapshotSummary = summarizeMobs(snap, runtime.currentRealm);
   const mobCount = collectMobs(snap).length;
   const aliveCount = collectMobs(snap).filter(mob => isMobAlive(mob)).length;
-  const extracted = extractMobs(snap, wantedTypes, claimMobLock, runtime.currentRealm, Math.max(3000, Number(settings.mob_reservation_ttl_ms || 7000)));
+  const extracted = extractMobs(
+    snap,
+    wantedTypes,
+    claimMobLock,
+    runtime.currentRealm,
+    Math.max(3000, Number(settings.mob_reservation_ttl_ms || 7000)),
+    runtime
+  );
   if (extracted.queue.length) {
     learnFarmableRegion({
       runtime,
@@ -1604,7 +1731,7 @@ async function findBossAcrossRealms(args: {
       scanned += 1;
       const mobCount = collectMobs(snap).length;
       const aliveCount = collectMobs(snap).filter(mob => isMobAlive(mob)).length;
-      const extracted = extractMobs(snap, ["boss"], claimMobLock, joined, ttlMs);
+      const extracted = extractMobs(snap, ["boss"], claimMobLock, joined, ttlMs, runtime);
       skippedLocked += extracted.skippedLocked;
       if (extracted.queue.length) {
         learnFarmableRegion({
@@ -1649,7 +1776,17 @@ async function getNextMobTarget(args: {
   onRegionAvailability?: FarmAutoOptions["onRegionAvailability"];
 }) {
   const { characterId, accessToken, runtime, wantedTypes, settings, claimMobLock, onRegionAvailability } = args;
-  if (runtime.currentMob && wantedTypes.includes(runtime.currentMob.kind)) return { target: runtime.currentMob, skippedLocked: 0, scanned: 0 };
+  if (
+    runtime.currentMob &&
+    wantedTypes.includes(runtime.currentMob.kind) &&
+    !isMobBlacklisted(runtime, runtime.currentMob.id)
+  ) {
+    return { target: runtime.currentMob, skippedLocked: 0, scanned: 0 };
+  }
+  if (runtime.currentMob && isMobBlacklisted(runtime, runtime.currentMob.id)) {
+    runtime.currentMob = null;
+    runtime.currentMobHits = 0;
+  }
 
   let skippedLocked = 0;
   let scanned = 0;
@@ -1666,6 +1803,7 @@ async function getNextMobTarget(args: {
 
   while (runtime.mobQueue.length) {
     const candidate = runtime.mobQueue.shift()!;
+    if (isMobBlacklisted(runtime, candidate.id)) continue;
     runtime.currentMob = candidate;
     runtime.currentMobHits = 0;
     return { target: candidate, skippedLocked, scanned };
@@ -2016,11 +2154,10 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
           const oldRealm = runtime.currentRealm ? { ...runtime.currentRealm } : null;
           if (runtime.currentRealm?.realmId) await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
           runtime.currentRealm = null;
-          runtime.mobQueue = [];
-          runtime.currentMob = null;
-          runtime.currentMobHits = 0;
+          clearTargetQueue(runtime);
           runtime.noMobCount = 0;
-          onLog?.("DEBUG", "Farm không còn mob phù hợp, xoay sang realm kế tiếp.", oldRealm || undefined);
+          runtime.mobDeadStreak = 0;
+          onLog?.("DEBUG", "Farm không còn mob phù hợp, leave + xoay realm/kênh.", oldRealm || undefined);
         }
       } else {
         if (strictBossMode && next.target.kind !== "boss") {
@@ -2059,7 +2196,41 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
           };
         }
         runtime.noMobCount = 0;
-        const realm = runtime.currentRealm;
+        // Luôn lấy currentRealm mới nhất (sau rejoin có thể đổi realmId)
+        let realm = runtime.currentRealm;
+        if (!realm?.realmId) {
+          clearTargetQueue(runtime);
+          return {
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            status: "WAITING",
+            mode,
+            effectiveMode,
+            priority,
+            neededTypes,
+            bossPriorityFast,
+            smartRebirthEnabled,
+            channels,
+            regions,
+            realmTier,
+            realmTierLabel: REALM_TIER_LABELS[realmTier] || realmTier,
+            availableBaseCodes: Array.from(runtime.availableBaseCodes),
+            skippedBaseCodes: Array.from(runtime.skippedBaseCodes),
+            attackCount: 0,
+            mpPotionUsedCount,
+            mpPotionFailedCount,
+            mpPotionBoughtCount,
+            mpPotionBuySpent,
+            lastMpPotionResult,
+            skippedLockedCount,
+            scannedRealmCount,
+            nextDelayMs: 1000,
+            softRescan: true,
+            rescanReason: "no_realm",
+            errors,
+            questProgress: undefined,
+          };
+        }
         const beforeAttackSnapshot = runtime.lastSnapshot;
         const beforeAttackSummary = runtime.lastSnapshotSummary;
         let attackResult: any;
@@ -2086,31 +2257,163 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
           mpPotionBuySpent += attack.mpPotionBuySpent || 0;
           lastMpPotionResult = attack.lastMpPotionResult || lastMpPotionResult;
         } catch (error: any) {
-          if (isNotJoinedError(error)) {
-            const joined = await joinRealm(characterId, accessToken, realm.realmCode);
-            const realmId = String(firstDefined(joined?.realm_id, joined?.realmId, joined?.id, realm.realmId));
-            runtime.currentRealm = { ...realm, realmId };
-            const attack = await attackWithMpRecovery({
-              characterId,
-              accessToken,
-              realmId,
-              mobId: next.target.id,
-              skillSlot,
-              autoUseMpPotion,
-              mpPotionItemCode,
-              autoBuyMpPotion,
-              mpPotionBuyQty,
-              mpPotionShopCode,
-              onLog,
-              shouldStop,
-              maxPotionAttempts: Math.max(1, Math.min(3, Number(settings.mp_potion_max_retry || 2))),
-            });
-            attackResult = attack.attackResult;
-            mpPotionUsedCount += attack.mpPotionUsedCount;
-            mpPotionFailedCount += attack.mpPotionFailedCount;
-            mpPotionBoughtCount += attack.mpPotionBoughtCount || 0;
-            mpPotionBuySpent += attack.mpPotionBuySpent || 0;
-            lastMpPotionResult = attack.lastMpPotionResult || lastMpPotionResult;
+          if (isChannelRealmError(error)) {
+            // Lệch kênh / not_joined / mob_not_found → hard rejoin, clear queue, rescan
+            runtime.channelErrorStreak = (runtime.channelErrorStreak || 0) + 1;
+            const deadId = next.target?.id;
+            if (deadId && (isMobDeadError(error) || /mob_not_found|invalid_mob|unknown_mob/i.test(errorText(error)))) {
+              blacklistDeadMob(runtime, deadId, 12_000);
+            }
+            onLog?.(
+              "WARN",
+              `Farm lệch kênh/realm: ${(error?.message || "channel_realm").toString().slice(0, 100)} · rejoin #${runtime.channelErrorStreak}`,
+              error?.data || { message: error?.message }
+            );
+
+            const ok = await hardRejoinRealm({ characterId, accessToken, runtime, onLog });
+            if (ok && runtime.currentRealm?.realmId && !isMobBlacklisted(runtime, next.target.id)) {
+              try {
+                const attack = await attackWithMpRecovery({
+                  characterId,
+                  accessToken,
+                  realmId: runtime.currentRealm.realmId,
+                  mobId: next.target.id,
+                  skillSlot,
+                  autoUseMpPotion,
+                  mpPotionItemCode,
+                  autoBuyMpPotion,
+                  mpPotionBuyQty,
+                  mpPotionShopCode,
+                  onLog,
+                  shouldStop,
+                  maxPotionAttempts: Math.max(1, Math.min(3, Number(settings.mp_potion_max_retry || 2))),
+                });
+                attackResult = attack.attackResult;
+                mpPotionUsedCount += attack.mpPotionUsedCount;
+                mpPotionFailedCount += attack.mpPotionFailedCount;
+                mpPotionBoughtCount += attack.mpPotionBoughtCount || 0;
+                mpPotionBuySpent += attack.mpPotionBuySpent || 0;
+                lastMpPotionResult = attack.lastMpPotionResult || lastMpPotionResult;
+                runtime.channelErrorStreak = 0;
+              } catch (retryErr: any) {
+                clearTargetQueue(runtime);
+                if (isMobDeadError(retryErr)) {
+                  blacklistDeadMob(runtime, next.target.id, 12_000);
+                  runtime.mobDeadStreak = (runtime.mobDeadStreak || 0) + 1;
+                  return {
+                    startedAt,
+                    finishedAt: new Date().toISOString(),
+                    status: "WAITING",
+                    mode,
+                    effectiveMode,
+                    priority,
+                    neededTypes,
+                    bossPriorityFast,
+                    smartRebirthEnabled,
+                    channels,
+                    regions,
+                    realmTier,
+                    realmTierLabel: REALM_TIER_LABELS[realmTier] || realmTier,
+                    availableBaseCodes: Array.from(runtime.availableBaseCodes),
+                    skippedBaseCodes: Array.from(runtime.skippedBaseCodes),
+                    attackCount: 0,
+                    mpPotionUsedCount,
+                    mpPotionFailedCount,
+                    mpPotionBoughtCount,
+                    mpPotionBuySpent,
+                    lastMpPotionResult,
+                    skippedLockedCount,
+                    scannedRealmCount,
+                    nextDelayMs: 700,
+                    softRescan: true,
+                    rescanReason: "mob_dead_after_rejoin",
+                    errors,
+                    questProgress: undefined,
+                  };
+                }
+                // 2+ lần lệch kênh liên tiếp → đổi kênh
+                if (runtime.channelErrorStreak >= 2) {
+                  if (runtime.currentRealm?.realmId) {
+                    await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
+                  }
+                  runtime.currentRealm = null;
+                  runtime.channelErrorStreak = 0;
+                  runtime.noMobCount = noMobBeforeRotate;
+                  onLog?.("WARN", "Farm rejoin vẫn lỗi → xoay kênh/realm");
+                }
+                return {
+                  startedAt,
+                  finishedAt: new Date().toISOString(),
+                  status: "WAITING",
+                  mode,
+                  effectiveMode,
+                  priority,
+                  neededTypes,
+                  bossPriorityFast,
+                  smartRebirthEnabled,
+                  channels,
+                  regions,
+                  realmTier,
+                  realmTierLabel: REALM_TIER_LABELS[realmTier] || realmTier,
+                  availableBaseCodes: Array.from(runtime.availableBaseCodes),
+                  skippedBaseCodes: Array.from(runtime.skippedBaseCodes),
+                  attackCount: 0,
+                  mpPotionUsedCount,
+                  mpPotionFailedCount,
+                  mpPotionBoughtCount,
+                  mpPotionBuySpent,
+                  lastMpPotionResult,
+                  skippedLockedCount,
+                  scannedRealmCount,
+                  nextDelayMs: 1200,
+                  softRescan: true,
+                  rescanReason: "channel_rejoin_retry_fail",
+                  errors,
+                  questProgress: undefined,
+                };
+              }
+            } else {
+              // rejoin fail hoặc mob blacklisted → xoay nếu streak cao
+              if (runtime.channelErrorStreak >= 2) {
+                if (runtime.currentRealm?.realmId) {
+                  await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
+                }
+                runtime.currentRealm = null;
+                runtime.channelErrorStreak = 0;
+                onLog?.("WARN", "Farm không rejoin được → xoay kênh");
+              }
+              clearTargetQueue(runtime);
+              return {
+                startedAt,
+                finishedAt: new Date().toISOString(),
+                status: "WAITING",
+                mode,
+                effectiveMode,
+                priority,
+                neededTypes,
+                bossPriorityFast,
+                smartRebirthEnabled,
+                channels,
+                regions,
+                realmTier,
+                realmTierLabel: REALM_TIER_LABELS[realmTier] || realmTier,
+                availableBaseCodes: Array.from(runtime.availableBaseCodes),
+                skippedBaseCodes: Array.from(runtime.skippedBaseCodes),
+                attackCount: 0,
+                mpPotionUsedCount,
+                mpPotionFailedCount,
+                mpPotionBoughtCount,
+                mpPotionBuySpent,
+                lastMpPotionResult,
+                skippedLockedCount,
+                scannedRealmCount,
+                nextDelayMs: 1000,
+                softRescan: true,
+                rescanReason: "channel_realm_error",
+                errors,
+                questProgress: undefined,
+              };
+            }
           } else if (isNotEnoughMpError(error) && autoUseMpPotion) {
             // Đã thử bơm và retry trong attackWithMpRecovery nhưng vẫn không đủ MP.
             // Không log ERROR liên tục; giữ mob hiện tại và thử lại vòng sau.
@@ -2144,12 +2447,60 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
               questProgress: undefined,
             };
           } else if (isMobDeadError(error)) {
-            // Mob đã chết do người khác hoặc server cập nhật chậm: bỏ mục tiêu hiện tại và quét lại nhanh.
-            runtime.currentMob = null;
-            runtime.currentMobHits = 0;
-            runtime.mobQueueAt = 0;
-            runtime.mobQueue = [];
-            onLog?.("DEBUG", "Mob hiện tại đã chết/không còn sống, bỏ mục tiêu và quét lại nhanh.", error?.data || { message: error?.message });
+            // Mob đã chết: blacklist id, force snapshot, rescan nhanh; chuỗi dead → rotate kênh
+            const deadId = next.target?.id || "";
+            blacklistDeadMob(runtime, deadId, Number(settings.mob_dead_blacklist_ms || 12_000));
+            clearTargetQueue(runtime);
+            runtime.mobDeadStreak = (runtime.mobDeadStreak || 0) + 1;
+            const streak = runtime.mobDeadStreak;
+            const rotateAfter = Math.max(2, Math.min(8, Number(settings.mob_dead_rotate_after || 3)));
+
+            if (streak >= rotateAfter && runtime.currentRealm) {
+              onLog?.(
+                "WARN",
+                `Farm mob_dead ×${streak} @ c${runtime.currentRealm.channelNo} → leave + xoay kênh`
+              );
+              await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
+              runtime.currentRealm = null;
+              runtime.mobDeadStreak = 0;
+              runtime.noMobCount = 0;
+              return {
+                startedAt,
+                finishedAt: new Date().toISOString(),
+                status: "WAITING",
+                mode,
+                effectiveMode,
+                priority,
+                neededTypes,
+                bossPriorityFast,
+                smartRebirthEnabled,
+                channels,
+                regions,
+                realmTier,
+                realmTierLabel: REALM_TIER_LABELS[realmTier] || realmTier,
+                availableBaseCodes: Array.from(runtime.availableBaseCodes),
+                skippedBaseCodes: Array.from(runtime.skippedBaseCodes),
+                attackCount: 0,
+                mpPotionUsedCount,
+                mpPotionFailedCount,
+                mpPotionBoughtCount,
+                mpPotionBuySpent,
+                lastMpPotionResult,
+                skippedLockedCount,
+                scannedRealmCount,
+                nextDelayMs: 800,
+                softRescan: true,
+                rescanReason: "mob_dead_rotate_channel",
+                errors,
+                questProgress: undefined,
+              };
+            }
+
+            onLog?.(
+              "DEBUG",
+              `Mob dead #${deadId || "?"} (streak ${streak}/${rotateAfter}) → blacklist + quét lại`,
+              error?.data || { message: error?.message }
+            );
             return {
               startedAt,
               finishedAt: new Date().toISOString(),
@@ -2174,7 +2525,9 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
               lastMpPotionResult,
               skippedLockedCount,
               scannedRealmCount,
-              nextDelayMs: 500,
+              nextDelayMs: 700,
+              softRescan: true,
+              rescanReason: "mob_dead",
               errors,
               questProgress: undefined,
             };
@@ -2216,6 +2569,9 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         }
 
         attackCount += 1;
+        runtime.mobDeadStreak = 0;
+        runtime.channelErrorStreak = 0;
+        realm = runtime.currentRealm || realm;
         nextAttackDelayMs = attackDelayMsFromResult(attackResult, attackEveryMs);
         const targetKilled = isMobKilledByAttack(attackResult);
         const targetHpAfter = attackMobHpAfter(attackResult);

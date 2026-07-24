@@ -275,11 +275,14 @@ function farmCycleSummary(result: any, farmSettings?: Record<string, any>): stri
   const elite = result?.killedEliteCount ?? 0;
   const st = result?.status || "?";
   const mode = result?.effectiveMode || result?.mode || "?";
-  const wait = Math.round(Number(result?.nextDelayMs || 0) / 1000);
+  const waitMs = Number(result?.nextDelayMs || 0);
+  const wait =
+    waitMs >= 1000 ? `${Math.round(waitMs / 1000)}s` : `${Math.max(0, Math.round(waitMs))}ms`;
   const ch = farmSettings?.multi_channel
     ? `c${farmSettings.from_channel}-${farmSettings.to_channel}`
     : `c${farmSettings?.channel ?? farmSettings?.from_channel ?? "?"}`;
-  return `Farm ${st} · ${mode} · ${ch} · atk ${atk} · kill ${kill} (B${boss}/E${elite}) · next ${wait}s`;
+  const why = result?.rescanReason ? ` · ${result.rescanReason}` : "";
+  return `Farm ${st} · ${mode} · ${ch} · atk ${atk} · kill ${kill} (B${boss}/E${elite})${why} · next ${wait}`;
 }
 
 async function runFeatureOnce(accountId: string, featureId: FeatureId, token: number) {
@@ -318,13 +321,23 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: onLog(accountId, "FARM"),
       });
-      // Chu kỳ farm: attack_delay (engine ~5s) hoặc empty_scan
-      nextDelayMs = Math.max(
-        config.minFarmDelayMs,
-        Number(farmSettings.attack_delay_ms || 4000),
-        Number(farmSettings.empty_scan_delay_ms || 5000),
-        Number(result.nextDelayMs || 0)
-      );
+      // soft_rescan (mob_dead / lệch kênh): delay ngắn do engine — không ép min 5s CD
+      if (result.softRescan === true) {
+        nextDelayMs = Math.max(400, Math.min(3000, Number(result.nextDelayMs || 800)));
+      } else if ((result.attackCount || 0) > 0) {
+        // Vừa attack: tôn trọng CD game (~5s) + minFarm
+        nextDelayMs = Math.max(
+          config.minFarmDelayMs,
+          Number(result.nextDelayMs || farmSettings.attack_delay_ms || 5000)
+        );
+      } else {
+        // Empty scan / chờ mob
+        nextDelayMs = Math.max(
+          1000,
+          Number(result.nextDelayMs || 0),
+          Number(farmSettings.empty_scan_delay_ms || 4000)
+        );
+      }
       const line = farmCycleSummary(result, farmSettings);
       if (result.status === "ERROR") {
         status = "error";
@@ -339,10 +352,12 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         sysLog(accountId, "FARM", "SUCCESS", "Đủ nhiệm vụ trùng sinh — dừng farm", true);
       } else {
         const empty = !(result.attackCount > 0);
-        const gated = logGate.allow(accountId, "FARM", "INFO", line, {
-          minIntervalMs: empty ? 45_000 : 20_000,
+        const soft = result.softRescan === true;
+        // soft rescan: log thưa hơn, level INFO (không ERROR mob_dead)
+        const gated = logGate.allow(accountId, "FARM", soft ? "WARN" : "INFO", line, {
+          minIntervalMs: soft ? 8_000 : empty ? 45_000 : 20_000,
         });
-        if (gated) store.addLog(accountId, "FARM", "INFO", gated);
+        if (gated) store.addLog(accountId, "FARM", soft ? "WARN" : "INFO", gated);
       }
     } else if (featureId === "buff") {
       const result = await runAutoBuffCheck({
