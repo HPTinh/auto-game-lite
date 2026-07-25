@@ -997,10 +997,16 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
               : settings.focus_flag_id ?? null,
           focus_attack_flag_id: attackFocus,
           self_placed_flag_ids: result.selfPlacedFlagIds ?? settings.self_placed_flag_ids ?? [],
+          // reclaim ô cờ địch vừa phá / clear sau place
+          ...(result.persistHint || {}),
         },
       });
 
-      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || 20_000));
+      // Phá cờ / chip resource: cho delay ngắn hơn
+      const fastHc =
+        result.phase === "break_flag" &&
+        /siege_flag_attack|attack_resource|move_to_enemy|move_to_resource|flee/i.test(result.action || "");
+      nextDelayMs = Math.max(fastHc ? 2_500 : 5_000, Number(result.nextDelayMs || 20_000));
       if (result.status === "ERROR") {
         status = "error";
         errMsg = result.reason || "Hoàng Cổ error";
@@ -1024,6 +1030,7 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           (result.built || 0) > 0 ||
           result.action === "siege_flag_defend" ||
           result.action === "siege_flag_attack" ||
+          result.action === "attack_resource" ||
           result.action === "place_flag" ||
           result.action === "start_build" ||
           result.action === "defend_mine" ||

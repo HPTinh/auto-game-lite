@@ -307,6 +307,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** Có địch trong bán kính (cheby, 1=3×3) → chạy cờ mình khác */
     flee_on_enemy_near: true,
     flee_radius: 1,
+    /** Trên đường phá: chip resource gần (attack_position, không thủ) */
+    attack_near_resource: true,
+    resource_attack_radius: 3,
+    /** Ô cờ địch vừa phá — tự reclaim nếu chưa chạm cờ kế */
+    last_destroyed_flag_pos: null,
+    last_destroyed_flag_id: null,
     auto_place: true,
     auto_build: true,
     auto_defend: true,
