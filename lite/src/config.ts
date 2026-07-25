@@ -323,7 +323,9 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      */
     flee_on_enemy_near: false,
     flee_radius: 1,
-    /** Trên đường phá: chip resource gần (attack_position, không thủ) */
+    /**
+     * Bridge/xây: chip resource gần nếu không có thủ clan khác (map.defenders).
+     */
     attack_near_resource: true,
     resource_attack_radius: 3,
     /** Ô cờ địch vừa phá — tự reclaim nếu chưa chạm cờ kế */

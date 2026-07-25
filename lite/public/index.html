@@ -900,7 +900,7 @@
         <div class="f chk"><input type="checkbox" data-k="skip_defended_flags" ${bool("skip_defended_flags", true)?"checked":""}/><label>Né cờ có người thủ clan khác (tránh combat)</label></div>
         <div class="mu" style="font-size:10px;margin:2px 0 8px;opacity:.8">Bridge: neo cờ mình → hop ≤3 ô → xây dở trước → đủ chạm (cheby≤1) → vào giữa phá. Full cờ/slot xây → chỉ xây.</div>
         <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", false)?"checked":""}/><label>Địch gần → chạy cờ mình (thường tắt khi phá)</label></div>
-        <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", false)?"checked":""}/><label>Resource gần → chip (có thể chen, nên tắt khi phá)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", true)?"checked":""}/><label>Lúc bridge/xây: chip resource gần (bỏ qua nếu có thủ clan khác)</label></div>
         <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
         <div class="mu" style="font-size:11px;margin-bottom:6px">Chế độ khác (khi <b>tắt</b> Phá cờ):</div>
         <div class="f chk"><input type="checkbox" data-k="auto_place" ${bool("auto_place", true)?"checked":""}/><label>Cắm cờ (mở rộng)</label></div>
