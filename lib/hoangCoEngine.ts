@@ -2970,7 +2970,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
 
       try {
-        await leaveDefense(characterId, accessToken, onLog);
+        // QUAN TRỌNG: KHÔNG leave_defense khi đang đứng tâm siege tiếp.
+        // leave_defense gỡ pin → siege bị ngắt → siege_points kẹt 600 (log 09:04).
+        // Chỉ leave khi rời cờ / đổi target / flee.
         const res = await rpc(
           "rpc_hoang_co_siege_flag",
           { p_character_id: characterId, p_flag_id: enemy.flag_id },
@@ -2979,6 +2981,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         const side = String(res?.side || "");
         const defN = Math.floor(n(res?.defender_count, 0));
         const atkN = Math.floor(n(res?.besieger_count, 0));
+        const pinned = res?.pinned === true;
         summary.side = side || undefined;
         summary.siegePoints = n(res?.siege_points, siegeNow);
         summary.siegeMax = n(res?.siege_max, siegeMax);
@@ -3004,16 +3007,19 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.action = "siege_flag_attack";
         // Cờ sắp vỡ: chip nhanh, bám focus
         const almostDead = sp > 0 && sp <= Math.max(80, sm * 0.15);
-        summary.nextDelayMs = almostDead ? 3_500 : Math.max(3_500, pollMs - 5_000);
+        // Giữ pin: delay vừa phải, không leave
+        summary.nextDelayMs = almostDead ? 4_000 : Math.max(5_000, pollMs - 3_000);
         if (side && side !== "attack") {
           onLog?.("WARN", `HC Phá cờ · side=${side} (cần attack) · #${enemy.flag_id}`);
         }
         summary.reason =
           `SIEGE 🔒 #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
           ` · side=${side || "?"} · atk ${atkN} / def ${defN}` +
+          ` · pinned=${pinned}` +
           ` · siege còn ${sp}/${sm}` +
           (enemy.is_built === true ? ` · phá ${pct}%` : "") +
-          (almostDead ? " · dứt điểm" : "");
+          (almostDead ? " · dứt điểm" : "") +
+          " · giữ pin (no leave)";
         onLog?.("SUCCESS", summary.reason, { res });
         summary.persistHint = {
           last_destroyed_flag_pos: { x: destX, y: destY },
@@ -3023,6 +3029,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           break_phase: "ASSAULT_SIEGE",
           break_force_assault: almostDead ? true : false,
         };
+        // Heartbeat nhẹ — không leave_defense
         try {
           await rpc(
             "rpc_hoang_co_heartbeat",
