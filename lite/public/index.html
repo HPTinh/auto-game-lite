@@ -81,7 +81,7 @@
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="g" id="startAll">Start all</button>
       <button class="r" id="stopAll">Stop all</button>
-      <button class="p" id="btnBulkSet" title="Áp setting giống nhau cho nhiều account">⚙ Nhanh</button>
+      <button class="p" id="btnBulkSet" title="Áp setting giống nhau cho nhiều account" style="display:none">⚙ Nhanh</button>
       <button id="btnExport" title="Tải file backup account+setting" style="display:none">Export</button>
       <button id="btnImport" title="Nạp file backup" style="display:none">Import</button>
       <button id="refresh">↻</button>
@@ -298,8 +298,10 @@
       const show = backupUnlocked && Boolean(BACKUP_KEY_PASS);
       const exp = $("btnExport");
       const imp = $("btnImport");
+      const bulk = $("btnBulkSet");
       if (exp) exp.style.display = show ? "" : "none";
       if (imp) imp.style.display = show ? "" : "none";
+      if (bulk) bulk.style.display = show ? "" : "none";
       // Hiện/ẩn chip Hoàng Cổ theo pass backup
       try {
         if (typeof render === "function" && Array.isArray(accounts) && accounts.length) render();
