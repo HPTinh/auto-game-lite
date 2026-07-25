@@ -621,13 +621,16 @@ function pickSiegePlaceCell(opts: {
     }
   }
 
+  // Anchor CHỈ từ cờ built (và dở) — KHÔNG neo từ me khi đứng vành địch
+  // (me@(13,52) + place (13,53) = death circle)
   const anchors: Pos[] = [];
   if (ownBuilt.length) {
     for (const f of ownBuilt) anchors.push({ x: f.pos_x, y: f.pos_y });
   } else if (ownAll.length) {
     for (const f of ownAll) anchors.push({ x: f.pos_x, y: f.pos_y });
+  } else {
+    anchors.push({ x: me.x, y: me.y });
   }
-  anchors.push({ x: me.x, y: me.y });
 
   anchors.sort(
     (a, b) =>
@@ -650,24 +653,25 @@ function pickSiegePlaceCell(opts: {
         if (seen.has(k) || occ.has(k) || excluded.has(k)) continue;
         seen.add(k);
 
-        // Server: place chỉ kề cờ mình (not_adjacent nếu xa) — hop phải ≤ maxHop, mặc định 1
+        // Server not_adjacent: ô cắm phải kề anchor (hop từ cờ built)
+        // Chỉ anchor là cờ built (không cắm “từ me” khi me đứng vành địch)
         const toEnemy = chebyshev(x, y, enemy.pos_x, enemy.pos_y);
         const fromA = chebyshev(a.x, a.y, enemy.pos_x, enemy.pos_y);
         const progress = fromA - toEnemy;
         if (progress < 0 && toEnemy > 2) continue;
+        // Không cắm đúng ô me đang đứng quanh địch nếu me không phải trên cờ mình (tránh vòng)
+        if (x === me.x && y === me.y && hop > 0) continue;
 
-        // score thấp = tốt
         let score =
           toEnemy * 20 +
-          hop * 1.5 +
-          manhattan(x, y, me.x, me.y) * 0.4 -
+          hop * 2 +
+          manhattan(x, y, me.x, me.y) * 0.3 -
           progress * 15;
-        // Ưu ô chạm 3×3 địch (cheby=1); sau built → MOVE giữa phá
         if (toEnemy === 1) score -= 150;
         else if (toEnemy === 2) score -= 40;
         else if (toEnemy >= 3) score += (toEnemy - 2) * 25;
-        // Ưu hop=1 (adjacent) — khớp rule not_adjacent
-        if (hop === 1) score -= 30;
+        if (hop === 1) score -= 50; // bắt buộc ưu kề built
+        if (hop > 1) score += 40; // phạt hop>1 (dễ not_adjacent)
         if (x === enemy.pos_x && y === enemy.pos_y) score -= 200;
         cands.push({ x, y, score });
       }
@@ -2612,9 +2616,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const chebyMe = chebyshev(me.x, me.y, destX, destY);
     const distMe = manhattan(destX, destY, me.x, me.y);
     const onSpot = me.x === destX && me.y === destY;
-    // near = cờ built mình chạm 3×3 địch (cheby≤1)
-    const near = canReachEnemyFlag(ownBuilt, enemy) || assaultOnly;
-    // Cờ dở đã sát địch — chỉ XÂY xong, KHÔNG cắm thêm vòng (tránh đi vòng)
+    // territoryNear = cờ built mình chạm 3×3 địch (cheby≤1)
+    const territoryNear = canReachEnemyFlag(ownBuilt, enemy) || assaultOnly;
+    // Cờ dở đã sát địch — chỉ XÂY xong, KHÔNG cắm thêm vòng
     const ringBuilding = building.filter(
       (f) => chebyshev(f.pos_x, f.pos_y, destX, destY) <= 1
     );
@@ -2631,8 +2635,15 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const defsHere = flagDefenders(map, enemy.flag_id, clanId);
     const atkHere = flagBesiegers(map, enemy.flag_id, clanId);
 
-    // Khóa ASSAULT: đã near → cấm mọi hop/cắm/chip (phá vòng tròn tử thần)
-    const assaultLock = near;
+    /**
+     * VÒNG TRÒN TỬ THẦN (log 07:28):
+     * me@(13,52) chebyMe=1 CENTER@(14,53) near=false → CẮM @(13,53) thay vì MOVE tâm.
+     * Fix: đứng kề tâm (chebyMe≤1) → LUÔN thử vào giữa + siege TRƯỚC, không cắm vành.
+     */
+    const standingByCenter = chebyMe <= 1;
+    const near = territoryNear;
+    // Khóa ASSAULT: territory near HOẶC đang đứng kề/tâm cờ địch
+    const assaultLock = near || standingByCenter;
     const phaseLabel = assaultLock
       ? onSpot
         ? "ASSAULT_SIEGE"
@@ -2645,7 +2656,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       "INFO",
       `HC Phá cờ · RESCAN #${enemy.flag_id} [${enemyName}] CENTER@(${destX},${destY})` +
         ` · me@(${me.x},${me.y}) chebyMe=${chebyMe}` +
-        ` · near=${near} bridgeCheby=${bridgeDist === 99 ? "∞" : bridgeDist}` +
+        ` · territoryNear=${territoryNear} standByCenter=${standingByCenter}` +
+        ` · bridgeCheby=${bridgeDist === 99 ? "∞" : bridgeDist}` +
         ` · dởSát=${ringBuilding.length} · lockAssault=${assaultLock}` +
         ` · thủ ${defsHere.length} · công ${atkHere.length}` +
         ` · trống ${undefended.length}/${enemyFlags.length}` +
@@ -2712,12 +2724,14 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
     }
 
-    // ── A) ASSAULT LOCK: near → CHỈ MOVE CENTER + SIEGE (cấm cắm/xây/chip)
+    // ── A) ASSAULT LOCK: territory near HOẶC me kề tâm (chebyMe≤1)
+    // Log death circle: me kề tâm mà CẮM hop — SAI. Phải MOVE dest=CENTER trước.
     if (assaultLock) {
       onLog?.(
         "INFO",
         `HC Phá cờ · 🔒 ASSAULT #${enemy.flag_id} CENTER@(${destX},${destY}) me@(${me.x},${me.y})` +
-          ` · ${onSpot ? "đúng tâm → SIEGE" : "FORCE move tâm (phá vòng)"}`
+          ` · territoryNear=${territoryNear} standByCenter=${standingByCenter}` +
+          ` · ${onSpot ? "đúng tâm → SIEGE" : "FORCE MOVE tâm (cấm cắm vành)"}`
       );
 
       // Đang đi chỗ khác (hop/vành/resource) → hủy, ép về tâm
@@ -2839,26 +2853,58 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         return summary;
       } catch (e: any) {
         if (isNotNearError(e)) {
-          // ĐÃ near local mà server not_near → KHÔNG cắm vòng (gây death circle)
-          // Chỉ chờ / xây cờ dở sát nếu có
+          // Đứng đúng tâm nhưng server not_near → cần bridge (cờ mình cheby>1)
+          // CHỈ expand nếu !territoryNear; nếu territoryNear thì chờ sync, không cắm vòng
           onLog?.(
             "WARN",
-            `HC Phá cờ · server not_near #${enemy.flag_id} dù scan near · KHÔNG cắm vòng · chờ/xây dở sát`
+            `HC Phá cờ · server not_near #${enemy.flag_id} @ tâm` +
+              ` · territoryNear=${territoryNear} bridgeCheby=${bridgeDist}` +
+              (territoryNear
+                ? " · chờ sync (không cắm vòng)"
+                : " · expand bridge từ cờ mình (không đứng vành cắm)")
           );
-          if (ringBuilding.length > 0) {
-            // fall through only to build ring, not place
-          } else {
+          if (territoryNear && ringBuilding.length === 0) {
             summary.status = "WAITING";
-            summary.reason = `Phá cờ · not_near #${enemy.flag_id} @ tâm · chờ territory sync · không cắm vòng`;
+            summary.reason = `Phá cờ · not_near #${enemy.flag_id} @ tâm · territoryNear nhưng server từ chối · chờ 10s`;
             summary.nextDelayMs = 10_000;
             summary.persistHint = {
               focus_attack_flag_id: enemy.flag_id,
-              break_force_assault: false,
               break_phase: "WAIT_NEAR_SYNC",
             };
             summary.finishedAt = new Date().toISOString();
             return summary;
           }
+          // !territoryNear + đứng kề tâm: rời tâm, về neo cờ mình để cắm hop ĐÚNG kề built
+          // (không cắm ô vành từ vị trí me — log cắm (13,53) khi me (13,52) là death circle)
+          if (standingByCenter && !territoryNear && ownBuilt.length > 0) {
+            const home = [...ownBuilt].sort(
+              (a, b) =>
+                chebyshev(a.pos_x, a.pos_y, destX, destY) -
+                chebyshev(b.pos_x, b.pos_y, destX, destY)
+            )[0];
+            if (home && (me.x !== home.pos_x || me.y !== home.pos_y)) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc(
+                "rpc_hoang_co_move",
+                { p_character_id: characterId, p_dest_x: home.pos_x, p_dest_y: home.pos_y },
+                accessToken
+              );
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+              summary.moved = true;
+              summary.dest = { x: home.pos_x, y: home.pos_y };
+              summary.action = "move_to_bridge_anchor";
+              summary.status = "WAITING";
+              summary.etaSeconds = eta;
+              summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
+              summary.reason =
+                `Phá cờ · not_near @ tâm #${enemy.flag_id} → về neo #${home.flag_id}` +
+                ` @(${home.pos_x},${home.pos_y}) cắm hop kề · ETA ${eta}s`;
+              onLog?.("INFO", summary.reason);
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+          }
+          // fall through expand (build ring / place from anchor)
         } else {
           summary.status = "ERROR";
           summary.reason = `siege_flag #${enemy.flag_id}: ${(e?.message || e).toString().slice(0, 140)}`;
@@ -2871,10 +2917,10 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     } else {
       onLog?.(
         "INFO",
-        `HC Phá cờ · chưa near #${enemy.flag_id} · cheby cờ mình=${bridgeDist === 99 ? "∞" : bridgeDist}` +
+        `HC Phá cờ · xa cờ địch #${enemy.flag_id} · bridgeCheby=${bridgeDist === 99 ? "∞" : bridgeDist}` +
           (ringBuilding.length
-            ? ` · dở sát ${ringBuilding.length} → chỉ XÂY rồi phá`
-            : ` · expand: cắm/xây bridge`)
+            ? ` · dở sát ${ringBuilding.length} → chỉ XÂY`
+            : ` · expand bridge`)
       );
     }
 
@@ -2911,8 +2957,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    // Server not_adjacent: cắm phải KỀ cờ mình → hop mặc định 1 (chuỗi ~N cờ tới địch, không nhảy 3 ô)
-    const hopMax = Math.max(1, Math.min(2, Math.floor(n(settings.break_hop_max, 1)) || 1));
+    // Server not_adjacent: CHỈ hop=1 (kề cờ built). Bỏ hop=2 (log hop≤2 → cắm (13,53) từ neo (14,51) cheby=2 = sai)
+    const hopMax = 1;
     const plan = planBridgeToEnemy(ownBuilt, building, enemy, hopMax);
     const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.flag_building_max, 3)) || 3);
     const usedFlags = Math.floor(n(map?.config?.used_flags ?? map?.used_flags, ownBuilt.length + building.length));
