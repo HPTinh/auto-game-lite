@@ -2393,11 +2393,14 @@ function isNotNearError(e: any): boolean {
 }
 
 /**
- * Phá cờ — flow đúng game:
- * 1) Ưu tiên cờ địch GẦN mình nhất (và đã near / đang phá dở)
- * 2) Có cờ built mình chạm 3×3 (cheby≤1) → MOVE đúng giữa → siege_flag
- * 3) Chưa near / siege trả not_near → cắm + xây mở rộng địa bàn hướng địch
- *    (1 bridge kề, không rải vòng 8 ô; xong built → lại vào giữa phá)
+ * Phá cờ — state machine (tránh vòng tròn tử thần):
+ *
+ * Mỗi tick SCAN map_state lại:
+ *   NEAR (cờ built mình cheby≤1 địch) → khóa ASSAULT: chỉ MOVE flag.pos + siege
+ *     (cấm cắm/xây vòng / chip resource / hop)
+ *   CỜ DỞ SÁT (cheby≤1, chưa built) → chỉ XÂY cờ đó
+ *   XA → PLAN bridge: cắm kề + xây
+ *   BỊ DÍ (player địch gần) → né tạm (cooldown, không spam flee tạo vòng)
  */
 export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
@@ -2412,6 +2415,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
   const fleeRadius = Math.max(1, Math.min(3, Math.floor(n(settings.flee_radius, 2)) || 2));
   // Cắm hop mở rộng khi chưa near — mặc định BẬT
   const hopOn = settings.break_hop !== false;
+  const nowMs = Date.now();
 
   let selfPlaced: number[] = [];
   if (Array.isArray(settings.self_placed_flag_ids)) {
@@ -2583,22 +2587,24 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const defsHere = flagDefenders(map, enemy.flag_id, clanId);
     const atkHere = flagBesiegers(map, enemy.flag_id, clanId);
 
-    const phaseLabel = near
+    // Khóa ASSAULT: đã near → cấm mọi hop/cắm/chip (phá vòng tròn tử thần)
+    const assaultLock = near;
+    const phaseLabel = assaultLock
       ? onSpot
-        ? "SIEGE"
-        : "MOVE_CENTER"
+        ? "ASSAULT_SIEGE"
+        : "ASSAULT_MOVE_CENTER"
       : ringBuilding.length
-        ? "XÂY_CỜ_SÁT"
-        : "BRIDGE_CẮM_XÂY";
+        ? "BUILD_RING_ONLY"
+        : "EXPAND_BRIDGE";
 
     onLog?.(
       "INFO",
-      `HC Phá cờ · SCAN #${enemy.flag_id} [${enemyName}] CENTER@(${destX},${destY})` +
-        ` · me@(${me.x},${me.y})` +
+      `HC Phá cờ · RESCAN #${enemy.flag_id} [${enemyName}] CENTER@(${destX},${destY})` +
+        ` · me@(${me.x},${me.y}) chebyMe=${chebyMe}` +
         ` · near=${near} bridgeCheby=${bridgeDist === 99 ? "∞" : bridgeDist}` +
-        ` · dởSát=${ringBuilding.length}` +
+        ` · dởSát=${ringBuilding.length} · lockAssault=${assaultLock}` +
         ` · thủ ${defsHere.length} · công ${atkHere.length}` +
-        ` · trống ${undefended.length}/${enemyFlags.length} · chạm ${reachableN}` +
+        ` · trống ${undefended.length}/${enemyFlags.length}` +
         ` · siege ${siegeNow}/${siegeMax}` +
         (enemy.is_built === true ? ` · phá ${breakPct}%` : "") +
         ` · phase=${phaseLabel}`
@@ -2608,16 +2614,30 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     summary.focusFlagId = enemy.flag_id;
     summary.siegePoints = siegeNow;
     summary.siegeMax = siegeMax;
+    // Sticky target khi assault — orchestrator persist focus_attack_flag_id
+    summary.persistHint = {
+      ...(summary.persistHint || {}),
+      focus_attack_flag_id: enemy.flag_id,
+      break_phase: phaseLabel,
+    };
 
-    // ── 0) Flee MẶC ĐỊNH: player địch trong fleeRadius → tạm né về cờ mình (kể cả đang phá)
-    if (fleeOn && ownBuilt.length > 0) {
+    // ── 0) Flee: bị dí → né tạm (có cooldown, không spam tạo vòng flee↔quay lại)
+    // Khi ASSAULT cờ trống (near, không thủ map): không flee trừ khi ≥2 địch dính sát (r≤1)
+    const fleeCdUntil = n(settings.break_flee_cooldown_until, 0);
+    const fleeReady = !fleeCdUntil || nowMs >= fleeCdUntil;
+    if (fleeOn && ownBuilt.length > 0 && fleeReady) {
       const hostiles = hostilesNear(map, clanId, me.x, me.y, fleeRadius, characterId);
-      if (hostiles.length > 0) {
-        const names = hostiles
+      const hostilesClose = hostilesNear(map, clanId, me.x, me.y, 1, characterId);
+      const assaultEmpty = assaultLock && defsHere.length === 0;
+      // Đang khóa phá cờ trống: chỉ né khi địch dính sát (cheby≤1) ≥1 — tránh vòng tròn vì có người trong r=2
+      const shouldFlee = assaultEmpty
+        ? hostilesClose.length >= 1
+        : hostiles.length > 0;
+      if (shouldFlee) {
+        const names = (assaultEmpty ? hostilesClose : hostiles)
           .slice(0, 3)
           .map((h) => h.name || h.clan_name || "?")
           .join(",");
-        // Né sang cờ mình an toàn — không đứng yên trên cờ địch khi bị dí
         const fleeTo = pickFleeOwnFlag(ownBuilt, me, map, clanId, undefined);
         if (fleeTo && (fleeTo.pos_x !== me.x || fleeTo.pos_y !== me.y)) {
           await leaveDefense(characterId, accessToken, onLog);
@@ -2634,8 +2654,13 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           summary.etaSeconds = eta;
           summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
           summary.reason =
-            `Phá cờ · NÉ địch (${names}×${hostiles.length}) r=${fleeRadius}` +
-            ` → cờ mình #${fleeTo.flag_id} @(${fleeTo.pos_x},${fleeTo.pos_y}) · ETA ${eta}s · xong quay phá`;
+            `Phá cờ · NÉ địch (${names}) → #${fleeTo.flag_id} @(${fleeTo.pos_x},${fleeTo.pos_y})` +
+            ` · ETA ${eta}s · CD 20s rồi quay phá #${enemy.flag_id}`;
+          summary.persistHint = {
+            focus_attack_flag_id: enemy.flag_id,
+            break_flee_cooldown_until: nowMs + 20_000,
+            break_phase: "FLEE",
+          };
           onLog?.("WARN", summary.reason);
           summary.finishedAt = new Date().toISOString();
           return summary;
@@ -2643,21 +2668,15 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
     }
 
-    // ── A) ĐÃ NEAR (cờ built sát địch) → CHỈ vào giữa + siege, cấm cắm thêm vòng
-    if (near) {
-      const transitToCenter =
-        me.inTransit && me.destX === destX && me.destY === destY && me.eta > 0;
-      if (transitToCenter) {
-        summary.status = "WAITING";
-        summary.action = "transit";
-        summary.etaSeconds = me.eta;
-        summary.dest = { x: destX, y: destY };
-        summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1200);
-        summary.reason = `Phá cờ · đang vào GIỮA #${enemy.flag_id} @(${destX},${destY}) · ETA ${me.eta}s`;
-        onLog?.("INFO", summary.reason);
-        summary.finishedAt = new Date().toISOString();
-        return summary;
-      }
+    // ── A) ASSAULT LOCK: near → CHỈ MOVE CENTER + SIEGE (cấm cắm/xây/chip)
+    if (assaultLock) {
+      onLog?.(
+        "INFO",
+        `HC Phá cờ · 🔒 ASSAULT #${enemy.flag_id} CENTER@(${destX},${destY}) me@(${me.x},${me.y})` +
+          ` · ${onSpot ? "đúng tâm → SIEGE" : "FORCE move tâm (phá vòng)"}`
+      );
+
+      // Đang đi chỗ khác (hop/vành/resource) → hủy, ép về tâm
       if (
         me.inTransit &&
         me.destX !== undefined &&
@@ -2666,8 +2685,18 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       ) {
         onLog?.(
           "WARN",
-          `HC Phá cờ · hủy dest@(${me.destX},${me.destY}) → CENTER@(${destX},${destY}) #${enemy.flag_id}`
+          `HC Phá cờ · 🔒 hủy dest@(${me.destX},${me.destY}) → FORCE CENTER@(${destX},${destY})`
         );
+      } else if (me.inTransit && me.destX === destX && me.destY === destY && me.eta > 0) {
+        summary.status = "WAITING";
+        summary.action = "transit";
+        summary.etaSeconds = me.eta;
+        summary.dest = { x: destX, y: destY };
+        summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1200);
+        summary.reason = `Phá cờ · 🔒 đang vào GIỮA #${enemy.flag_id} @(${destX},${destY}) · ETA ${me.eta}s`;
+        onLog?.("INFO", summary.reason);
+        summary.finishedAt = new Date().toISOString();
+        return summary;
       }
 
       if (!onSpot) {
@@ -2691,10 +2720,14 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.nextDelayMs = Math.max(2_000, eta * 1000 + 1200);
         const destMismatch = gotX !== destX || gotY !== destY;
         summary.reason =
-          `Phá cờ · NEAR → MOVE GIỮA #${enemy.flag_id}` +
+          `Phá cờ · 🔒 FORCE GIỮA #${enemy.flag_id}` +
           ` from@(${fromX},${fromY}) → dest@(${gotX},${gotY}) = flag@(${destX},${destY})` +
           (destMismatch ? ` ⚠` : " ✓") +
-          ` · ETA ${eta}s dist ${distMv}`;
+          ` · ETA ${eta}s dist ${distMv} · (hết vòng cắm)`;
+        summary.persistHint = {
+          focus_attack_flag_id: enemy.flag_id,
+          break_phase: "ASSAULT_MOVE_CENTER",
+        };
         onLog?.(destMismatch ? "WARN" : "INFO", summary.reason, { mv });
         summary.finishedAt = new Date().toISOString();
         return summary;
@@ -2738,7 +2771,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           onLog?.("WARN", `HC Phá cờ · side=${side} (cần attack) · #${enemy.flag_id}`);
         }
         summary.reason =
-          `SIEGE #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
+          `SIEGE 🔒 #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
           ` · side=${side || "?"} · atk ${atkN} / def ${defN}` +
           ` · siege còn ${sp}/${sm}` +
           (enemy.is_built === true ? ` · phá ${pct}%` : "");
@@ -2746,6 +2779,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.persistHint = {
           last_destroyed_flag_pos: { x: destX, y: destY },
           last_destroyed_flag_id: enemy.flag_id,
+          focus_attack_flag_id: enemy.flag_id,
+          break_phase: "ASSAULT_SIEGE",
         };
         try {
           await rpc(
