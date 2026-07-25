@@ -1005,7 +1005,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       // Phá cờ / chip resource: cho delay ngắn hơn
       const fastHc =
         result.phase === "break_flag" &&
-        /siege_flag_attack|attack_resource|move_to_enemy|move_to_resource|flee/i.test(result.action || "");
+        /siege_flag_attack|attack_resource|move_to_enemy|move_to_resource|move_to_place|move_to_build|place_bridge|flee/i.test(
+          result.action || ""
+        );
       nextDelayMs = Math.max(fastHc ? 2_500 : 5_000, Number(result.nextDelayMs || 20_000));
       if (result.status === "ERROR") {
         status = "error";

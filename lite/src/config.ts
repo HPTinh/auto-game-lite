@@ -305,8 +305,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     enemy_clan_list: [],
     enemy_clan_list_at: "",
     /**
+     * Chưa near (không có cờ mình chạm 3×3 / server not_near)
+     * → cắm + xây bridge mở địa bàn. Tắt = chỉ phá khi đã near.
+     */
+    break_hop: true,
+    /**
      * Flee khi có địch gần — MẶC ĐỊNH TẮT khi phá (tránh không vào giữa cờ).
-     * UI checkbox nếu bật tường minh mới flee.
      */
     flee_on_enemy_near: false,
     flee_radius: 1,
