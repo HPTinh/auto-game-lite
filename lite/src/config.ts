@@ -310,6 +310,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      */
     break_hop: true,
     /**
+     * Né cờ đang có người thủ clan khác (map.defenders / siege defender_count)
+     * → qua phá cờ trống, tránh dính combat.
+     */
+    skip_defended_flags: true,
+    /**
      * Flee khi có địch gần — MẶC ĐỊNH TẮT khi phá (tránh không vào giữa cờ).
      */
     flee_on_enemy_near: false,

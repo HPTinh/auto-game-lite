@@ -693,6 +693,61 @@ function countReachableEnemies(ownBuilt: Flag[], enemies: Flag[]): number {
   return enemies.filter((e) => canReachEnemyFlag(ownBuilt, e)).length;
 }
 
+/**
+ * Người đang THỦ cờ (map_state.defenders: target_kind=flag, target_id=flag_id).
+ * myClanId: chỉ đếm người clan khác (né thủ địch / PVP).
+ */
+function flagDefenders(
+  map: any,
+  flagId: number,
+  myClanId?: string
+): Array<{ name: string; clan_id?: string; clan_name?: string; character_id?: string }> {
+  const raw = Array.isArray(map?.defenders) ? map.defenders : [];
+  const idStr = String(flagId);
+  const out: Array<{ name: string; clan_id?: string; clan_name?: string; character_id?: string }> = [];
+  for (const d of raw) {
+    const kind = String(d?.target_kind || "").toLowerCase();
+    if (kind && kind !== "flag") continue;
+    const tid = String(d?.target_id ?? d?.flag_id ?? "");
+    if (tid !== idStr && Math.floor(n(d?.flag_id, 0)) !== flagId) continue;
+    const cid = d?.clan_id ? String(d.clan_id) : undefined;
+    if (myClanId && cid && cid === myClanId) continue; // mình/đồng minh thủ — không tính “thủ địch”
+    out.push({
+      name: String(d?.name || d?.character_name || "?"),
+      clan_id: cid,
+      clan_name: d?.clan_name ? String(d.clan_name) : undefined,
+      character_id: d?.character_id ? String(d.character_id) : undefined,
+    });
+  }
+  return out;
+}
+
+/** Người đang CÔNG/phá cờ (map_state.besiegers[].flag_id) — clan khác */
+function flagBesiegers(
+  map: any,
+  flagId: number,
+  myClanId?: string
+): Array<{ name: string; clan_id?: string; clan_name?: string }> {
+  const raw = Array.isArray(map?.besiegers) ? map.besiegers : [];
+  return raw
+    .filter((b: any) => Math.floor(n(b?.flag_id, 0)) === flagId)
+    .filter((b: any) => {
+      const cid = b?.clan_id ? String(b.clan_id) : "";
+      if (myClanId && cid && cid === myClanId) return false;
+      return true;
+    })
+    .map((b: any) => ({
+      name: String(b?.name || "?"),
+      clan_id: b?.clan_id ? String(b.clan_id) : undefined,
+      clan_name: b?.clan_name ? String(b.clan_name) : undefined,
+    }));
+}
+
+/** Cờ có người thủ clan khác → né, không phá (tránh dính combat) */
+function isFlagDefendedByOtherClan(map: any, flagId: number, myClanId: string): boolean {
+  return flagDefenders(map, flagId, myClanId).length > 0;
+}
+
 /** Resource gần để chip (attack_position) — còn HP, không phải mình giữ (hoặc vẫn chip được) */
 function pickNearResourceToChip(
   map: any,
@@ -2323,13 +2378,50 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    // ── Chọn cờ địch: (1) đã near phá được (2) gần mình nhất (3) đang chip (4) focus
+    // ── Né cờ có người thủ clan khác (map.defenders) — tránh dính combat, qua cờ trống
+    const skipDefended = settings.skip_defended_flags !== false;
+    const defendedList = skipDefended
+      ? enemyFlags.filter((f) => isFlagDefendedByOtherClan(map, f.flag_id, clanId))
+      : [];
+    const undefended = skipDefended
+      ? enemyFlags.filter((f) => !isFlagDefendedByOtherClan(map, f.flag_id, clanId))
+      : enemyFlags;
+
+    if (defendedList.length > 0) {
+      const sample = defendedList
+        .slice(0, 5)
+        .map((f) => {
+          const defs = flagDefenders(map, f.flag_id, clanId);
+          const names = defs
+            .slice(0, 2)
+            .map((d) => d.name)
+            .join(",");
+          return `#${f.flag_id}(${names || "?"}×${defs.length})`;
+        })
+        .join(" · ");
+      onLog?.(
+        "INFO",
+        `HC Phá cờ · NÉ ${defendedList.length} cờ có thủ địch: ${sample}${defendedList.length > 5 ? "…" : ""} · còn ${undefended.length} cờ trống`
+      );
+    }
+
+    if (!undefended.length) {
+      summary.status = "WAITING";
+      summary.reason = `Phá cờ · mọi cờ địch (${enemyFlags.length}) đều có người thủ clan khác · chờ trống / không xông`;
+      summary.nextDelayMs = 15_000;
+      // clear focus attack để không bám cờ có thủ
+      summary.persistHint = { focus_attack_flag_id: null };
+      onLog?.("WARN", summary.reason);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
+    // ── Chọn cờ địch TRỐNG: (1) near (2) gần mình (3) chip dở (4) focus
     const focusAttackId = Math.floor(n(settings.focus_attack_flag_id, 0)) || 0;
-    const enemy = [...enemyFlags].sort((a, b) => {
+    const enemy = [...undefended].sort((a, b) => {
       const ra = canReachEnemyFlag(ownBuilt, a) ? 0 : 1;
       const rb = canReachEnemyFlag(ownBuilt, b) ? 0 : 1;
       if (ra !== rb) return ra - rb;
-      // Trong nhóm near / không near: gần nhân vật nhất
       const da = manhattan(a.pos_x, a.pos_y, me.x, me.y);
       const db = manhattan(b.pos_x, b.pos_y, me.x, me.y);
       if (da !== db) return da - db;
@@ -2342,12 +2434,12 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       const bDamaged = b.is_built === true && sb < (b.siege_max || cfgSiegeMax);
       if (aDamaged !== bDamaged) return aDamaged ? -1 : 1;
       if (aDamaged && bDamaged && sa !== sb) return sa - sb;
+      // focus chỉ khi cờ đó vẫn trống (đã nằm trong undefended)
       if (focusAttackId > 0) {
         const fa = a.flag_id === focusAttackId ? 0 : 1;
         const fb = b.flag_id === focusAttackId ? 0 : 1;
         if (fa !== fb) return fa - fb;
       }
-      // Bridge gần cờ mình (để hop ngắn)
       const bridgeA = ownBuilt.length
         ? Math.min(...ownBuilt.map((o) => chebyshev(o.pos_x, o.pos_y, a.pos_x, a.pos_y)))
         : 99;
@@ -2364,7 +2456,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const distMe = manhattan(destX, destY, me.x, me.y);
     const onSpot = me.x === destX && me.y === destY;
     const near = canReachEnemyFlag(ownBuilt, enemy);
-    const reachableN = countReachableEnemies(ownBuilt, enemyFlags);
+    const reachableN = countReachableEnemies(ownBuilt, undefended);
     const siegeNow = flagProgress(enemy);
     const siegeMax = enemy.siege_max || cfgSiegeMax;
     const breakPct =
@@ -2374,13 +2466,16 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const bridgeDist = ownBuilt.length
       ? Math.min(...ownBuilt.map((o) => chebyshev(o.pos_x, o.pos_y, destX, destY)))
       : 99;
+    const defsHere = flagDefenders(map, enemy.flag_id, clanId);
+    const atkHere = flagBesiegers(map, enemy.flag_id, clanId);
 
     onLog?.(
       "INFO",
       `HC Phá cờ · #${enemy.flag_id} [${enemyName}] CENTER@(${destX},${destY})` +
         ` · me@(${me.x},${me.y}) cheby=${chebyMe}` +
-        ` · near=${near} (cờ mình chạm 3×3, bridgeCheby=${bridgeDist})` +
-        ` · chạm ${reachableN}/${enemyFlags.length}` +
+        ` · near=${near} bridgeCheby=${bridgeDist === 99 ? "∞" : bridgeDist}` +
+        ` · thủ địch ${defsHere.length} · công khác ${atkHere.length}` +
+        ` · trống ${undefended.length}/${enemyFlags.length} · chạm ${reachableN}` +
         ` · is_built=${enemy.is_built === true} · siege ${siegeNow}/${siegeMax}` +
         (enemy.is_built === true ? ` · phá ${breakPct}%` : "") +
         ` · mode=${near ? (onSpot ? "SIEGE" : "MOVE_CENTER") : hopOn ? "EXPAND_HOP" : "NEED_NEAR"}`
@@ -2460,18 +2555,34 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           accessToken
         );
         const side = String(res?.side || "");
+        const defN = Math.floor(n(res?.defender_count, 0));
+        const atkN = Math.floor(n(res?.besieger_count, 0));
         summary.side = side || undefined;
-        summary.action = "siege_flag_attack";
         summary.siegePoints = n(res?.siege_points, siegeNow);
         summary.siegeMax = n(res?.siege_max, siegeMax);
         summary.status = "WAITING";
-        summary.nextDelayMs = Math.max(3_500, pollMs - 5_000);
         const sp = summary.siegePoints ?? siegeNow;
         const sm = summary.siegeMax ?? siegeMax;
         const pct =
           enemy.is_built === true && sm > 0
             ? Math.max(0, Math.min(100, Math.round(((sm - sp) / sm) * 100)))
             : 0;
+
+        // Server báo có thủ → leave, bỏ focus, qua cờ khác (né combat)
+        if (skipDefended && side === "attack" && defN > 0) {
+          await leaveDefense(characterId, accessToken, onLog);
+          summary.action = "skip_defended_flag";
+          summary.nextDelayMs = 5_000;
+          summary.reason =
+            `Phá cờ · NÉ #${enemy.flag_id} [${enemyName}] có ${defN} thủ (siege_flag) · atk ${atkN} · leave → cờ trống khác`;
+          summary.persistHint = { focus_attack_flag_id: null };
+          onLog?.("WARN", summary.reason, { res });
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
+
+        summary.action = "siege_flag_attack";
+        summary.nextDelayMs = Math.max(3_500, pollMs - 5_000);
         if (side && side !== "attack") {
           onLog?.(
             "WARN",
@@ -2480,7 +2591,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         }
         summary.reason =
           `SIEGE #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
-          ` · side=${side || "?"} · atk ${n(res?.besieger_count)} / def ${n(res?.defender_count)}` +
+          ` · side=${side || "?"} · atk ${atkN} / def ${defN}` +
           ` · siege còn ${sp}/${sm}` +
           (enemy.is_built === true ? ` · phá ${pct}%` : "");
         onLog?.("SUCCESS", summary.reason, { res });

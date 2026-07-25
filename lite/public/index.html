@@ -893,10 +893,11 @@
           </div>
         </div>
         <div class="mu" style="font-size:10px;margin:4px 0 8px;opacity:.85">
-          Ưu tiên cờ địch <b>gần mình</b>. Có cờ mình chạm 3×3 → vào <b>giữa</b> + <code>siege_flag</code>.
-          Lỗi <code>not_near</code> / chưa chạm → <b>cắm–xây 1 bridge</b> mở địa bàn rồi phá.
+          Ưu tiên cờ địch <b>gần mình</b>, <b>không có người thủ</b>. Near → giữa + siege.
+          <code>not_near</code> → cắm bridge. Cờ có thủ địch → <b>né</b>, qua cờ trống.
         </div>
-        <div class="f chk"><input type="checkbox" data-k="break_hop" ${bool("break_hop", true)?"checked":""}/><label>Chưa near → cắm hop mở rộng (khuyến nghị bật)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="break_hop" ${bool("break_hop", true)?"checked":""}/><label>Chưa near → cắm hop mở rộng</label></div>
+        <div class="f chk"><input type="checkbox" data-k="skip_defended_flags" ${bool("skip_defended_flags", true)?"checked":""}/><label>Né cờ có người thủ clan khác (tránh combat)</label></div>
         <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", false)?"checked":""}/><label>Địch gần → chạy cờ mình (thường tắt khi phá)</label></div>
         <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", false)?"checked":""}/><label>Resource gần → chip (có thể chen, nên tắt khi phá)</label></div>
         <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
