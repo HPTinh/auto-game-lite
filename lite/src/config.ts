@@ -315,6 +315,8 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     break_place_exclude: [],
     /** Place quá gần địch → tick sau force ưu tiên phá */
     break_force_assault: false,
+    /** Ô đang đi cắm — sticky đến khi place xong (tránh spam move) */
+    break_pending_place: null,
     /**
      * Né cờ đang có người thủ clan khác (map.defenders / siege defender_count)
      * → qua phá cờ trống, tránh dính combat.

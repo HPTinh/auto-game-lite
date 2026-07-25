@@ -2677,6 +2677,27 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       break_phase: phaseLabel,
     };
 
+    /**
+     * EXPAND death circle (log 07:41): mỗi tick leave+move @(16,54) ETA 17s
+     * → không bao giờ đứng yên place. Phải CHỜ transit xong (trừ ASSAULT hủy dest sai).
+     */
+    if (!assaultLock && me.inTransit && me.eta > 0) {
+      summary.status = "WAITING";
+      summary.action = "transit_expand";
+      summary.etaSeconds = me.eta;
+      summary.dest =
+        me.destX !== undefined && me.destY !== undefined
+          ? { x: me.destX, y: me.destY }
+          : undefined;
+      summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1500);
+      summary.reason =
+        `Phá cờ · chờ tới nơi dest@(${me.destX ?? "?"},${me.destY ?? "?"})` +
+        ` · ETA ${me.eta}s · (không spam move — tránh vòng quanh cửa mình)`;
+      onLog?.("INFO", summary.reason);
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+
     // ── 0) Flee: bị dí → né tạm (có cooldown, không spam tạo vòng flee↔quay lại)
     // Khi ASSAULT cờ trống (near, không thủ map): không flee trừ khi ≥2 địch dính sát (r≤1)
     const fleeCdUntil = n(settings.break_flee_cooldown_until, 0);
@@ -3117,7 +3138,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
     }
 
-    const tryPlaceAt = async (cell: Pos): Promise<"ok" | "not_adjacent" | "full" | "other"> => {
+    const tryPlaceAt = async (
+      cell: Pos
+    ): Promise<"ok" | "not_adjacent" | "full" | "other" | "too_close_enemy"> => {
       const cellToEnemy = chebyshev(cell.x, cell.y, destX, destY);
       const progressNote =
         plan.bridgeCheby < 99 && cellToEnemy < plan.bridgeCheby
@@ -3130,7 +3153,34 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       );
 
       const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+      // Đã pending move tới đúng ô này (persist) — đừng leave+move lại
+      const pending = settings.break_pending_place;
+      const pendingMatch =
+        pending &&
+        Math.floor(n(pending.x, -1)) === cell.x &&
+        Math.floor(n(pending.y, -1)) === cell.y;
+
       if (distPlace > 0) {
+        // Đang transit đúng ô → chờ (không leave_defense / move lại)
+        if (
+          me.inTransit &&
+          me.destX === cell.x &&
+          me.destY === cell.y &&
+          me.eta > 0
+        ) {
+          summary.status = "WAITING";
+          summary.action = "transit_to_place";
+          summary.dest = cell;
+          summary.etaSeconds = me.eta;
+          summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1500);
+          summary.reason = `Phá cờ · chờ tới ô cắm @(${cell.x},${cell.y}) · ETA ${me.eta}s`;
+          summary.persistHint = {
+            break_pending_place: { x: cell.x, y: cell.y },
+            focus_attack_flag_id: enemy.flag_id,
+          };
+          summary.finishedAt = new Date().toISOString();
+          return "ok";
+        }
         await leaveDefense(characterId, accessToken, onLog);
         const mv = await rpc(
           "rpc_hoang_co_move",
@@ -3144,12 +3194,17 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.status = "WAITING";
         summary.etaSeconds = eta;
         summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-        summary.reason = `Phá cờ · đi cắm hop @(${cell.x},${cell.y}) bridge→#${enemy.flag_id} · ETA ${eta}s`;
+        summary.reason = `Phá cờ · đi cắm hop @(${cell.x},${cell.y}) → #${enemy.flag_id} · ETA ${eta}s · (1 lần, chờ tới)`;
+        summary.persistHint = {
+          break_pending_place: { x: cell.x, y: cell.y },
+          focus_attack_flag_id: enemy.flag_id,
+          break_phase: "MOVE_PLACE",
+        };
         summary.finishedAt = new Date().toISOString();
-        // Đánh dấu return đặc biệt qua action đã set — caller return summary
         return "ok";
       }
 
+      // Đứng đúng ô → place ngay (clear pending)
       try {
         const res = await rpc(
           "rpc_hoang_co_place_flag",
@@ -3196,8 +3251,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.persistHint = {
           last_destroyed_flag_pos: null,
           last_destroyed_flag_id: null,
-          // clear exclude sau place ok
           break_place_exclude: [],
+          break_pending_place: null,
+          focus_attack_flag_id: enemy.flag_id,
         };
         summary.status = "WAITING";
         summary.nextDelayMs = pollMs;
@@ -3225,18 +3281,33 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
     };
 
+    // Sticky ô cắm: ưu tiên pending / reclaim, không đổi ô mỗi tick khi đang đi
+    let stickyCell: Pos | null = null;
+    const pend = settings.break_pending_place;
+    if (pend && Number.isFinite(Number(pend.x)) && Number.isFinite(Number(pend.y))) {
+      const px = Math.floor(Number(pend.x));
+      const py = Math.floor(Number(pend.y));
+      if (!excludePlace.has(cellKey(px, py))) {
+        stickyCell = { x: px, y: py };
+        onLog?.("DEBUG", `HC Phá cờ · sticky ô cắm @(${px},${py})`);
+      }
+    }
+
     // Thử tối đa 4 ô
     let placedOk = false;
     for (let attempt = 0; attempt < 4; attempt++) {
-      const cell = pickSiegePlaceCell({
-        map,
-        clanId,
-        me,
-        enemy,
-        maxHop: hopMax,
-        reclaimPos: attempt === 0 ? reclaimPos : null,
-        excludeCells: excludePlace,
-      });
+      const cell =
+        attempt === 0 && stickyCell
+          ? stickyCell
+          : pickSiegePlaceCell({
+              map,
+              clanId,
+              me,
+              enemy,
+              maxHop: hopMax,
+              reclaimPos: attempt === 0 ? reclaimPos : null,
+              excludeCells: excludePlace,
+            });
       if (!cell) break;
 
       const result = await tryPlaceAt(cell);
