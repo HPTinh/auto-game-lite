@@ -313,6 +313,8 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     break_hop_max: 1,
     /** Ô cắm fail not_adjacent — bỏ qua */
     break_place_exclude: [],
+    /** Place quá gần địch → tick sau force ưu tiên phá */
+    break_force_assault: false,
     /**
      * Né cờ đang có người thủ clan khác (map.defenders / siege defender_count)
      * → qua phá cờ trống, tránh dính combat.
