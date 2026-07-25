@@ -309,6 +309,8 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      * → cắm + xây bridge mở địa bàn. Tắt = chỉ phá khi đã near.
      */
     break_hop: true,
+    /** Mỗi hop cắm tối đa N ô (cheby) từ cờ built — mặc định 3 */
+    break_hop_max: 3,
     /**
      * Né cờ đang có người thủ clan khác (map.defenders / siege defender_count)
      * → qua phá cờ trống, tránh dính combat.
