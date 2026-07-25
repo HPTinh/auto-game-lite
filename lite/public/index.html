@@ -881,7 +881,7 @@
         : "";
       const n = Array.isArray(draft.enemy_clan_list) ? draft.enemy_clan_list.length : 0;
       return `
-        <div class="f chk"><input type="checkbox" data-k="auto_break_flag" ${bool("auto_break_flag", false)?"checked":""}/><label><b>Phá cờ</b> (cắm → xây → phá)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_break_flag" ${bool("auto_break_flag", false)?"checked":""}/><label><b>Phá cờ</b> (chạy thẳng giữa cờ địch → siege)</label></div>
         <div class="f">
           <label>Bang hội cần phá (chọn từ map)</label>
           <div style="display:flex;gap:6px;align-items:center">
@@ -892,8 +892,9 @@
             ${n ? `Đã tải <b>${n}</b> bang · ${esc(at)}` : "Bấm <b>Tải list</b> (cần Check account + event map)"}
           </div>
         </div>
-        <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", true)?"checked":""}/><label>Địch trong 3 ô → chạy cờ mình</label></div>
-        <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", true)?"checked":""}/><label>Resource gần → chip (attack_position, không thủ)</label></div>
+        <div class="mu" style="font-size:10px;margin:4px 0 8px;opacity:.85">Chỉ <b>move → đúng giữa cờ (pos_x,pos_y)</b> rồi <b>siege_flag</b> — không cắm hop quanh 3×3.</div>
+        <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", false)?"checked":""}/><label>Địch gần → chạy cờ mình (thường tắt khi phá)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", false)?"checked":""}/><label>Resource gần → chip (có thể chen, nên tắt khi phá)</label></div>
         <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
         <div class="mu" style="font-size:11px;margin-bottom:6px">Chế độ khác (khi <b>tắt</b> Phá cờ):</div>
         <div class="f chk"><input type="checkbox" data-k="auto_place" ${bool("auto_place", true)?"checked":""}/><label>Cắm cờ (mở rộng)</label></div>

@@ -2214,14 +2214,13 @@ export async function listHoangCoEnemyClans(options: {
 }
 
 /**
- * Phá cờ (cắm → xây → phá) — tối ưu tới cờ bang đích
+ * Phá cờ — GIỐNG BẤM TAY:
+ * 1) map_state → chọn cờ địch (target bang / gần nhất)
+ * 2) rpc_hoang_co_move → ĐÚNG giữa cờ (pos_x, pos_y)  — không đi vành 3×3
+ * 3) đứng đúng giữa → rpc_hoang_co_siege_flag (p_flag_id)
  *
- * Data: rpc_hoang_co_map_state → flags[] (clan_id, clan_name, pos, is_built…)
- * 1) Lọc cờ bang target (target_clan_name) hoặc mọi địch
- * 2) Có địch trong 3×3 (cheby≤1) quanh mình → chạy về cờ mình khác
- * 3) 3×3 cờ built chạm địch → move ĐÚNG tọa độ cờ địch → siege_flag attack
- * 4) Còn cờ dở → đi đúng pos cờ dở → xây
- * 5) Chưa chạm → cắm hop 3×3 về cờ địch gần nhất (của bang đích)
+ * Mặc định KHÔNG cắm/xây hop (tránh “đi vòng quanh cờ”).
+ * Bật hop chỉ khi settings.break_hop === true.
  */
 export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
@@ -2232,13 +2231,13 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
   const onlyWhenEventLive = settings.only_when_event_live !== false;
   const targetClan = String(settings.target_clan_name || settings.target_clan || settings.focus_clan_name || "").trim();
   const fleeRadius = Math.max(1, Math.min(3, Math.floor(n(settings.flee_radius, 1)) || 1));
-  const fleeOn = settings.flee_on_enemy_near !== false;
+  // Mặc định TẮT flee khi phá — flee dễ kéo ra vành / cờ mình thay vì vào giữa
+  const fleeOn = settings.flee_on_enemy_near === true;
 
   let selfPlaced: number[] = [];
   if (Array.isArray(settings.self_placed_flag_ids)) {
     selfPlaced = settings.self_placed_flag_ids.map((x: any) => Math.floor(n(x))).filter((x: number) => x > 0);
   }
-  const selfPlacedSet = new Set(selfPlaced);
 
   const summary: HoangCoRunSummary = {
     startedAt: new Date().toISOString(),
@@ -2299,7 +2298,6 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const flags = parseFlags(map);
     const cfgSiegeMax = Math.max(100, Math.floor(n(map?.config?.siege_max, 600)) || 600);
     const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
-    const building = incompleteClanFlags(flags, clanId);
     const allEnemy = flags.filter((f) => isEnemyFlag(f, clanId));
     const enemyFlags = filterEnemyFlags(flags, clanId, targetClan);
 
@@ -2318,38 +2316,24 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    // ── Chọn cờ địch TRƯỚC (tránh flee chen khi đang công):
-    // 1) Đã chạm 3×3 (phá được ngay)  2) is_built  3) đang bị chip (siege↓)
-    // 4) focus_attack (chỉ bám nếu chưa có cờ chạm khác)  5) bridge gần  6) gần me
+    // ── Chọn cờ địch: gần mình nhất (như bấm tay chạy tới phá) + bám focus + dứt điểm siege
     const focusAttackId = Math.floor(n(settings.focus_attack_flag_id, 0)) || 0;
     const enemy = [...enemyFlags].sort((a, b) => {
-      const ra = canReachEnemyFlag(ownBuilt, a) ? 0 : 1;
-      const rb = canReachEnemyFlag(ownBuilt, b) ? 0 : 1;
-      if (ra !== rb) return ra - rb;
-      // Ưu cờ đã built (is_built=true); cờ dở địch sau
+      if (focusAttackId > 0) {
+        const fa = a.flag_id === focusAttackId ? 0 : 1;
+        const fb = b.flag_id === focusAttackId ? 0 : 1;
+        if (fa !== fb) return fa - fb;
+      }
       const ba = a.is_built === true ? 0 : 1;
       const bb = b.is_built === true ? 0 : 1;
       if (ba !== bb) return ba - bb;
-      // Đang chip (siege_points < siege_max) → dứt điểm
       const sa = flagProgress(a);
       const sb = flagProgress(b);
       const aDamaged = a.is_built === true && sa < (a.siege_max || cfgSiegeMax);
       const bDamaged = b.is_built === true && sb < (b.siege_max || cfgSiegeMax);
       if (aDamaged !== bDamaged) return aDamaged ? -1 : 1;
       if (aDamaged && bDamaged && sa !== sb) return sa - sb;
-      // Focus chỉ tie-break trong cùng nhóm reach/built (không bám cờ xa che cờ chạm)
-      if (focusAttackId > 0) {
-        const fa = a.flag_id === focusAttackId ? 0 : 1;
-        const fb = b.flag_id === focusAttackId ? 0 : 1;
-        if (fa !== fb) return fa - fb;
-      }
-      const bridgeA = ownBuilt.length
-        ? Math.min(...ownBuilt.map((o) => chebyshev(o.pos_x, o.pos_y, a.pos_x, a.pos_y)))
-        : 99;
-      const bridgeB = ownBuilt.length
-        ? Math.min(...ownBuilt.map((o) => chebyshev(o.pos_x, o.pos_y, b.pos_x, b.pos_y)))
-        : 99;
-      if (bridgeA !== bridgeB) return bridgeA - bridgeB;
+      // Gần nhân vật nhất → chạy thẳng tới
       return manhattan(a.pos_x, a.pos_y, me.x, me.y) - manhattan(b.pos_x, b.pos_y, me.x, me.y);
     })[0];
 
@@ -2358,13 +2342,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const destY = enemy.pos_y;
     const chebyMe = chebyshev(me.x, me.y, destX, destY);
     const distMe = manhattan(destX, destY, me.x, me.y);
-    const reach = canReachEnemyFlag(ownBuilt, enemy);
-    const reachableN = countReachableEnemies(ownBuilt, enemyFlags);
-    // Đã chạm được HẾT cờ địch (cụm sát nhau) → không cắm thêm
-    const coverAll = ownBuilt.length > 0 && reachableN >= enemyFlags.length;
+    const onSpot = me.x === destX && me.y === destY;
     const siegeNow = flagProgress(enemy);
     const siegeMax = enemy.siege_max || cfgSiegeMax;
-    // Tiến độ phá: is_built + siege còn (càng thấp = phá càng nhiều). Cờ dở is_built=false thì siege = tiến độ xây địch
     const breakPct =
       enemy.is_built === true && siegeMax > 0
         ? Math.max(0, Math.min(100, Math.round(((siegeMax - siegeNow) / siegeMax) * 100)))
@@ -2372,21 +2352,11 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
 
     onLog?.(
       "INFO",
-      `HC Phá cờ · TARGET #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
-        ` · me@(${me.x},${me.y}) cheby=${chebyMe}` +
-        ` · is_built=${enemy.is_built === true}` +
-        ` · siege ${siegeNow}/${siegeMax}` +
-        (enemy.is_built === true ? ` · phá ${breakPct}%` : " · (cờ địch chưa xong xây)") +
-        ` · ownBuilt ${ownBuilt.length} · dở ${building.length} · chạm ${reachableN}/${enemyFlags.length}` +
-        `${coverAll ? " · COVER_ALL" : ""} · mode=${
-          chebyMe === 0
-            ? "SIEGE_CENTER"
-            : chebyMe <= 1 || reach
-              ? "MOVE_TO_CENTER"
-              : building.length
-                ? "XÂY_HOP"
-                : "CẮM_HOP"
-        }`
+      `HC Phá cờ · #${enemy.flag_id} [${enemyName}] CENTER@(${destX},${destY})` +
+        ` · me@(${me.x},${me.y}) cheby=${chebyMe} manh=${distMe}` +
+        ` · is_built=${enemy.is_built === true} · siege ${siegeNow}/${siegeMax}` +
+        (enemy.is_built === true ? ` · phá ${breakPct}%` : "") +
+        ` · mode=${onSpot ? "SIEGE" : "MOVE_STRAIGHT_TO_CENTER"}`
     );
 
     summary.flagId = enemy.flag_id;
@@ -2394,14 +2364,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     summary.siegePoints = siegeNow;
     summary.siegeMax = siegeMax;
 
-    // 3×3 cờ địch = cheby ≤ 1 quanh (pos_x,pos_y). Ô GIỮA = đúng pos cờ.
-    const inFlag3x3 = chebyMe <= 1;
-    const onSpot = me.x === destX && me.y === destY;
-    // Bridge: cờ built kề 3×3 HOẶC bản thân đang đứng trong 3×3 (vành) → phải vào giữa
-    const shouldEnterCenter = reach || inFlag3x3;
-
-    // ── 0) Flee — không chạy khi trong 3×3 / đã bridge (đang công)
-    if (fleeOn && ownBuilt.length > 0 && !shouldEnterCenter) {
+    // ── 0) Flee (chỉ khi user bật tường minh) — không flee khi đang tiến/đứng gần cờ target
+    if (fleeOn && ownBuilt.length > 0 && chebyMe > 2) {
       const hostiles = hostilesNear(map, clanId, me.x, me.y, fleeRadius, characterId);
       if (hostiles.length > 0) {
         const names = hostiles
@@ -2432,326 +2396,78 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
     }
 
-    // ── A) ƯU TIÊN CAO: vào ĐÚNG GIỮA cờ địch rồi siege — không xây/cắm vành nữa
-    // Trước: hay đứng 8 ô vành 3×3 (cờ hop mình) → nhìn như "đi vòng quanh" không vào trung tâm
-    if (shouldEnterCenter) {
-      if (!onSpot) {
-        await leaveDefense(characterId, accessToken, onLog);
-        const mv = await rpc(
-          "rpc_hoang_co_move",
-          { p_character_id: characterId, p_dest_x: destX, p_dest_y: destY },
-          accessToken
-        );
-        const gotX = Math.floor(n(mv?.dest_x, destX));
-        const gotY = Math.floor(n(mv?.dest_y, destY));
-        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distMe * 3)));
-        summary.moved = true;
-        summary.dest = { x: gotX, y: gotY };
-        summary.action = "move_to_enemy_flag_center";
-        summary.status = "WAITING";
-        summary.etaSeconds = eta;
-        summary.nextDelayMs = Math.max(2_000, eta * 1000 + 1200);
-        const destMismatch = gotX !== destX || gotY !== destY;
-        summary.reason =
-          `Phá cờ · VÀO GIỮA 3×3 #${enemy.flag_id} [${enemyName}]` +
-          ` me@(${me.x},${me.y}) → CENTER@(${destX},${destY})` +
-          (destMismatch ? ` server@(${gotX},${gotY})!` : "") +
-          ` · cheby ${chebyMe} · reach=${reach} · ETA ${eta}s · siege ${siegeNow}/${siegeMax}`;
-        onLog?.(destMismatch ? "WARN" : "INFO", summary.reason, { mv });
-        summary.finishedAt = new Date().toISOString();
-        return summary;
-      }
-
-      // Đúng ô giữa (pos_x, pos_y) → siege_flag = bấm phá
-      try {
-        await leaveDefense(characterId, accessToken, onLog);
-        const res = await rpc(
-          "rpc_hoang_co_siege_flag",
-          { p_character_id: characterId, p_flag_id: enemy.flag_id },
-          accessToken
-        );
-        const side = String(res?.side || "");
-        summary.side = side || undefined;
-        summary.action = "siege_flag_attack";
-        summary.siegePoints = n(res?.siege_points, siegeNow);
-        summary.siegeMax = n(res?.siege_max, siegeMax);
-        summary.status = "WAITING";
-        summary.nextDelayMs = Math.max(3_500, pollMs - 5_000);
-        const sp = summary.siegePoints ?? siegeNow;
-        const sm = summary.siegeMax ?? siegeMax;
-        const pct =
-          enemy.is_built === true && sm > 0
-            ? Math.max(0, Math.min(100, Math.round(((sm - sp) / sm) * 100)))
-            : 0;
-        if (side && side !== "attack") {
-          onLog?.(
-            "WARN",
-            `HC Phá cờ · side=${side} (cần attack) · #${enemy.flag_id} CENTER@(${destX},${destY}) me@(${me.x},${me.y})`
-          );
-        }
-        summary.reason =
-          `SIEGE GIỮA #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
-          ` · side=${side || "?"} · atk ${n(res?.besieger_count)} / def ${n(res?.defender_count)}` +
-          ` · is_built=${enemy.is_built === true} · siege còn ${sp}/${sm}` +
-          (enemy.is_built === true ? ` · phá ${pct}%` : "");
-        onLog?.("SUCCESS", summary.reason, { res });
-        summary.persistHint = {
-          last_destroyed_flag_pos: { x: destX, y: destY },
-          last_destroyed_flag_id: enemy.flag_id,
-        };
-      } catch (e: any) {
-        summary.status = "ERROR";
-        summary.reason = `siege_flag #${enemy.flag_id} CENTER@(${destX},${destY}) me@(${me.x},${me.y}): ${(e?.message || e).toString().slice(0, 140)}`;
-        summary.nextDelayMs = 12_000;
-        onLog?.("ERROR", summary.reason);
-      }
-      try {
-        await rpc(
-          "rpc_hoang_co_heartbeat",
-          { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
-          accessToken
-        );
-      } catch {
-        /* ignore */
-      }
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // ── B) Còn cờ dở → xây cầu (CHỈ khi chưa vào được 3×3)
-    // Nếu đã có cờ dở/built kề 3×3 địch → chỉ xây 1 cờ đó, không cắm thêm vành
-    const buildingToward = [...building].sort((a, b) => {
-      const sa = selfPlacedSet.has(a.flag_id) ? 0 : 1;
-      const sb = selfPlacedSet.has(b.flag_id) ? 0 : 1;
-      if (sa !== sb) return sa - sb;
-      return (
-        chebyshev(a.pos_x, a.pos_y, enemy.pos_x, enemy.pos_y) -
-        chebyshev(b.pos_x, b.pos_y, enemy.pos_x, enemy.pos_y)
-      );
-    });
-
-    // Đã có bridge kề (built hoặc dở cheby≤1) → cấm place thêm ô vành; chỉ build dở gần nhất
-    const hasRingBridge =
-      ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, destX, destY) <= 1) ||
-      building.some((f) => chebyshev(f.pos_x, f.pos_y, destX, destY) <= 1);
-
-    if (buildingToward.length > 0) {
-      const focus = buildingToward[0];
-      summary.focusFlagId = focus.flag_id;
-      summary.flagId = focus.flag_id;
-      summary.siegePoints = flagProgress(focus);
-      summary.siegeMax = focus.siege_max || cfgSiegeMax;
-      onLog?.(
-        "INFO",
-        `HC Phá cờ · bám XÂY #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) · siege ${flagProgress(focus)}/${focus.siege_max || cfgSiegeMax} · cheby→địch ${chebyshev(focus.pos_x, focus.pos_y, enemy.pos_x, enemy.pos_y)}`
-      );
-
-      const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
-      if (dist > 0) {
-        await leaveDefense(characterId, accessToken, onLog);
-        const mv = await rpc(
-          "rpc_hoang_co_move",
-          { p_character_id: characterId, p_dest_x: focus.pos_x, p_dest_y: focus.pos_y },
-          accessToken
-        );
-        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-        summary.moved = true;
-        summary.dest = { x: focus.pos_x, y: focus.pos_y };
-        summary.action = "move_to_build";
-        summary.status = "WAITING";
-        summary.etaSeconds = eta;
-        summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-        summary.reason = `Phá cờ · đi đúng cờ xây #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) · ETA ${eta}s`;
-        summary.finishedAt = new Date().toISOString();
-        return summary;
-      }
-
-      try {
-        await rpc(
-          "rpc_hoang_co_start_build",
-          { p_character_id: characterId, p_flag_id: focus.flag_id },
-          accessToken
-        );
-        summary.built = 1;
-        summary.action = "start_build";
-        summary.status = "WAITING";
-        summary.nextDelayMs = pollMs;
-        summary.reason = `Phá cờ · đang xây #${focus.flag_id} · siege ${flagProgress(focus)}/${focus.siege_max || cfgSiegeMax}`;
-        onLog?.("SUCCESS", summary.reason);
-      } catch (e: any) {
-        summary.status = "WAITING";
-        summary.nextDelayMs = pollMs;
-        summary.reason = `Phá cờ · start_build #${focus.flag_id}: ${(e?.message || "").slice(0, 100)}`;
-        onLog?.("WARN", summary.reason);
-      }
-      try {
-        await rpc(
-          "rpc_hoang_co_heartbeat",
-          { p_character_id: characterId, p_pos_x: me.x, p_pos_y: me.y },
-          accessToken
-        );
-      } catch {
-        /* ignore */
-      }
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // ── C) Chưa chạm — CHỈ cắm nếu chưa cover hết cờ địch
-    // Resource chỉ khi rảnh (không chen trước phá/xây/cắm)
-    const chipOpts = {
-      map,
-      me,
-      clanId,
-      characterId,
-      accessToken,
-      settings,
-      onLog,
-      summary,
-    };
-
-    if (coverAll) {
-      // coverAll mà vào đây = lạ (sort ưu chạm); thử chip resource hoặc chờ
-      const chip = await tryChipNearResource(chipOpts);
-      if (chip) return chip;
-      summary.status = "WAITING";
-      summary.reason = `Phá cờ · cover ${reachableN}/${enemyFlags.length} cờ địch · không cắm · chờ vào giữa`;
-      summary.nextDelayMs = 8_000;
-      onLog?.("INFO", summary.reason);
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // Đã có 1 bridge kề 3×3 (built/dở) → KHÔNG cắm thêm vành (tránh đi vòng 8 ô)
-    if (hasRingBridge) {
-      const chip = await tryChipNearResource(chipOpts);
-      if (chip) return chip;
-      summary.status = "WAITING";
-      summary.reason = `Phá cờ · đã có bridge kề 3×3 #${enemy.flag_id} · không cắm vành · chờ built rồi VÀO GIỮA @(${destX},${destY})`;
-      summary.nextDelayMs = pollMs;
-      onLog?.("INFO", summary.reason);
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    const cfgMaxBuild = Math.max(
-      1,
-      Math.floor(n(map?.config?.flag_building_max, 3)) || 3
-    );
-    if (building.length >= cfgMaxBuild) {
-      const chip = await tryChipNearResource(chipOpts);
-      if (chip) return chip;
-      summary.status = "WAITING";
-      summary.reason = `Phá cờ · đủ ${building.length} cờ đang xây · chờ xong`;
-      summary.nextDelayMs = pollMs;
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    // Reclaim: ô cờ địch vừa phá (nếu không chạm cờ kế)
-    let reclaimPos: Pos | null = null;
-    const ld = settings.last_destroyed_flag_pos;
-    if (ld && Number.isFinite(Number(ld.x)) && Number.isFinite(Number(ld.y))) {
-      reclaimPos = { x: Math.floor(Number(ld.x)), y: Math.floor(Number(ld.y)) };
-    }
-
-    const cell = pickSiegePlaceCell({ map, clanId, me, enemy, maxHop: 2, reclaimPos });
-    if (!cell) {
-      const chip = await tryChipNearResource(chipOpts);
-      if (chip) return chip;
-      summary.status = "WAITING";
-      summary.reason = `Phá cờ · không tìm được ô cắm hướng #${enemy.flag_id} [${enemyName}] @(${enemy.pos_x},${enemy.pos_y}) · enemy còn ${enemyFlags.length}`;
-      summary.nextDelayMs = 30_000;
-      onLog?.("WARN", summary.reason);
-      summary.finishedAt = new Date().toISOString();
-      return summary;
-    }
-
-    const isReclaim =
-      reclaimPos && cell.x === reclaimPos.x && cell.y === reclaimPos.y;
-    onLog?.(
-      "INFO",
-      `HC Phá cờ · CẮM @(${cell.x},${cell.y})${isReclaim ? " [reclaim ô vừa phá]" : ""} · cheby→#${enemy.flag_id}[${enemyName}]=${chebyshev(cell.x, cell.y, enemy.pos_x, enemy.pos_y)}`
-    );
-
-    const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
-    if (distPlace > 0) {
+    // ── A) LUÔN: chưa đúng giữa → MOVE thẳng pos_x/pos_y cờ địch (giống click cờ)
+    // Không move sang ô vành / cờ hop / build — chỉ giữa cờ địch
+    if (!onSpot) {
       await leaveDefense(characterId, accessToken, onLog);
       const mv = await rpc(
         "rpc_hoang_co_move",
-        { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y },
+        { p_character_id: characterId, p_dest_x: destX, p_dest_y: destY },
         accessToken
       );
-      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+      const gotX = Math.floor(n(mv?.dest_x, destX));
+      const gotY = Math.floor(n(mv?.dest_y, destY));
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distMe * 3)));
       summary.moved = true;
-      summary.dest = cell;
-      summary.action = "move_to_place";
+      summary.dest = { x: gotX, y: gotY };
+      summary.action = "move_to_enemy_flag_center";
       summary.status = "WAITING";
       summary.etaSeconds = eta;
-      summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-      summary.reason = `Phá cờ · đi cắm @(${cell.x},${cell.y}) → #${enemy.flag_id} · ETA ${eta}s`;
+      summary.nextDelayMs = Math.max(2_000, eta * 1000 + 1200);
+      const destMismatch = gotX !== destX || gotY !== destY;
+      summary.reason =
+        `Phá cờ · CHẠY THẲNG GIỮA #${enemy.flag_id} [${enemyName}]` +
+        ` me@(${me.x},${me.y}) → CENTER@(${destX},${destY})` +
+        (destMismatch ? ` ⚠server@(${gotX},${gotY})` : "") +
+        ` · cheby ${chebyMe} · ETA ${eta}s`;
+      onLog?.(destMismatch ? "WARN" : "INFO", summary.reason, { mv });
       summary.finishedAt = new Date().toISOString();
       return summary;
     }
 
+    // ── B) Đúng giữa → siege_flag (y hệt bấm phá)
     try {
+      await leaveDefense(characterId, accessToken, onLog);
       const res = await rpc(
-        "rpc_hoang_co_place_flag",
-        { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y },
+        "rpc_hoang_co_siege_flag",
+        { p_character_id: characterId, p_flag_id: enemy.flag_id },
         accessToken
       );
-      const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
-      summary.placed = 1;
-      summary.action = "place_flag";
-      summary.dest = cell;
-      if (flagId) {
-        summary.flagId = flagId;
-        summary.focusFlagId = flagId;
-        if (!selfPlacedSet.has(flagId)) {
-          selfPlaced.push(flagId);
-          selfPlacedSet.add(flagId);
-        }
-      }
-      summary.selfPlacedFlagIds = [...selfPlaced];
-      const sp = n(res?.flag?.siege_points, 0);
-      const sm = n(res?.flag?.siege_max, cfgSiegeMax) || cfgSiegeMax;
-      summary.siegePoints = sp;
-      summary.siegeMax = sm;
-      onLog?.(
-        "SUCCESS",
-        `Phá cờ · đã cắm #${flagId || "?"} @(${cell.x},${cell.y})${isReclaim ? " reclaim" : ""} · siege ${sp}/${sm} → phá #${enemy.flag_id}`
-      );
-
-      if (flagId) {
-        try {
-          await rpc(
-            "rpc_hoang_co_start_build",
-            { p_character_id: characterId, p_flag_id: flagId },
-            accessToken
-          );
-          summary.built = 1;
-          onLog?.("SUCCESS", `Phá cờ · start_build #${flagId}`);
-        } catch (be: any) {
-          onLog?.("WARN", `Phá cờ · start_build fail: ${(be?.message || "").slice(0, 100)}`);
-        }
-      }
-
-      // Đã cắm reclaim → clear
-      summary.persistHint = {
-        last_destroyed_flag_pos: null,
-        last_destroyed_flag_id: null,
-      };
+      const side = String(res?.side || "");
+      summary.side = side || undefined;
+      summary.action = "siege_flag_attack";
+      summary.siegePoints = n(res?.siege_points, siegeNow);
+      summary.siegeMax = n(res?.siege_max, siegeMax);
       summary.status = "WAITING";
-      summary.nextDelayMs = pollMs;
-      summary.reason = `Phá cờ · đã cắm #${flagId} · đang xây → rồi phá #${enemy.flag_id} [${enemyName}]`;
+      summary.nextDelayMs = Math.max(3_500, pollMs - 5_000);
+      const sp = summary.siegePoints ?? siegeNow;
+      const sm = summary.siegeMax ?? siegeMax;
+      const pct =
+        enemy.is_built === true && sm > 0
+          ? Math.max(0, Math.min(100, Math.round(((sm - sp) / sm) * 100)))
+          : 0;
+      if (side && side !== "attack") {
+        onLog?.(
+          "WARN",
+          `HC Phá cờ · side=${side} (cần attack) · #${enemy.flag_id} CENTER@(${destX},${destY}) me@(${me.x},${me.y})`
+        );
+      }
+      summary.reason =
+        `SIEGE #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
+        ` · side=${side || "?"} · atk ${n(res?.besieger_count)} / def ${n(res?.defender_count)}` +
+        ` · is_built=${enemy.is_built === true} · siege còn ${sp}/${sm}` +
+        (enemy.is_built === true ? ` · phá ${pct}%` : "");
+      onLog?.("SUCCESS", summary.reason, { res });
+      summary.persistHint = {
+        last_destroyed_flag_pos: { x: destX, y: destY },
+        last_destroyed_flag_id: enemy.flag_id,
+      };
     } catch (e: any) {
       summary.status = "ERROR";
-      summary.reason = `Phá cờ · place fail: ${(e?.message || e).toString().slice(0, 140)}`;
-      summary.nextDelayMs = 20_000;
+      summary.reason = `siege_flag #${enemy.flag_id} @(${destX},${destY}) me@(${me.x},${me.y}): ${(e?.message || e).toString().slice(0, 140)}`;
+      summary.nextDelayMs = 12_000;
       onLog?.("ERROR", summary.reason);
     }
-
-    summary.selfPlacedFlagIds = [...selfPlaced];
     try {
       await rpc(
         "rpc_hoang_co_heartbeat",
@@ -2761,6 +2477,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     } catch {
       /* ignore */
     }
+    summary.finishedAt = new Date().toISOString();
+    return summary;
   } catch (e: any) {
     summary.status = "ERROR";
     summary.reason = e?.message || String(e);
@@ -2785,7 +2503,7 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
 
   // Mission riêng: Phá cờ (cắm → xây → phá cờ địch gần nhất)
   if (settings.auto_break_flag === true || settings.mission === "pha_co" || settings.mission === "break_flag") {
-    onLog?.("INFO", "Hoàng Cổ · mission: Phá cờ (cắm → xây → phá · địch gần nhất)");
+    onLog?.("INFO", "Hoàng Cổ · mission: Phá cờ (chạy thẳng giữa cờ địch → siege_flag)");
     return runHoangCoBreakFlagAuto(options);
   }
 

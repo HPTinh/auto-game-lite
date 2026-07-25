@@ -304,8 +304,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** Cache list bang địch (GET /hoang-co/clans) */
     enemy_clan_list: [],
     enemy_clan_list_at: "",
-    /** Có địch trong bán kính (cheby, 1=3×3) → chạy cờ mình khác */
-    flee_on_enemy_near: true,
+    /**
+     * Flee khi có địch gần — MẶC ĐỊNH TẮT khi phá (tránh không vào giữa cờ).
+     * UI checkbox nếu bật tường minh mới flee.
+     */
+    flee_on_enemy_near: false,
     flee_radius: 1,
     /** Trên đường phá: chip resource gần (attack_position, không thủ) */
     attack_near_resource: true,
