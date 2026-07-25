@@ -356,6 +356,133 @@ function pickFleeOwnFlag(
   return scored[0]?.f || null;
 }
 
+/** Ô an toàn: không có player địch trong safeR */
+function isPosSafeFromHostiles(
+  map: any,
+  myClanId: string,
+  x: number,
+  y: number,
+  safeR: number,
+  myCharacterId?: string
+): boolean {
+  return hostilesNear(map, myClanId, x, y, safeR, myCharacterId).length === 0;
+}
+
+/** Khoảng cách cheby tới player địch gần nhất (99 nếu không có) */
+function minHostileCheby(
+  map: any,
+  myClanId: string,
+  x: number,
+  y: number,
+  myCharacterId?: string
+): number {
+  const all = parseMapPlayers(map).filter((p) => {
+    if (myCharacterId && p.character_id === myCharacterId) return false;
+    if (p.clan_id && p.clan_id === myClanId) return false;
+    return true;
+  });
+  if (!all.length) return 99;
+  let m = 99;
+  for (const p of all) {
+    const d = chebyshev(p.x, p.y, x, y);
+    if (d < m) m = d;
+  }
+  return m;
+}
+
+type SafeDest = {
+  x: number;
+  y: number;
+  label: string;
+  kind: "flee_own" | "build" | "assault" | "kite";
+};
+
+/**
+ * Né linh hoạt: chạy bất kỳ đâu miễn xa địch + đích trống.
+ * Ưu: cờ mình an toàn → cờ dở an toàn (xây) → cờ địch near an toàn (phá) → ô kite.
+ */
+function pickSmartSafeDest(opts: {
+  map: any;
+  me: Pos;
+  myClanId: string;
+  myCharacterId?: string;
+  ownBuilt: Flag[];
+  building: Flag[];
+  nearEnemies: Flag[];
+  safeR?: number;
+  preferWork?: boolean;
+}): SafeDest | null {
+  const {
+    map,
+    me,
+    myClanId,
+    myCharacterId,
+    ownBuilt,
+    building,
+    nearEnemies,
+    safeR = 2,
+    preferWork = true,
+  } = opts;
+  const cands: Array<SafeDest & { score: number }> = [];
+
+  const push = (x: number, y: number, label: string, kind: SafeDest["kind"], bonus = 0) => {
+    if (x === me.x && y === me.y) return;
+    if (!isPosSafeFromHostiles(map, myClanId, x, y, safeR, myCharacterId)) return;
+    const minH = minHostileCheby(map, myClanId, x, y, myCharacterId);
+    const distMe = manhattan(x, y, me.x, me.y);
+    // an toàn (xa địch) quan trọng nhất; dist vừa phải; bonus công việc
+    const score = minH * -20 + distMe * 0.5 + bonus + (minH < safeR + 1 ? 200 : 0);
+    cands.push({ x, y, label, kind, score });
+  };
+
+  for (const f of ownBuilt) {
+    push(f.pos_x, f.pos_y, `cờ mình #${f.flag_id}`, "flee_own", preferWork ? -5 : 0);
+  }
+  for (const f of building) {
+    push(f.pos_x, f.pos_y, `xây #${f.flag_id}`, "build", preferWork ? -40 : 0);
+  }
+  for (const f of nearEnemies) {
+    push(f.pos_x, f.pos_y, `phá #${f.flag_id}`, "assault", preferWork ? -60 : 0);
+  }
+  // Ô kite: lùi xa cụm địch quanh me (4 hướng + chéo)
+  const hostiles = parseMapPlayers(map).filter((p) => {
+    if (myCharacterId && p.character_id === myCharacterId) return false;
+    if (p.clan_id && p.clan_id === myClanId) return false;
+    return chebyshev(p.x, p.y, me.x, me.y) <= 4;
+  });
+  if (hostiles.length) {
+    let cx = 0,
+      cy = 0;
+    for (const h of hostiles) {
+      cx += h.x;
+      cy += h.y;
+    }
+    cx = Math.round(cx / hostiles.length);
+    cy = Math.round(cy / hostiles.length);
+    // vector từ địch → me, bước 2–4 ô
+    const dx = me.x - cx;
+    const dy = me.y - cy;
+    const steps = [2, 3, 4];
+    for (const s of steps) {
+      const len = Math.max(1, Math.abs(dx) + Math.abs(dy));
+      const ox = Math.round((dx / len) * s) || (dx >= 0 ? s : -s);
+      const oy = Math.round((dy / len) * s);
+      push(me.x + ox, me.y + oy, `kite@(${me.x + ox},${me.y + oy})`, "kite", 10);
+      push(me.x + ox, me.y, `kite@(${me.x + ox},${me.y})`, "kite", 12);
+      push(me.x, me.y + (oy || (dy >= 0 ? s : -s)), `kite@(${me.x},${me.y + (oy || 1)})`, "kite", 12);
+    }
+  }
+
+  if (!cands.length) {
+    // fallback: cờ mình dù có 1 hostile xa
+    const fb = pickFleeOwnFlag(ownBuilt, me, map, myClanId);
+    if (fb) return { x: fb.pos_x, y: fb.pos_y, label: `cờ mình #${fb.flag_id}`, kind: "flee_own" };
+    return null;
+  }
+  cands.sort((a, b) => a.score - b.score);
+  return cands[0];
+}
+
 /** siege_points hiện tại */
 function flagProgress(f: Flag): number {
   return Math.max(0, n(f.siege_points, 0));
@@ -2698,45 +2825,53 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    // ── 0) Flee: bị dí → né tạm (có cooldown, không spam tạo vòng flee↔quay lại)
-    // Khi ASSAULT cờ trống (near, không thủ map): không flee trừ khi ≥2 địch dính sát (r≤1)
+    // ── 0) Né linh hoạt: địch gần → chạy GIỮ KHOẢNG CÁCH, đích an toàn (có thể xây/phá chỗ khác)
     const fleeCdUntil = n(settings.break_flee_cooldown_until, 0);
     const fleeReady = !fleeCdUntil || nowMs >= fleeCdUntil;
-    if (fleeOn && ownBuilt.length > 0 && fleeReady) {
+    const safeR = Math.max(fleeRadius, 2);
+    if (fleeOn && fleeReady) {
       const hostiles = hostilesNear(map, clanId, me.x, me.y, fleeRadius, characterId);
       const hostilesClose = hostilesNear(map, clanId, me.x, me.y, 1, characterId);
       const assaultEmpty = assaultLock && defsHere.length === 0;
-      // Đang khóa phá cờ trống: chỉ né khi địch dính sát (cheby≤1) ≥1 — tránh vòng tròn vì có người trong r=2
-      const shouldFlee = assaultEmpty
-        ? hostilesClose.length >= 1
-        : hostiles.length > 0;
+      // ASSAULT cờ trống: chỉ né khi địch dính sát; còn lại: địch trong r
+      const shouldFlee = assaultEmpty ? hostilesClose.length >= 1 : hostiles.length > 0;
       if (shouldFlee) {
         const names = (assaultEmpty ? hostilesClose : hostiles)
           .slice(0, 3)
           .map((h) => h.name || h.clan_name || "?")
           .join(",");
-        const fleeTo = pickFleeOwnFlag(ownBuilt, me, map, clanId, undefined);
-        if (fleeTo && (fleeTo.pos_x !== me.x || fleeTo.pos_y !== me.y)) {
+        const smart = pickSmartSafeDest({
+          map,
+          me,
+          myClanId: clanId,
+          myCharacterId: characterId,
+          ownBuilt,
+          building,
+          nearEnemies: nearPool.filter((f) => f.flag_id !== enemy.flag_id),
+          safeR,
+          preferWork: true,
+        });
+        if (smart && (smart.x !== me.x || smart.y !== me.y)) {
           await leaveDefense(characterId, accessToken, onLog);
           const mv = await rpc(
             "rpc_hoang_co_move",
-            { p_character_id: characterId, p_dest_x: fleeTo.pos_x, p_dest_y: fleeTo.pos_y },
+            { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y },
             accessToken
           );
           const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
           summary.moved = true;
-          summary.dest = { x: fleeTo.pos_x, y: fleeTo.pos_y };
-          summary.action = "flee_to_own_flag";
+          summary.dest = { x: smart.x, y: smart.y };
+          summary.action = `flee_smart_${smart.kind}`;
           summary.status = "WAITING";
           summary.etaSeconds = eta;
           summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
           summary.reason =
-            `Phá cờ · NÉ địch (${names}) → #${fleeTo.flag_id} @(${fleeTo.pos_x},${fleeTo.pos_y})` +
-            ` · ETA ${eta}s · CD 20s rồi quay phá #${enemy.flag_id}`;
+            `Phá cờ · NÉ linh hoạt (${names}) → ${smart.label} @(${smart.x},${smart.y})` +
+            ` · kind=${smart.kind} · ETA ${eta}s · an toàn r≥${safeR} · CD 12s rồi làm việc`;
           summary.persistHint = {
             focus_attack_flag_id: enemy.flag_id,
-            break_flee_cooldown_until: nowMs + 20_000,
-            break_phase: "FLEE",
+            break_flee_cooldown_until: nowMs + 12_000,
+            break_phase: "FLEE_SMART",
           };
           onLog?.("WARN", summary.reason);
           summary.finishedAt = new Date().toISOString();
@@ -2744,6 +2879,10 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         }
       }
     }
+
+    // Đích việc (phá/xây/cắm): từ chối nếu còn địch bám tại đích
+    const destBlocked = (x: number, y: number) =>
+      !isPosSafeFromHostiles(map, clanId, x, y, 1, characterId);
 
     // ── A) ASSAULT LOCK: territory near HOẶC me kề tâm (chebyMe≤1)
     // Log death circle: me kề tâm mà CẮM hop — SAI. Phải MOVE dest=CENTER trước.
@@ -2779,6 +2918,24 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       }
 
       if (!onSpot) {
+        // Tâm cờ còn địch bám (player) → không xông; chuyển cờ near khác hoặc né
+        if (destBlocked(destX, destY) && defsHere.length > 0) {
+          const alt = nearPool.find(
+            (f) =>
+              f.flag_id !== enemy.flag_id &&
+              !destBlocked(f.pos_x, f.pos_y) &&
+              !isFlagDefendedByOtherClan(map, f.flag_id, clanId)
+          );
+          if (alt) {
+            summary.status = "WAITING";
+            summary.reason = `Phá cờ · tâm #${enemy.flag_id} có địch · chuyển #${alt.flag_id} an toàn`;
+            summary.nextDelayMs = 3_000;
+            summary.persistHint = { focus_attack_flag_id: alt.flag_id, break_force_assault: true };
+            onLog?.("WARN", summary.reason);
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+        }
         await leaveDefense(characterId, accessToken, onLog);
         const mv = await rpc(
           "rpc_hoang_co_move",
@@ -2802,7 +2959,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           `Phá cờ · 🔒 FORCE GIỮA #${enemy.flag_id}` +
           ` from@(${fromX},${fromY}) → dest@(${gotX},${gotY}) = flag@(${destX},${destY})` +
           (destMismatch ? ` ⚠` : " ✓") +
-          ` · ETA ${eta}s dist ${distMv} · (hết vòng cắm)`;
+          ` · ETA ${eta}s dist ${distMv}`;
         summary.persistHint = {
           focus_attack_flag_id: enemy.flag_id,
           break_phase: "ASSAULT_MOVE_CENTER",
@@ -3037,6 +3194,46 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       );
       const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
       if (dist > 0) {
+        if (destBlocked(focus.pos_x, focus.pos_y)) {
+          onLog?.(
+            "WARN",
+            `HC Phá cờ · ô xây #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) có địch · chọn cờ dở khác / né`
+          );
+          const altBuild = buildingToward.find(
+            (b) =>
+              b.flag_id !== focus.flag_id &&
+              !destBlocked(b.pos_x, b.pos_y)
+          );
+          if (altBuild) return await doBuildBridge(altBuild);
+          const smart = pickSmartSafeDest({
+            map,
+            me,
+            myClanId: clanId,
+            myCharacterId: characterId,
+            ownBuilt,
+            building: buildingToward.filter((b) => b.flag_id !== focus.flag_id),
+            nearEnemies: nearPool,
+            safeR: 2,
+          });
+          if (smart) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc(
+              "rpc_hoang_co_move",
+              { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y },
+              accessToken
+            );
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+            summary.moved = true;
+            summary.dest = { x: smart.x, y: smart.y };
+            summary.action = "flee_smart_build_blocked";
+            summary.status = "WAITING";
+            summary.etaSeconds = eta;
+            summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
+            summary.reason = `Phá cờ · xây bị chặn → ${smart.label} @(${smart.x},${smart.y}) · ETA ${eta}s`;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+        }
         await leaveDefense(characterId, accessToken, onLog);
         const mv = await rpc(
           "rpc_hoang_co_move",
@@ -3155,6 +3352,11 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
 
       if (distPlace > 0) {
+        // Ô cắm còn địch → không chạy vào
+        if (destBlocked(cell.x, cell.y)) {
+          onLog?.("WARN", `HC Phá cờ · ô cắm @(${cell.x},${cell.y}) có địch · bỏ`);
+          return "other";
+        }
         // Đang transit đúng ô → chờ (không leave_defense / move lại)
         if (
           me.inTransit &&
