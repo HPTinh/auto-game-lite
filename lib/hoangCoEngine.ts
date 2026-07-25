@@ -3002,7 +3002,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         }
 
         summary.action = "siege_flag_attack";
-        summary.nextDelayMs = Math.max(3_500, pollMs - 5_000);
+        // Cờ sắp vỡ: chip nhanh, bám focus
+        const almostDead = sp > 0 && sp <= Math.max(80, sm * 0.15);
+        summary.nextDelayMs = almostDead ? 3_500 : Math.max(3_500, pollMs - 5_000);
         if (side && side !== "attack") {
           onLog?.("WARN", `HC Phá cờ · side=${side} (cần attack) · #${enemy.flag_id}`);
         }
@@ -3010,13 +3012,16 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           `SIEGE 🔒 #${enemy.flag_id} [${enemyName}] @(${destX},${destY})` +
           ` · side=${side || "?"} · atk ${atkN} / def ${defN}` +
           ` · siege còn ${sp}/${sm}` +
-          (enemy.is_built === true ? ` · phá ${pct}%` : "");
+          (enemy.is_built === true ? ` · phá ${pct}%` : "") +
+          (almostDead ? " · dứt điểm" : "");
         onLog?.("SUCCESS", summary.reason, { res });
         summary.persistHint = {
           last_destroyed_flag_pos: { x: destX, y: destY },
           last_destroyed_flag_id: enemy.flag_id,
+          // Bám cờ đang phá đến khi biến mất (không nhảy sang expand sớm)
           focus_attack_flag_id: enemy.flag_id,
           break_phase: "ASSAULT_SIEGE",
+          break_force_assault: almostDead ? true : false,
         };
         try {
           await rpc(
@@ -3144,20 +3149,30 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const flagsFull = maxFlags > 0 && usedFlags >= maxFlags;
     const buildSlotsFull = building.length >= cfgMaxBuild;
 
-    // Ưu xây: (1) cờ dở đã sát địch (2) self-placed (3) gần địch
-    const buildingToward = [
-      ...(ringBuilding.length ? ringBuilding : plan.buildingTowardEnemy),
-    ].sort((a, b) => {
-      const ra = chebyshev(a.pos_x, a.pos_y, destX, destY) <= 1 ? 0 : 1;
-      const rb = chebyshev(b.pos_x, b.pos_y, destX, destY) <= 1 ? 0 : 1;
-      if (ra !== rb) return ra - rb;
+    /**
+     * Chỉ XÂY cờ dở GIÚP bridge tới địch (log 08:46: xây #9939 cheby=4 trong khi neo cheby=3 = sai).
+     * - dở sát (cheby≤1): luôn xây
+     * - dở cheby ≤ bridgeCheby hiện tại: có ích (tiến/giữ)
+     * - dở xa hơn neo built: BỎ QUA → ưu tiên CẮM hop từ neo
+     */
+    const bridgeChebyNow = plan.bridgeCheby < 99 ? plan.bridgeCheby : 99;
+    const helpfulBuilding = building.filter((f) => {
+      const d = chebyshev(f.pos_x, f.pos_y, destX, destY);
+      if (d <= 1) return true;
+      if (bridgeChebyNow >= 99) return true;
+      return d <= bridgeChebyNow;
+    });
+    const buildingToward = [...helpfulBuilding].sort((a, b) => {
+      const da = chebyshev(a.pos_x, a.pos_y, destX, destY);
+      const db = chebyshev(b.pos_x, b.pos_y, destX, destY);
+      if (da !== db) return da - db;
       const sa = selfPlacedSet.has(a.flag_id) ? 0 : 1;
       const sb = selfPlacedSet.has(b.flag_id) ? 0 : 1;
       if (sa !== sb) return sa - sb;
-      return (
-        chebyshev(a.pos_x, a.pos_y, destX, destY) - chebyshev(b.pos_x, b.pos_y, destX, destY)
-      );
+      // gần me hơn (đỡ đi xa)
+      return manhattan(a.pos_x, a.pos_y, me.x, me.y) - manhattan(b.pos_x, b.pos_y, me.x, me.y);
     });
+    const skippedFarBuild = building.length - helpfulBuilding.length;
 
     const anchor = plan.anchor;
     const noMorePlace = ringBuilding.length > 0; // đã có dở sát → không cắm vòng nữa
@@ -3167,7 +3182,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         ` · neo ${anchor ? `#${anchor.flag_id}@(${anchor.pos_x},${anchor.pos_y})` : "không"}` +
         ` cheby=${plan.bridgeCheby === 99 ? "∞" : plan.bridgeCheby}` +
         ` · cần ~${plan.hopsLeft} hop (≤${hopMax} ô/lần)` +
-        ` · dở ${building.length}/${cfgMaxBuild} (sát ${ringBuilding.length})` +
+        ` · dở hữu ích ${helpfulBuilding.length}/${building.length}` +
+        (skippedFarBuild > 0 ? ` (bỏ ${skippedFarBuild} dở xa hơn neo)` : "") +
         ` · flags ${usedFlags}${maxFlags ? `/${maxFlags}` : ""}` +
         (flagsFull ? " FULL" : "") +
         ` · phase: ${buildingToward.length ? "XÂY" : noMorePlace ? "CHỜ_XÂY" : flagsFull || buildSlotsFull ? "XÂY/CHỜ" : "CẮM"}`
