@@ -3153,12 +3153,6 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       );
 
       const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
-      // Đã pending move tới đúng ô này (persist) — đừng leave+move lại
-      const pending = settings.break_pending_place;
-      const pendingMatch =
-        pending &&
-        Math.floor(n(pending.x, -1)) === cell.x &&
-        Math.floor(n(pending.y, -1)) === cell.y;
 
       if (distPlace > 0) {
         // Đang transit đúng ô → chờ (không leave_defense / move lại)
