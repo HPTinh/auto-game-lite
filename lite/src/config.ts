@@ -319,10 +319,11 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      */
     skip_defended_flags: true,
     /**
-     * Flee khi có địch gần — MẶC ĐỊNH TẮT khi phá (tránh không vào giữa cờ).
+     * Phá cờ: địch player gần → tạm né về cờ mình (mặc định BẬT, không cần tick).
+     * Tắt: flee_on_enemy_near = false.
      */
-    flee_on_enemy_near: false,
-    flee_radius: 1,
+    flee_on_enemy_near: true,
+    flee_radius: 2,
     /**
      * Bridge/xây: chip resource gần nếu không có thủ clan khác (map.defenders).
      */

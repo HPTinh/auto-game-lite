@@ -893,14 +893,13 @@
           </div>
         </div>
         <div class="mu" style="font-size:10px;margin:4px 0 8px;opacity:.85">
-          Ưu tiên cờ địch <b>gần mình</b>, <b>không có người thủ</b>. Near → giữa + siege.
-          <code>not_near</code> → cắm bridge. Cờ có thủ địch → <b>né</b>, qua cờ trống.
+          Scan near → <b>vào giữa phá</b>. Chưa near → cắm/xây bridge (cờ sát chỉ xây, không cắm vòng).
+          <b>Bị dí</b> (player địch gần) → tạm né cờ mình (mặc định bật).
         </div>
-        <div class="f chk"><input type="checkbox" data-k="break_hop" ${bool("break_hop", true)?"checked":""}/><label>not_near → cắm/xây bridge (kế hoạch hop)</label></div>
-        <div class="f chk"><input type="checkbox" data-k="skip_defended_flags" ${bool("skip_defended_flags", true)?"checked":""}/><label>Né cờ có người thủ clan khác (tránh combat)</label></div>
-        <div class="mu" style="font-size:10px;margin:2px 0 8px;opacity:.8">Bridge: neo cờ mình → hop ≤3 ô → xây dở trước → đủ chạm (cheby≤1) → vào giữa phá. Full cờ/slot xây → chỉ xây.</div>
-        <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", false)?"checked":""}/><label>Địch gần → chạy cờ mình (thường tắt khi phá)</label></div>
-        <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", true)?"checked":""}/><label>Lúc bridge/xây: chip resource gần (bỏ qua nếu có thủ clan khác)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="break_hop" ${bool("break_hop", true)?"checked":""}/><label>Chưa near → cắm/xây bridge</label></div>
+        <div class="f chk"><input type="checkbox" data-k="skip_defended_flags" ${bool("skip_defended_flags", true)?"checked":""}/><label>Né cờ có người thủ clan khác</label></div>
+        <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", true)?"checked":""}/><label>Bị dí → tạm né (mặc định bật)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", true)?"checked":""}/><label>Lúc bridge: chip resource (không thủ clan khác)</label></div>
         <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
         <div class="mu" style="font-size:11px;margin-bottom:6px">Chế độ khác (khi <b>tắt</b> Phá cờ):</div>
         <div class="f chk"><input type="checkbox" data-k="auto_place" ${bool("auto_place", true)?"checked":""}/><label>Cắm cờ (mở rộng)</label></div>
