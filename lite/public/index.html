@@ -48,7 +48,12 @@
     .mask.show{display:flex}
     .modal{width:min(420px,100%);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:85vh;overflow:auto}
     .modal.wide{width:min(560px,100%)}
+    .modal.bulk{width:min(640px,100%)}
     .modal h2{margin:0 0 10px;font-size:14px}
+    .acc-pick{max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px;background:#0d0f14}
+    .acc-pick label{display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12px;cursor:pointer}
+    .acc-pick label:hover{background:#161b26}
+    .acc-pick input{width:auto;margin:0}
     .f{margin-bottom:8px}
     .f label{display:block;font-size:11px;color:var(--mu);margin-bottom:3px}
     .f input,.f select,.f textarea{width:100%;background:#0d0f14;border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:6px 8px;font:inherit}
@@ -76,6 +81,7 @@
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="g" id="startAll">Start all</button>
       <button class="r" id="stopAll">Stop all</button>
+      <button class="p" id="btnBulkSet" title="Áp setting giống nhau cho nhiều account">⚙ Nhanh</button>
       <button id="btnExport" title="Tải file backup account+setting" style="display:none">Export</button>
       <button id="btnImport" title="Nạp file backup" style="display:none">Import</button>
       <button id="refresh">↻</button>
@@ -824,6 +830,7 @@
       modal = { accId, featureId, draft: cur };
       $("modalTitle").textContent = `Setting · ${LABELS[featureId]||featureId}`;
       const modalEl = $("modal");
+      modalEl.classList.remove("bulk");
       if (featureId === "craft") {
         modalEl.classList.add("wide");
         $("modalBody").innerHTML = craftModalHtml(cur);
@@ -990,7 +997,205 @@
       modal = null;
       $("mask").classList.remove("show");
       $("modal")?.classList.remove("wide");
+      $("modal")?.classList.remove("bulk");
       render();
+    }
+
+    /** Keys runtime — không copy bulk */
+    const BULK_SKIP_KEYS = new Set([
+      "self_placed_flag_ids","enemy_clan_list","enemy_clan_list_at",
+      "recipe_cache","recipe_cache_at","break_pending_place","break_place_exclude",
+      "break_force_assault","break_flee_cooldown_until","break_phase",
+      "last_destroyed_flag_pos","last_destroyed_flag_id","focus_flag_id","focus_attack_flag_id",
+    ]);
+
+    function cleanSettingsForBulk(src) {
+      const out = {};
+      if (!src || typeof src !== "object") return out;
+      for (const [k, v] of Object.entries(src)) {
+        if (BULK_SKIP_KEYS.has(k)) continue;
+        out[k] = v;
+      }
+      return out;
+    }
+
+    function openBulkModal() {
+      if (!accounts.length) {
+        msg("Chưa có account", false);
+        return;
+      }
+      const first = accounts[0];
+      const defaultFid = "hoang_co";
+      modal = {
+        mode: "bulk",
+        featureId: defaultFid,
+        sourceId: first.id,
+        draft: cleanSettingsForBulk(first.features?.[defaultFid]?.settings || {}),
+        selected: new Set(accounts.map(a => a.id)),
+      };
+      $("modalTitle").textContent = "Setting nhanh · nhiều account";
+      $("modal").classList.add("bulk");
+      $("modal").classList.remove("wide");
+      renderBulkModalBody();
+      $("mask").classList.add("show");
+    }
+
+    function renderBulkModalBody() {
+      if (!modal || modal.mode !== "bulk") return;
+      const fid = modal.featureId || "farm";
+      const fields = FIELDS[fid] || [];
+      const srcOpts = accounts.map(a =>
+        `<option value="${esc(a.id)}" ${a.id===modal.sourceId?"selected":""}>${esc(a.characterName||a.email)}</option>`
+      ).join("");
+      const featOpts = FEATURES.map(f =>
+        `<option value="${f}" ${f===fid?"selected":""}>${esc(LABELS[f]||f)}</option>`
+      ).join("");
+      const accList = accounts.map(a => {
+        const on = modal.selected.has(a.id);
+        return `<label>
+          <input type="checkbox" data-bulk-acc="${a.id}" ${on?"checked":""}/>
+          <span>${esc(a.characterName||a.email)}</span>
+          <span class="mu" style="margin-left:auto;font-size:10px">${esc(a.email)}</span>
+        </label>`;
+      }).join("");
+
+      let fieldsHtml = "";
+      if (fid === "hoang_co") {
+        fieldsHtml = hoangCoModalHtml(modal.draft);
+      } else if (fid === "world_boss") {
+        fieldsHtml = `<div class="mu" style="font-size:12px">World Boss không có setting — chỉ bật/tắt feature.</div>`;
+      } else if (fid === "craft") {
+        fieldsHtml = `
+          <div class="mu" style="font-size:11px;margin-bottom:8px">Craft: copy category/tier/recipe_code (không copy recipe_cache — mỗi acc tự tải list).</div>
+          ${FIELDS.craft.map(f => fieldHtml(f, modal.draft[f.k])).join("")}
+          <div class="f"><label>recipe_code</label><input data-k="recipe_code" value="${esc(modal.draft.recipe_code||"")}"/></div>`;
+      } else if (!fields.length) {
+        fieldsHtml = `<div class="mu">Feature này không có field UI — vẫn có thể bật/tắt hàng loạt.</div>`;
+      } else {
+        fieldsHtml = fields.map(f => fieldHtml(f, modal.draft[f.k])).join("");
+      }
+
+      $("modalBody").innerHTML = `
+        <div class="f">
+          <label>Chức năng</label>
+          <select id="bulkFeature">${featOpts}</select>
+        </div>
+        <div class="f">
+          <label>Lấy mẫu setting từ account</label>
+          <div style="display:flex;gap:6px">
+            <select id="bulkSource" style="flex:1">${srcOpts}</select>
+            <button type="button" class="p" id="bulkLoadSrc">Tải mẫu</button>
+          </div>
+        </div>
+        <div class="f chk">
+          <input type="checkbox" id="bulkSetEnabled" checked/>
+          <label>Đồng thời <b>bật</b> feature này trên acc đã chọn</label>
+        </div>
+        <div class="f chk">
+          <input type="checkbox" id="bulkOnlyEnabled"/>
+          <label>Chỉ ghi setting (không đổi bật/tắt)</label>
+        </div>
+        <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
+        <div class="mu" style="font-size:11px;margin-bottom:6px"><b>Setting sẽ áp</b> (sửa trực tiếp):</div>
+        <div id="bulkFields">${fieldsHtml}</div>
+        <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <b style="font-size:12px">Account nhận setting</b>
+          <button type="button" class="g" id="bulkSelAll" style="font-size:11px;padding:2px 8px">Chọn tất cả</button>
+          <button type="button" id="bulkSelNone" style="font-size:11px;padding:2px 8px">Bỏ chọn</button>
+          <span class="mu" id="bulkCount" style="font-size:11px;margin-left:auto"></span>
+        </div>
+        <div class="acc-pick" id="bulkAccList">${accList}</div>
+        <div class="mu" style="font-size:10px;margin-top:8px">Không copy cache runtime (recipe list, cờ self_placed, focus…). Mỗi acc giữ cache riêng.</div>
+      `;
+      updateBulkCount();
+      if (fid === "hoang_co") bindHoangCoModalEvents();
+
+      $("bulkFeature").onchange = () => {
+        const nf = $("bulkFeature").value;
+        modal.featureId = nf;
+        const src = accounts.find(a => a.id === ($("bulkSource")?.value || modal.sourceId));
+        modal.sourceId = src?.id || modal.sourceId;
+        modal.draft = cleanSettingsForBulk(src?.features?.[nf]?.settings || {});
+        renderBulkModalBody();
+      };
+      $("bulkLoadSrc").onclick = () => {
+        const sid = $("bulkSource").value;
+        modal.sourceId = sid;
+        const src = accounts.find(a => a.id === sid);
+        modal.draft = cleanSettingsForBulk(src?.features?.[modal.featureId]?.settings || {});
+        renderBulkModalBody();
+        msg(`Đã tải mẫu từ ${src?.characterName || src?.email || sid}`, true);
+      };
+      $("bulkSelAll").onclick = () => {
+        modal.selected = new Set(accounts.map(a => a.id));
+        renderBulkModalBody();
+      };
+      $("bulkSelNone").onclick = () => {
+        modal.selected = new Set();
+        renderBulkModalBody();
+      };
+      $("bulkOnlyEnabled").onchange = () => {
+        const only = $("bulkOnlyEnabled").checked;
+        const en = $("bulkSetEnabled");
+        if (en) en.disabled = only;
+      };
+      $("bulkAccList")?.addEventListener("change", (e) => {
+        const el = e.target.closest("[data-bulk-acc]");
+        if (!el) return;
+        const id = el.getAttribute("data-bulk-acc");
+        if (el.checked) modal.selected.add(id);
+        else modal.selected.delete(id);
+        updateBulkCount();
+      });
+    }
+
+    function updateBulkCount() {
+      const el = $("bulkCount");
+      if (el && modal?.selected) el.textContent = `${modal.selected.size}/${accounts.length} acc`;
+    }
+
+    async function saveBulkModal() {
+      if (!modal || modal.mode !== "bulk" || busy) return;
+      if (!modal.selected?.size) {
+        msg("Chọn ít nhất 1 account", false);
+        return;
+      }
+      busy = true;
+      try {
+        // đọc draft từ fields
+        const bodyEl = $("bulkFields") || $("modalBody");
+        const settings = { ...modal.draft };
+        bodyEl.querySelectorAll("[data-k]").forEach(el => {
+          const k = el.getAttribute("data-k");
+          if (el.type === "checkbox") settings[k] = el.checked;
+          else if (el.type === "number") settings[k] = el.value === "" ? null : Number(el.value);
+          else settings[k] = el.value;
+        });
+        if (modal.featureId === "hoang_co" && Array.isArray(modal.draft?.enemy_clan_list)) {
+          // không copy list bang
+        }
+        const onlySet = $("bulkOnlyEnabled")?.checked;
+        const setEnabled = onlySet ? null : ($("bulkSetEnabled")?.checked ? true : false);
+        const clean = cleanSettingsForBulk(settings);
+        const r = await api("/api/accounts/bulk-settings", {
+          method: "POST",
+          body: JSON.stringify({
+            accountIds: [...modal.selected],
+            featureId: modal.featureId,
+            settings: clean,
+            setEnabled,
+          }),
+        });
+        msg(`Đã áp setting ${LABELS[modal.featureId]||modal.featureId} cho ${r.updated} account`, true);
+        closeModal();
+        await pullAndCacheBackup();
+        await load(true);
+      } catch (e) {
+        msg(e.message || "Bulk setting fail", false);
+      } finally {
+        busy = false;
+      }
     }
 
     function readDraftFromModal() {
@@ -1008,6 +1213,7 @@
 
     async function saveModal() {
       if (!modal || busy) return;
+      if (modal.mode === "bulk") return saveBulkModal();
       busy = true;
       try {
         const settings = readDraftFromModal();
@@ -1158,7 +1364,11 @@
     updateBackupButtonsVisibility();
     void tryRestoreBackupSession();
     $("modalCancel").onclick = closeModal;
-    $("modalSave").onclick = saveModal;
+    $("modalSave").onclick = () => {
+      if (modal?.mode === "bulk") saveBulkModal();
+      else saveModal();
+    };
+    $("btnBulkSet").onclick = () => openBulkModal();
     $("mask").addEventListener("click", (e) => { if (e.target === $("mask")) closeModal(); });
 
     $("list").addEventListener("click", async (e) => {

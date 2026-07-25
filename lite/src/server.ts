@@ -286,6 +286,91 @@ app.patch("/api/accounts/:id/features", (req, res) => {
 });
 
 /**
+ * Setting nhanh: áp dụng settings (và optional enabled) cho nhiều account.
+ * body: {
+ *   accountIds: string[] | "all",
+ *   featureId: FeatureId,
+ *   settings?: object,       // merge vào settings (bỏ key runtime)
+ *   setEnabled?: boolean|null,
+ *   replaceSettings?: boolean // true = thay settings (vẫn merge default), false = merge
+ * }
+ */
+app.post("/api/accounts/bulk-settings", (req, res) => {
+  const body = req.body || {};
+  const featureId = String(body.featureId || "").trim() as FeatureId;
+  if (!featureId) {
+    return res.status(400).json({ ok: false, error: "Thiếu featureId" });
+  }
+  const all = store.list();
+  let targets: typeof all = [];
+  if (body.accountIds === "all" || body.accountIds == null) {
+    targets = all;
+  } else if (Array.isArray(body.accountIds)) {
+    const set = new Set(body.accountIds.map(String));
+    targets = all.filter((a) => set.has(a.id));
+  } else {
+    return res.status(400).json({ ok: false, error: "accountIds phải là mảng id hoặc \"all\"" });
+  }
+  if (!targets.length) {
+    return res.status(400).json({ ok: false, error: "Không có account nào được chọn" });
+  }
+
+  // Key runtime / cache — không copy khi bulk (mỗi acc tự có)
+  const SKIP = new Set([
+    "self_placed_flag_ids",
+    "enemy_clan_list",
+    "enemy_clan_list_at",
+    "recipe_cache",
+    "recipe_cache_at",
+    "break_pending_place",
+    "break_place_exclude",
+    "break_force_assault",
+    "break_flee_cooldown_until",
+    "break_phase",
+    "last_destroyed_flag_pos",
+    "last_destroyed_flag_id",
+    "focus_flag_id",
+    "focus_attack_flag_id",
+  ]);
+
+  const rawSettings =
+    body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+      ? (body.settings as Record<string, any>)
+      : {};
+  const clean: Record<string, any> = {};
+  for (const [k, v] of Object.entries(rawSettings)) {
+    if (SKIP.has(k)) continue;
+    if (v === undefined) continue;
+    clean[k] = v;
+  }
+
+  const setEnabled = body.setEnabled;
+  const replaceSettings = body.replaceSettings === true;
+  let updated = 0;
+  for (const acc of targets) {
+    const cur = acc.features?.[featureId]?.settings || {};
+    const nextSettings = replaceSettings ? { ...clean } : { ...cur, ...clean };
+    // strip skip keys from overwrite if replace
+    if (replaceSettings) {
+      for (const k of SKIP) {
+        if (k in cur && !(k in clean)) nextSettings[k] = cur[k];
+      }
+    }
+    const patch: any = { settings: nextSettings };
+    if (setEnabled === true || setEnabled === false) patch.enabled = setEnabled;
+    store.setFeature(acc.id, featureId, patch);
+    updated += 1;
+  }
+
+  res.json({
+    ok: true,
+    updated,
+    featureId,
+    accountIds: targets.map((a) => a.id),
+  });
+});
+
+/**
  * Danh sách bang hội địch trên map Hoàng Cổ (flags[].clan_name)
  * — UI chọn phá cờ, không gõ tay.
  */
