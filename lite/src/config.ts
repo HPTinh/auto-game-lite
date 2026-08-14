@@ -342,6 +342,20 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     /** 1 chu ky central: thu (con lock) <-> cong (het lock / dich giu) */
     auto_central: true,
     auto_attack: false,
+    /**
+     * Mode phá cờ:
+     *  "any"       — phá bất kỳ cờ địch gần nhất (hành vi cũ, mặc định)
+     *  "central"   — tập trung chiếm central: phá sạch cờ địch trong box central_radius,
+     *                xây bridge 3×3 chạm central, rồi chiếm central
+     *  "clan_wipe" — phá sạch toàn bộ cờ của target_clan_name
+     */
+    break_mode: "any",
+    /** Acc được chỉ định làm scanner quét bể chung (chuỗi id). Rỗng = không scan tập trung */
+    hc_scanner_account_id: "",
+    /** Bể chung hết hạn sau n ms (scanner quét định kỳ) */
+    scan_stale_ms: 8000,
+    /** Bán kính quét cờ địch quanh central (hiểu là box central_radius×central_radius, |dx|,|dy| ≤ central_radius/2) */
+    central_radius: 12,
     focus_flag_id: null,
     focus_attack_flag_id: null,
     self_placed_flag_ids: [],

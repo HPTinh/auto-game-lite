@@ -38,5 +38,7 @@ export {
   runHoangCoAttackCentralAuto,
   runHoangCoBreakFlagAuto,
   listHoangCoEnemyClans,
+  scanHoangCoState,
 } from "../../lib/hoangCoEngine";
+export * from "./hoangCoState";
 export { runNguHanhThapAuto } from "../../lib/nguHanhThapEngine";

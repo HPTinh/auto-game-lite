@@ -26,6 +26,10 @@ import {
   runRankChallengeAuto,
   runHoangCoAuto,
   runNguHanhThapAuto,
+  scanHoangCoState,
+  getHoangCoSharedState,
+  isHoangCoScanFresh,
+  publishHoangCoScan,
 } from "./engines";
 
 /** Map UI farm settings → engine farmEngine */
@@ -974,13 +978,45 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       });
       nextDelayMs = Math.max(60_000, Number(settings.interval_seconds || 600) * 1000);
     } else if (featureId === "hoang_co") {
+      // Scan tập trung: tài khoản được chỉ định (hc_scanner_account_id) quét 1 lần → bể chung.
+      // Các tài khoản khác đọc bể chung (chỉ tự scan nếu stale) để tránh quét map_state liên tục.
+      const scannerId = String(settings.hc_scanner_account_id || "").trim();
+      const isScanner = !!scannerId && scannerId === accountId;
+      let mapOverride: any = undefined;
+      const hcLog = onLog(accountId, "HOANG_CO");
+      if (scannerId && !isScanner) {
+        const shared = getHoangCoSharedState();
+        if (shared.map && isHoangCoScanFresh(Number(settings.scan_stale_ms) || 8000)) {
+          mapOverride = shared.map;
+        }
+      }
+      if (isScanner || !mapOverride) {
+        try {
+          const scan = await scanHoangCoState({
+            characterId: runtime.characterId,
+            accessToken: runtime.accessToken,
+          });
+          if (isScanner) {
+            publishHoangCoScan({
+              scannerId,
+              map: scan.map,
+              myClanId: scan.myClanId,
+              clanCounts: scan.clanCounts,
+            });
+          }
+          mapOverride = scan.map;
+        } catch (se: any) {
+          hcLog("WARN", `HC scan lỗi: ${(se?.message || "").toString().slice(0, 120)}`);
+        }
+      }
       // 1 feature: Cắm/Xây trước → hết việc mới Thủ (1 timer)
       const result = await runHoangCoAuto({
         characterId: runtime.characterId,
         accessToken: runtime.accessToken,
         settings,
+        mapOverride,
         shouldStop: () => !isAllowed(accountId, featureId, token),
-        onLog: onLog(accountId, "HOANG_CO"),
+        onLog: hcLog,
       });
 
       const attackFocus =

@@ -51,6 +51,9 @@ export interface HoangCoAutoOptions {
   settings?: Record<string, any>;
   onLog?: (level: HoangCoLogLevel, message: string, meta?: any) => void;
   shouldStop?: () => boolean;
+  /** Shared map_state từ scanner tập trung (bể chung). Nếu có, dùng làm global data;
+   *  vị trí bản thân (my_position) sẽ được ensureSelf() lấy riêng khi cần hành động. */
+  mapOverride?: any;
 }
 
 const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
@@ -120,6 +123,33 @@ function manhattan(ax: number, ay: number, bx: number, by: number) {
 /** Bán kính ô vuông (3×3 = chebyshev ≤ 1) */
 function chebyshev(ax: number, ay: number, bx: number, by: number) {
   return Math.max(Math.abs(ax - bx), Math.abs(ay - by));
+}
+
+/**
+ * Quy tắc cắm cờ MỚI (game rule 2026-08):
+ * - CẤM đặt đè lên TÂM cờ địch (cheby 0 với center cờ địch).
+ * - CHO PHÉP đặt vành cheby≤1 (3×3 ring) sát cờ địch → tạo "near" tức thì.
+ * - CẤM ô đã occupied / ngoài grid.
+ * Trả { ok, reason }.
+ */
+function canPlaceAt(opts: {
+  x: number;
+  y: number;
+  flags: Flag[];
+  myClanId: string;
+  gridW: number;
+  gridH: number;
+  occ: Set<string>;
+}): { ok: boolean; reason?: string } {
+  const { x, y, flags, occ, gridW, gridH, myClanId } = opts;
+  if (x < 0 || y < 0 || x >= gridW || y >= gridH) return { ok: false, reason: "out_of_grid" };
+  if (occ.has(cellKey(x, y))) return { ok: false, reason: "occupied" };
+  // Cấm đè tâm cờ địch (cheby 0 với center). Vành cheby≥1 được phép.
+  for (const f of flags) {
+    if (!isEnemyFlag(f, myClanId)) continue;
+    if (f.pos_x === x && f.pos_y === y) return { ok: false, reason: "on_enemy_center" };
+  }
+  return { ok: true };
 }
 
 function cellKey(x: number, y: number) {
@@ -783,6 +813,10 @@ function pickSiegePlaceCell(opts: {
         // Server not_adjacent: ô cắm phải kề anchor (hop từ cờ built)
         // Chỉ anchor là cờ built (không cắm “từ me” khi me đứng vành địch)
         const toEnemy = chebyshev(x, y, enemy.pos_x, enemy.pos_y);
+        // Cấm đè tâm cờ địch (cheby 0); vành cheby≥1 được phép (tạo near tức thì)
+        if (toEnemy === 0) continue;
+        // Quy tắc mới: cấm occupied / đè tâm địch / ngoài grid (vành địch cheby≥1 OK)
+        if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
         const fromA = chebyshev(a.x, a.y, enemy.pos_x, enemy.pos_y);
         const progress = fromA - toEnemy;
         if (progress < 0 && toEnemy > 2) continue;
@@ -953,6 +987,102 @@ function planBridgeToEnemy(
   return { anchor, bridgeCheby: bridgeCheby === 99 ? 99 : bridgeCheby, needNear, hopsLeft, maxHop, buildingTowardEnemy };
 }
 
+export interface CentralPlan {
+  central: { x: number; y: number; holder_clan_id?: string; lock_until?: string };
+  /** Cờ địch trong box central_radius×central_radius quanh central */
+  enemyAround: Flag[];
+  /** Có cờ mình (built) cheby≤1 với central chưa */
+  ownReachCentral: boolean;
+  /** Cần xây bridge từ cờ mình tới central */
+  needBridgeToCentral: boolean;
+  /** Chuỗi ô cắm tiến dần tới central (cheby≤1 nhau) */
+  steps: Array<{ x: number; y: number }>;
+}
+
+/**
+ * Lập kế hoạch chiếm central:
+ * 1) Tìm cờ địch trong box central_radius×central_radius quanh central.
+ * 2) Kiểm tra cờ mình đã chạm central (cheby≤1) chưa.
+ * 3) Nếu chưa → plan bridge: chuỗi ô cheby≤1 tiến dần từ cờ mình gần central nhất tới sát central.
+ * Điều kiện tiên quyết để phá/siege/attack: own flag phải cheby≤1 với target (near).
+ */
+export function planCentralCapture(opts: {
+  map: any;
+  clanId: string;
+  centralRadius?: number;
+}): CentralPlan {
+  const { map, clanId } = opts;
+  const centralRadius = Math.max(4, Math.floor(n(opts.centralRadius, 12)) || 12);
+  const cx = Math.floor(n(map?.config?.center_x, 42));
+  const cy = Math.floor(n(map?.config?.center_y, 42));
+  const central = map?.central || {};
+  const flags = parseFlags(map);
+  const enemyFlags = flags.filter((f) => isEnemyFlag(f, clanId));
+  // Box central_radius×central_radius → |dx|≤half, |dy|≤half (half = centralRadius/2)
+  const half = Math.floor(centralRadius / 2);
+  const enemyAround = enemyFlags.filter(
+    (f) => Math.abs(f.pos_x - cx) <= half && Math.abs(f.pos_y - cy) <= half
+  );
+  const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
+  const ownReachCentral = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, cx, cy) <= 1);
+
+  let steps: Array<{ x: number; y: number }> = [];
+  const needBridgeToCentral = !ownReachCentral;
+  if (needBridgeToCentral) {
+    const anchor = [...ownBuilt].sort(
+      (a, b) => chebyshev(a.pos_x, a.pos_y, cx, cy) - chebyshev(b.pos_x, b.pos_y, cx, cy)
+    )[0];
+    if (anchor) {
+      let x2 = anchor.pos_x;
+      let y2 = anchor.pos_y;
+      while (chebyshev(x2, y2, cx, cy) > 1) {
+        const nx = x2 + Math.sign(cx - x2);
+        const ny = y2 + Math.sign(cy - y2);
+        steps.push({ x: nx, y: ny });
+        x2 = nx;
+        y2 = ny;
+      }
+    }
+  }
+  return {
+    central: { x: cx, y: cy, holder_clan_id: central.holder_clan_id, lock_until: central.lock_until },
+    enemyAround,
+    ownReachCentral,
+    needBridgeToCentral,
+    steps,
+  };
+}
+
+/**
+ * Scan tập trung: lấy map_state + đếm cờ từng clan (dùng cho bể chung).
+ * Scanner gọi 1 lần, publish vào store; các acc khác đọc từ store.
+ */
+export async function scanHoangCoState(options: {
+  characterId: string;
+  accessToken: string;
+}): Promise<{
+  map: any;
+  myClanId: string;
+  clanCounts: Array<{ clan_id: string; clan_name: string; flag_count: number }>;
+}> {
+  const status = await rpc("rpc_hoang_co_status", { p_character_id: options.characterId }, options.accessToken);
+  const myClanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+  const map = await rpc("rpc_hoang_co_map_state", { p_character_id: options.characterId }, options.accessToken);
+  const flags = parseFlags(map);
+  const by = new Map<string, { clan_id: string; clan_name: string; flag_count: number }>();
+  for (const f of flags) {
+    const key = f.clan_id || (f.clan_name || "?");
+    const name = (f.clan_name || f.clan_id || "?").trim() || "?";
+    const cur = by.get(key);
+    if (cur) cur.flag_count += 1;
+    else by.set(key, { clan_id: f.clan_id || key, clan_name: name, flag_count: 1 });
+  }
+  const clanCounts = [...by.values()].sort(
+    (a, b) => b.flag_count - a.flag_count || a.clan_name.localeCompare(b.clan_name, "vi")
+  );
+  return { map, myClanId, clanCounts };
+}
+
 function placeErrorText(e: any): string {
   return (
     String(e?.message || e || "") +
@@ -984,23 +1114,20 @@ function isNotAdjacentError(e: any): boolean {
  * Cắm quá gần cờ địch / vị trí không hợp lệ vì sát địch
  * → dừng cắm, chuyển sang PHÁ (vòng tròn tử thần hay dính lỗi này)
  */
+/**
+ * Quy tắc MỚI: được cắm VÀNH cheby≤1 sát cờ địch.
+ * Chỉ coi là lỗi cấm khi đặt ĐÈ lên tâm cờ địch (occupied/trùng ô) —
+ * không còn coi "near_enemy/adjacent" là lỗi (vành được phép).
+ */
 function isPlaceTooCloseToEnemyError(e: any): boolean {
   const s = placeErrorText(e);
   return (
-    s.includes("too_close") ||
-    s.includes("too_near") ||
-    s.includes("near_enemy") ||
-    s.includes("close_to_enemy") ||
-    s.includes("enemy_flag") ||
-    s.includes("adjacent_enemy") ||
-    s.includes("flag_too_close") ||
-    s.includes("near_flag") ||
-    s.includes("too close") ||
-    s.includes("gần địch") ||
-    s.includes("quá gần") ||
-    s.includes("sat_dich") ||
-    s.includes("collision") ||
-    s.includes("overlap")
+    s.includes("on_flag") ||
+    s.includes("flag_center") ||
+    s.includes("occupied") ||
+    s.includes("trùng") ||
+    s.includes("overlap") ||
+    s.includes("collision")
   );
 }
 
@@ -1236,7 +1363,7 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
     }
 
     // 2) Map
-    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
     const region = myRegion || String(map?.my_region_code || "");
     summary.myRegion = region || summary.myRegion;
 
@@ -1491,7 +1618,7 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
       if (options.shouldStop?.()) break;
 
       // refresh map nhẹ giữa các lần place
-      const mapNow = i === 0 ? map : await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+      const mapNow = i === 0 ? map : await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken); // luôn lấy live khi đang cắm
       const meNow = myPos(mapNow) || me;
 
       const cell = pickPlaceCell({
@@ -1673,8 +1800,8 @@ export async function runHoangCoDefendAuto(options: HoangCoAutoOptions): Promise
       return summary;
     }
 
-    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
-    const me = myPos(map);
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    let me = myPos(map);
     if (!me) {
       summary.status = "WAITING";
       summary.reason = "Chưa có vị trí map";
@@ -1928,8 +2055,8 @@ export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): 
       return summary;
     }
 
-    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
-    const me = myPos(map);
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    let me = myPos(map);
     if (!me) {
       summary.status = "WAITING";
       summary.reason = "Chưa có vị trí map";
@@ -2161,8 +2288,8 @@ export async function runHoangCoDefendMineAuto(options: HoangCoAutoOptions): Pro
       return summary;
     }
 
-    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
-    const me = myPos(map);
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    let me = myPos(map);
     if (!me) {
       summary.status = "WAITING";
       summary.reason = "Chưa có vị trí map";
@@ -2388,8 +2515,8 @@ export async function runHoangCoAttackAuto(options: HoangCoAutoOptions): Promise
       return summary;
     }
 
-    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
-    const me = myPos(map);
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    let me = myPos(map);
     if (!me) {
       summary.status = "WAITING";
       summary.reason = "Chưa có vị trí map";
@@ -2597,6 +2724,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
   const pollMs = 12_000;
   const onlyWhenEventLive = settings.only_when_event_live !== false;
   const targetClan = String(settings.target_clan_name || settings.target_clan || settings.focus_clan_name || "").trim();
+  const breakMode = String(settings.break_mode || "any").toLowerCase();
+  let centralPlan: any = null;
   // Flee mặc định BẬT khi phá (bị dí → né tạm); chỉ tắt khi user set false tường minh
   const fleeOn = settings.flee_on_enemy_near !== false;
   const fleeRadius = Math.max(1, Math.min(3, Math.floor(n(settings.flee_radius, 2)) || 2));
@@ -2640,8 +2769,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    const map = await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
-    const me = myPos(map);
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    let me = myPos(map);
     if (!me) {
       summary.status = "WAITING";
       summary.reason = "Chưa có vị trí map";
@@ -2661,13 +2790,67 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
     const building = incompleteClanFlags(flags, clanId);
     const allEnemy = flags.filter((f) => isEnemyFlag(f, clanId));
-    const enemyFlags = filterEnemyFlags(flags, clanId, targetClan);
+    let enemyFlags: any[] = filterEnemyFlags(flags, clanId, targetClan);
+    // Mode central: phá SẠCH cờ địch trong box central trước, rồi chiếm central
+    if (breakMode === "central") {
+      centralPlan = planCentralCapture({ map, clanId, centralRadius: settings.central_radius });
+      enemyFlags = centralPlan.enemyAround.filter((f: any) => isEnemyFlag(f, clanId));
+    }
 
     logFlagScan(onLog, flags, clanId, enemyFlags, targetClan);
 
     // Transit: chỉ chờ nếu đang đi ĐÚNG chỗ; nếu near mà dest ≠ tâm cờ → hủy đường cũ (xử lý sau khi chọn enemy)
 
     if (!enemyFlags.length) {
+      // Mode central: phá sạch cờ địch box central → tiến lên chiếm central
+      if (breakMode === "central") {
+        if (!centralPlan) centralPlan = planCentralCapture({ map, clanId, centralRadius: settings.central_radius });
+        const cx = centralPlan.central.x;
+        const cy = centralPlan.central.y;
+        const holder = (centralPlan.central.holder_clan_id || "").toString();
+        const distC = chebyshev(me.x, me.y, cx, cy);
+        if (distC > 1) {
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc(
+            "rpc_hoang_co_move",
+            { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
+            accessToken
+          );
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distC * 3)));
+          summary.moved = true;
+          summary.dest = { x: cx, y: cy };
+          summary.action = "move_to_attack_central";
+          summary.status = "WAITING";
+          summary.etaSeconds = eta;
+          summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+          summary.reason = `Central · đi chiếm central @(${cx},${cy}) · ETA ${eta}s`;
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
+        try {
+          const res = await rpc(
+            "rpc_hoang_co_attack_position",
+            { p_character_id: characterId, p_target_kind: "central", p_target_id: "central" },
+            accessToken
+          );
+          const captured = res?.captured === true;
+          const rem = n(res?.remaining_hp, -1);
+          summary.action = "attack_position_central";
+          summary.status = captured || rem === 0 ? "DONE" : "WAITING";
+          summary.reason = captured || rem === 0
+            ? `Central · đã chiếm central @(${cx},${cy})`
+            : `Central · công central HP còn ${rem} · chờ tick sau`;
+          summary.nextDelayMs = captured || rem === 0 ? 45_000 : 12_000;
+        } catch (ce: any) {
+          summary.action = "attack_position_central";
+          summary.status = "WAITING";
+          summary.reason = `Central · công central lỗi: ${(ce?.message || "").slice(0, 120)}`;
+          summary.nextDelayMs = 15_000;
+        }
+        onLog?.("INFO", `HC Phá cờ: ${summary.reason}`);
+        summary.finishedAt = new Date().toISOString();
+        return summary;
+      }
       summary.status = "DONE";
       summary.reason = targetClan
         ? `Không còn cờ bang "${targetClan}" (map có ${allEnemy.length} cờ địch khác / total ${flags.length})`
@@ -3482,10 +3665,10 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         if (isPlaceTooCloseToEnemyError(e)) {
           onLog?.(
             "WARN",
-            `HC Phá cờ · place @(${cell.x},${cell.y}) QUÁ GẦN ĐỊCH (${(e?.message || "").toString().slice(0, 60)})` +
-              ` → DỪNG CẮM, chuyển PHÁ cờ near`
+            `HC Phá cờ · place @(${cell.x},${cell.y}) đè tâm/trùng cờ địch (${(e?.message || "").toString().slice(0, 60)})` +
+              ` → bỏ ô này, thử ô khác`
           );
-          return "too_close_enemy";
+          return "other";
         }
         if (isNotAdjacentError(e)) {
           onLog?.(
