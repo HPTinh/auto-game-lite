@@ -3124,6 +3124,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const cfgSiegeMax = Math.max(100, Math.floor(n(map?.config?.siege_max, 600)) || 600);
     const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
     const building = incompleteClanFlags(flags, clanId);
+    // ── LUẬT chung: số cờ dở tối đa được phép cắm trước khi BẮT BUỘC xây xong ít nhất 1.
+    const centralDowCap = 3;
     const allEnemy = flags.filter((f) => isEnemyFlag(f, clanId));
     let enemyFlags: any[] = filterEnemyFlags(flags, clanId, targetClan);
     // Mode central: phá SẠCH cờ địch trong box central trước, rồi chiếm central
@@ -3149,6 +3151,50 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         // ── Chiếm central BẮT BUỘC phải có cờ đồng minh CHẠM central (cheby≤1).
         // Nếu chưa có → tự bridge: cắm chuỗi cờ tiến dần tới sát central, rồi mới công.
         if (!ownReachCentral) {
+          // ── LUẬT: đủ centralDowCap cờ dở → BẮT BUỘC xây xong ít nhất 1 (gần central nhất) TRƯỚC KHI cắm tiếp.
+          // Nếu không, bot sẽ cắm dở lung tung từ frontier cũ mà không bao giờ tiến được tới central.
+          if (building.length >= centralDowCap && building.length > 0) {
+            const buildFocus = [...building].sort(
+              (a, b) =>
+                chebyshev(a.pos_x, a.pos_y, cx, cy) - chebyshev(b.pos_x, b.pos_y, cx, cy)
+            )[0];
+            const bdist = manhattan(buildFocus.pos_x, buildFocus.pos_y, me.x, me.y);
+            if (bdist > 0) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc(
+                "rpc_hoang_co_move",
+                { p_character_id: characterId, p_dest_x: buildFocus.pos_x, p_dest_y: buildFocus.pos_y },
+                accessToken
+              );
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, bdist * 3)));
+              summary.moved = true;
+              summary.dest = { x: buildFocus.pos_x, y: buildFocus.pos_y };
+              summary.action = "move_to_build_central_bridge";
+              summary.status = "WAITING";
+              summary.etaSeconds = eta;
+              summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+              summary.reason = `Central · đủ ${building.length}/${centralDowCap} cờ dở → ƯU TIÊN xây #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) trước khi cắm tiếp`;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+            try {
+              await rpc(
+                "rpc_hoang_co_start_build",
+                { p_character_id: characterId, p_flag_id: buildFocus.flag_id },
+                accessToken
+              );
+              summary.built = 1;
+            } catch (be: any) {
+              onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${(be?.message || "").slice(0, 100)}`);
+            }
+            summary.action = "start_build_central_bridge";
+            summary.status = "WAITING";
+            summary.nextDelayMs = pollMs;
+            summary.reason = `Central · đủ ${building.length}/${centralDowCap} cờ dở → xây #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) trước khi cắm tiếp`;
+            onLog?.("SUCCESS", summary.reason);
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
           const cell = pickCentralPlaceCell({ map, clanId, me, cx, cy, maxHop: 3 });
           if (!cell) {
             // Không tìm được ô bridge: có thể CHƯA CÓ cờ BUILT làm mốc → ưu tiên xây cờ dở gần central nhất
