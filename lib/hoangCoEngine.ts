@@ -3061,8 +3061,10 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
   const targetClan = String(settings.target_clan_name || settings.target_clan || settings.focus_clan_name || "").trim();
   const breakMode = String(settings.break_mode || "any").toLowerCase();
   let centralPlan: any = null;
-  // Flee mặc định BẬT khi phá (bị dí → né tạm); chỉ tắt khi user set false tường minh
-  const fleeOn = settings.flee_on_enemy_near !== false;
+  // Flee mặc định TẮT — chỉ né khi user BẬT rõ ràng (flee_on_enemy_near === true).
+  // Trước đây mặc định BẬT (flee_on_enemy_near !== false) nên dù user không tích vẫn né người
+  // → trong mode central bot cứ lùi né thay vì cắm bridge tới central.
+  const fleeOn = settings.flee_on_enemy_near === true;
   const fleeRadius = Math.max(1, Math.min(3, Math.floor(n(settings.flee_radius, 2)) || 2));
   // Cắm hop mở rộng khi chưa near — mặc định BẬT
   const hopOn = settings.break_hop !== false;
@@ -3267,30 +3269,39 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
             return summary;
           }
           const cellToC = chebyshev(cell.x, cell.y, cx, cy);
-          // Chỉ né nếu địch ĐÈ LÊN ô bridge (safeR=0); địch cự ly 1 ở vùng central tranh chấp là bình thường → vẫn cắm
+          // Chỉ xét né nếu địch ĐÈ LÊN ô bridge (safeR=0); địch cự ly 1 ở vùng central tranh chấp là bình thường → vẫn cắm.
+          // Nếu fleeOn=false (user không bật né người) → KHÔNG chạy xa, chỉ chờ ô trống.
           if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 0, characterId)) {
-            const smart = pickSmartSafeDest({
-              map, me, myClanId: clanId, myCharacterId: characterId,
-              ownBuilt, building, nearEnemies: [], safeR: 2,
-            });
-            if (smart && (smart.x !== me.x || smart.y !== me.y)) {
-              await leaveDefense(characterId, accessToken, onLog);
-              const mv = await rpc(
-                "rpc_hoang_co_move",
-                { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y },
-                accessToken
-              );
-              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-              summary.moved = true;
-              summary.dest = { x: smart.x, y: smart.y };
-              summary.action = "flee_smart_central_bridge";
-              summary.status = "WAITING";
-              summary.etaSeconds = eta;
-              summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
-              summary.reason = `Central · ô bridge (${cell.x},${cell.y}) có địch đè → né ${smart.label} @(${smart.x},${smart.y})`;
-              summary.finishedAt = new Date().toISOString();
-              return summary;
+            if (fleeOn) {
+              const smart = pickSmartSafeDest({
+                map, me, myClanId: clanId, myCharacterId: characterId,
+                ownBuilt, building, nearEnemies: [], safeR: 2,
+              });
+              if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+                await leaveDefense(characterId, accessToken, onLog);
+                const mv = await rpc(
+                  "rpc_hoang_co_move",
+                  { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y },
+                  accessToken
+                );
+                const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+                summary.moved = true;
+                summary.dest = { x: smart.x, y: smart.y };
+                summary.action = "flee_smart_central_bridge";
+                summary.status = "WAITING";
+                summary.etaSeconds = eta;
+                summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
+                summary.reason = `Central · ô bridge (${cell.x},${cell.y}) có địch đè → né ${smart.label} @(${smart.x},${smart.y})`;
+                summary.finishedAt = new Date().toISOString();
+                return summary;
+              }
             }
+            // fleeOn=false: địch đè lên ô → chờ địch dời thay vì chạy xa (giữ vị trí tiến central)
+            summary.status = "WAITING";
+            summary.reason = `Central · ô bridge (${cell.x},${cell.y}) có địch đè · chờ địch dời (không né)`;
+            summary.nextDelayMs = 4_000;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
           }
           const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
           if (distPlace > 0) {
