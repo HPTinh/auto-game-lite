@@ -918,45 +918,61 @@ function pickPlaceCellTowardTarget(opts: {
     if (!ownBuilt.length) return chebyshev(me.x, me.y, x, y);
     return Math.min(...ownBuilt.map((f) => chebyshev(f.pos_x, f.pos_y, x, y)));
   };
-  const anchors: Pos[] = [
-    ...ownBuilt.map((f) => ({ x: f.pos_x, y: f.pos_y })),
-    { x: me.x, y: me.y },
-  ];
-  anchors.sort((a, b) => chebyshev(a.x, a.y, tx, ty) - chebyshev(b.x, b.y, tx, ty));
-  const frontier = anchors[0] ? { x: anchors[0].x, y: anchors[0].y } : null;
-  const minBuiltToTarget = frontier ? chebyshev(frontier.x, frontier.y, tx, ty) : 99;
+  // Mốc neo: ƯU TIÊN cờ built GẦN MỤC TIÊU NHẤT (frontier) để bridge thành 1 hàng thẳng
+  // hướng tới mục tiêu (tránh cắm lung tung từ cờ lề). Fallback: mọi cờ built nếu frontier bị chặn.
+  const sortedBuilt = [...ownBuilt].sort(
+    (a, b) => chebyshev(a.pos_x, a.pos_y, tx, ty) - chebyshev(b.pos_x, b.pos_y, tx, ty)
+  );
+  const frontierBuilt = sortedBuilt[0] || null;
+  const anchorSets: Pos[][] = [];
+  if (frontierBuilt) {
+    anchorSets.push([{ x: frontierBuilt.pos_x, y: frontierBuilt.pos_y }, { x: me.x, y: me.y }]);
+    anchorSets.push([...sortedBuilt.map((f) => ({ x: f.pos_x, y: f.pos_y })), { x: me.x, y: me.y }]);
+  } else {
+    anchorSets.push([{ x: me.x, y: me.y }]);
+  }
 
   type Cand = { x: number; y: number; score: number };
-  const cands: Cand[] = [];
-  const seen = new Set<string>();
-  for (const a of anchors) {
-    for (let dx = -maxHop; dx <= maxHop; dx++) {
-      for (let dy = -maxHop; dy <= maxHop; dy++) {
-        const hop = Math.max(Math.abs(dx), Math.abs(dy));
-        if (hop < 1 || hop > maxHop) continue;
-        const x = a.x + dx;
-        const y = a.y + dy;
-        if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
-        const k = cellKey(x, y);
-        if (seen.has(k) || occ.has(k)) continue;
-        seen.add(k);
-        const toT = chebyshev(x, y, tx, ty);
-        if (!allowOnTarget && toT < 1) continue; // không đặt trên tâm (central)
-        if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
-        // Bỏ qua ô có player địch đè lên (tránh cắm vào chỗ bị chiếm); vẫn cho phép địch cự ly 1 (vùng tranh chấp)
-        if (!isPosSafeFromHostiles(map, clanId, x, y, 0)) continue;
-        // Tiến gần mục tiêu theo TỪNG anchor (không bị kẹt bởi mốc toàn cục)
-        if (toT >= chebyshev(a.x, a.y, tx, ty)) continue; // tiến gần mục tiêu
-        const fd = friendlyDist(x, y);
-        if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
-        // Tối ưu khoảng cách: ưu tiên ô GẦN MỤC TIÊU NHẤT (toT nhỏ nhất, weight áp đảo),
-        // rồi kề sát cờ built (fd nhỏ), cuối là ít di chuyển. Luôn tiến gần mục tiêu.
-        let score = toT * 1000 + fd * 30 + manhattan(x, y, me.x, me.y) * 0.1;
-        if (fd <= 1) score -= 40;
-        if (x === tx && y === ty) score -= allowOnTarget ? 500 : 800;
-        cands.push({ x, y, score });
+
+  const genCands = (anchors: Pos[]): Cand[] => {
+    const out: Cand[] = [];
+    const seen = new Set<string>();
+    for (const a of anchors) {
+      for (let dx = -maxHop; dx <= maxHop; dx++) {
+        for (let dy = -maxHop; dy <= maxHop; dy++) {
+          const hop = Math.max(Math.abs(dx), Math.abs(dy));
+          if (hop < 1 || hop > maxHop) continue;
+          const x = a.x + dx;
+          const y = a.y + dy;
+          if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
+          const k = cellKey(x, y);
+          if (seen.has(k) || occ.has(k)) continue;
+          seen.add(k);
+          const toT = chebyshev(x, y, tx, ty);
+          if (!allowOnTarget && toT < 1) continue; // không đặt trên tâm (central)
+          if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
+          // Bỏ qua ô có player địch đè lên (tránh cắm vào chỗ bị chiếm); vẫn cho phép địch cự ly 1 (vùng tranh chấp)
+          if (!isPosSafeFromHostiles(map, clanId, x, y, 0)) continue;
+          // Tiến gần mục tiêu theo TỪNG anchor (không bị kẹt bởi mốc toàn cục)
+          if (toT >= chebyshev(a.x, a.y, tx, ty)) continue; // tiến gần mục tiêu
+          const fd = friendlyDist(x, y);
+          if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
+          // Tối ưu khoảng cách: ưu tiên ô GẦN MỤC TIÊU NHẤT (toT nhỏ nhất, weight áp đảo),
+          // rồi kề sát cờ built (fd nhỏ), cuối là ít di chuyển. Luôn tiến gần mục tiêu.
+          let score = toT * 1000 + fd * 30 + manhattan(x, y, me.x, me.y) * 0.1;
+          if (fd <= 1) score -= 40;
+          if (x === tx && y === ty) score -= allowOnTarget ? 500 : 800;
+          out.push({ x, y, score });
+        }
       }
     }
+    return out;
+  };
+
+  let cands: Cand[] = [];
+  for (const set of anchorSets) {
+    cands = genCands(set);
+    if (cands.length) break;
   }
   if (!cands.length) return null;
   cands.sort((a, b) => a.score - b.score);
