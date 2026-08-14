@@ -18,6 +18,8 @@ export interface HoangCoClanCount {
 export interface HoangCoSharedState {
   scannerId: string | null;
   lastScanAt: number; // epoch ms
+  /** Tăng mỗi lần scanner publish scan mới → acc phụ so sánh để "thức" sớm khi có data tươi */
+  scanVersion: number;
   map: any | null; // map_state đã parse (raw)
   myClanId: string;
   clanCounts: HoangCoClanCount[];
@@ -30,6 +32,7 @@ export interface HoangCoSharedState {
 let state: HoangCoSharedState = {
   scannerId: null,
   lastScanAt: 0,
+  scanVersion: 0,
   map: null,
   myClanId: "",
   clanCounts: [],
@@ -54,6 +57,7 @@ export function resetHoangCoSharedState(): void {
   state = {
     scannerId: null,
     lastScanAt: 0,
+    scanVersion: 0,
     map: null,
     myClanId: "",
     clanCounts: [],
@@ -76,6 +80,7 @@ export function publishHoangCoScan(input: {
     ...state,
     scannerId: input.scannerId,
     lastScanAt: Date.now(),
+    scanVersion: state.scanVersion + 1,
     map: input.map,
     myClanId: input.myClanId,
     clanCounts: input.clanCounts,

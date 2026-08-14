@@ -32,6 +32,9 @@ import {
   publishHoangCoScan,
 } from "./engines";
 
+/** Lưu scanVersion gần nhất mỗi acc đã xử lý → phát hiện scanner publish scan MỚI. */
+const hcLastScanVersion = new Map<string, number>();
+
 /** Map UI farm settings → engine farmEngine */
 function buildFarmEngineSettings(settings: Record<string, any>): Record<string, any> {
   const multi = settings.multi_channel === true || settings.multi_channel === "true";
@@ -984,10 +987,16 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
       const isScanner = !!scannerId && scannerId === accountId;
       let mapOverride: any = undefined;
       const hcLog = onLog(accountId, "HOANG_CO");
+      const shared = getHoangCoSharedState();
+      const scanVersion = shared.scanVersion || 0;
+      // acc phụ: nếu scanner vừa publish scan MỚI (scanVersion đổi) → forceReplan để
+      // re-plan / redirect ngay (tránh đi sai target rồi quay lại — rớt thông tin).
+      const scanChanged = !isScanner && scanVersion !== (hcLastScanVersion.get(accountId) || 0);
+      let forceReplan = false;
       if (scannerId && !isScanner) {
-        const shared = getHoangCoSharedState();
         if (shared.map && isHoangCoScanFresh(Number(settings.scan_stale_ms) || 8000)) {
           mapOverride = shared.map;
+          forceReplan = scanChanged;
         }
       }
       if (isScanner || !mapOverride) {
@@ -1015,9 +1024,11 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
         accessToken: runtime.accessToken,
         settings,
         mapOverride,
+        forceReplan,
         shouldStop: () => !isAllowed(accountId, featureId, token),
         onLog: hcLog,
       });
+      hcLastScanVersion.set(accountId, scanVersion);
 
       const attackFocus =
         result.phase === "attack" || result.phase === "break_flag"
@@ -1045,6 +1056,9 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           result.action || ""
         );
       nextDelayMs = Math.max(fastHc ? 2_500 : 5_000, Number(result.nextDelayMs || 20_000));
+      // acc phụ vừa nhận scan MỚI từ scanner → poll nhanh (3s) để bám sát data tươi,
+      // tránh rớt thông tin / đi sai target rồi quay lại.
+      if (!isScanner && scanChanged) nextDelayMs = Math.min(nextDelayMs, 3_000);
       if (result.status === "ERROR") {
         status = "error";
         errMsg = result.reason || "Hoàng Cổ error";

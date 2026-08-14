@@ -54,6 +54,9 @@ export interface HoangCoAutoOptions {
   /** Shared map_state từ scanner tập trung (bể chung). Nếu có, dùng làm global data;
    *  vị trí bản thân (my_position) sẽ được ensureSelf() lấy riêng khi cần hành động. */
   mapOverride?: any;
+  /** true: có scan MỚI từ scanner (scanVersion đổi) → bỏ qua chờ inTransit để re-plan /
+   *  redirect ngay (tránh acc phụ đi sai target rồi quay lại). Chỉ acc phụ nhận. */
+  forceReplan?: boolean;
 }
 
 const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
@@ -641,15 +644,8 @@ function occupiedCells(map: any): Set<string> {
   for (const s of Array.isArray(map?.satellites) ? map.satellites : []) {
     set.add(cellKey(Math.floor(n(s.pos_x)), Math.floor(n(s.pos_y))));
   }
-  // tránh trung tâm (center)
-  const cx = Math.floor(n(map?.config?.center_x, 42));
-  const cy = Math.floor(n(map?.config?.center_y, 42));
-  const inner = Math.max(2, Math.floor(n(map?.config?.inner_radius, 6)));
-  for (let x = cx - inner; x <= cx + inner; x++) {
-    for (let y = cy - inner; y <= cy + inner; y++) {
-      if (manhattan(x, y, cx, cy) <= inner) set.add(cellKey(x, y));
-    }
-  }
+  // NOTE: không chặn vùng quanh trung tâm ở đây — bridge central BẮT BUỘC phải cắm
+  // cờ cheby≤1 chạm central. Ô tâm (42,42) đã được canPlaceAt chặn riêng (allowOnTarget=false).
   return set;
 }
 
@@ -3065,6 +3061,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
   // Cắm hop mở rộng khi chưa near — mặc định BẬT
   const hopOn = settings.break_hop !== false;
   const nowMs = Date.now();
+  // forceReplan: scanner vừa publish scan mới → bỏ qua chờ inTransit để re-plan/redirect ngay.
+  const forceReplan = options.forceReplan === true;
 
   let selfPlaced: number[] = [];
   if (Array.isArray(settings.self_placed_flag_ids)) {
@@ -3609,7 +3607,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
      * EXPAND death circle (log 07:41): mỗi tick leave+move @(16,54) ETA 17s
      * → không bao giờ đứng yên place. Phải CHỜ transit xong (trừ ASSAULT hủy dest sai).
      */
-    if (!assaultLock && me.inTransit && me.eta > 0) {
+    if (!assaultLock && me.inTransit && me.eta > 0 && !forceReplan) {
       summary.status = "WAITING";
       summary.action = "transit_expand";
       summary.etaSeconds = me.eta;
