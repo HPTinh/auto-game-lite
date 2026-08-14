@@ -947,6 +947,8 @@ function pickPlaceCellTowardTarget(opts: {
         const toT = chebyshev(x, y, tx, ty);
         if (!allowOnTarget && toT < 1) continue; // không đặt trên tâm (central)
         if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
+        // Bỏ qua ô có player địch đè lên (tránh cắm vào chỗ bị chiếm); vẫn cho phép địch cự ly 1 (vùng tranh chấp)
+        if (!isPosSafeFromHostiles(map, clanId, x, y, 0)) continue;
         if (toT >= minBuiltToTarget) continue; // tiến gần mục tiêu
         const fd = friendlyDist(x, y);
         if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
@@ -1517,7 +1519,7 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       const focus = buildingToward[0].f;
       const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
       if (dist > 0) {
-        if (!isPosSafeFromHostiles(map, clanId, focus.pos_x, focus.pos_y, 1, characterId)) {
+          if (!isPosSafeFromHostiles(map, clanId, focus.pos_x, focus.pos_y, 0, characterId)) {
           const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
           if (smart && (smart.x !== me.x || smart.y !== me.y)) {
             await leaveDefense(characterId, accessToken, onLog);
@@ -1551,7 +1553,7 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
     const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
     const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
     if (distPlace > 0) {
-      if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 1, characterId)) {
+      if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 0, characterId)) {
         const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
         if (smart && (smart.x !== me.x || smart.y !== me.y)) {
           await leaveDefense(characterId, accessToken, onLog);
@@ -3128,6 +3130,49 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         if (!ownReachCentral) {
           const cell = pickCentralPlaceCell({ map, clanId, me, cx, cy, maxHop: 3 });
           if (!cell) {
+            // Không tìm được ô bridge: có thể CHƯA CÓ cờ BUILT làm mốc → ưu tiên xây cờ dở gần central nhất
+            if (building.length > 0) {
+              const buildFocus = [...building].sort(
+                (a, b) =>
+                  chebyshev(a.pos_x, a.pos_y, cx, cy) - chebyshev(b.pos_x, b.pos_y, cx, cy)
+              )[0];
+              const bdist = manhattan(buildFocus.pos_x, buildFocus.pos_y, me.x, me.y);
+              if (bdist > 0) {
+                await leaveDefense(characterId, accessToken, onLog);
+                const mv = await rpc(
+                  "rpc_hoang_co_move",
+                  { p_character_id: characterId, p_dest_x: buildFocus.pos_x, p_dest_y: buildFocus.pos_y },
+                  accessToken
+                );
+                const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, bdist * 3)));
+                summary.moved = true;
+                summary.dest = { x: buildFocus.pos_x, y: buildFocus.pos_y };
+                summary.action = "move_to_build_central_bridge";
+                summary.status = "WAITING";
+                summary.etaSeconds = eta;
+                summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+                summary.reason = `Central · bridge: đi xây cờ dở #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) → làm mốc chạm central`;
+                summary.finishedAt = new Date().toISOString();
+                return summary;
+              }
+              try {
+                await rpc(
+                  "rpc_hoang_co_start_build",
+                  { p_character_id: characterId, p_flag_id: buildFocus.flag_id },
+                  accessToken
+                );
+                summary.built = 1;
+              } catch (be: any) {
+                onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${(be?.message || "").slice(0, 100)}`);
+              }
+              summary.action = "start_build_central_bridge";
+              summary.status = "WAITING";
+              summary.nextDelayMs = pollMs;
+              summary.reason = `Central · bridge: xây cờ dở #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) → làm mốc chạm central`;
+              onLog?.("SUCCESS", summary.reason);
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
             summary.status = "WAITING";
             summary.reason = `Central · chưa có cờ chạm central (cheby≤1) · không tìm được ô bridge · chờ`;
             summary.nextDelayMs = 10_000;
@@ -3136,8 +3181,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
             return summary;
           }
           const cellToC = chebyshev(cell.x, cell.y, cx, cy);
-          // Ô cắm có địch đứng → né tạm
-          if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 1, characterId)) {
+          // Chỉ né nếu địch ĐÈ LÊN ô bridge (safeR=0); địch cự ly 1 ở vùng central tranh chấp là bình thường → vẫn cắm
+          if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 0, characterId)) {
             const smart = pickSmartSafeDest({
               map, me, myClanId: clanId, myCharacterId: characterId,
               ownBuilt, building, nearEnemies: [], safeR: 2,
@@ -3156,7 +3201,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
               summary.status = "WAITING";
               summary.etaSeconds = eta;
               summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
-              summary.reason = `Central · ô bridge (${cell.x},${cell.y}) có địch → né ${smart.label} @(${smart.x},${smart.y})`;
+              summary.reason = `Central · ô bridge (${cell.x},${cell.y}) có địch đè → né ${smart.label} @(${smart.x},${smart.y})`;
               summary.finishedAt = new Date().toISOString();
               return summary;
             }
