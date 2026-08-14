@@ -1475,11 +1475,12 @@ function pickResourceToCapture(map: any, me: Pos, clanId: string, maxDist = 999)
  */
 async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<HoangCoRunSummary | null> {
   const settings = options.settings || {};
-  if (settings.auto_capture_resource === false) return null;
+  if (settings.auto_capture_resource === false && settings.break_mode !== "resource") return null;
   const onLog = options.onLog;
   const characterId = options.characterId;
   const accessToken = options.accessToken;
   const pollMs = 12_000;
+  const forceReplan = options.forceReplan === true;
   const onlyWhenEventLive = settings.only_when_event_live !== false;
   try {
     const status = await rpc("rpc_hoang_co_status", { p_character_id: characterId }, accessToken);
@@ -1615,6 +1616,31 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
     onLog?.("WARN", `runHoangCoCaptureResource: ${(e?.message || e).toString().slice(0, 120)}`);
     return null;
   }
+}
+
+/**
+ * Mode Chiếm resource (break_mode === "resource") — chức năng RIÊNG, hoạt động
+ * giống central: cắm chuỗi cờ tiến tới mỏ CHƯA chiếm (cheby≤1), rồi attack_position
+ * chiếm. Ưu tiên mỏ GẦN trước (gần bot nhất) rồi LAN XA DẦN (pickResourceToCapture
+ * sort dist tăng dần). Mỗi lần gọi xử lý 1 mỏ → gọi lại tự động qua các mỏ gần→xa.
+ */
+async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
+  const onLog = options.onLog;
+  onLog?.("INFO", "Hoàng Cổ · mission: Chiếm resource (cắm→xây→chiếm · ưu tiên gần trước, xa dần)");
+  const res = await runHoangCoCaptureResource({
+    ...options,
+    settings: { ...(options.settings || {}), auto_capture_resource: true, break_mode: "resource" },
+  });
+  if (res) return res;
+  return {
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    status: "WAITING",
+    nextDelayMs: 15_000,
+    phase: "capture_resource",
+    reason:
+      "Chiếm resource · không có mỏ chưa chiếm phù hợp (đã chiếm hết / có thủ địch / event chưa mở) · chờ",
+  };
 }
 
 export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
@@ -3145,10 +3171,15 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         const holder = (centralPlan.central.holder_clan_id || "").toString();
         const distC = chebyshev(me.x, me.y, cx, cy);
         const ownReachCentral = centralPlan.ownReachCentral;
+        // Cờ mình (built HOẶC dở) chạm central (cheby≤1) → bridge đã tới nơi → đủ điều kiện công.
+        // Dùng riêng với ownReachCentral (chỉ built) để tránh kẹt ở phase bridge khi cờ cắm tới
+        // central vẫn còn dở (chưa built) → không bao giờ kích hoạt công.
+        const ownFlagsAny = flags.filter((f) => f.clan_id === clanId);
+        const reachCentralAny = ownFlagsAny.some((f) => chebyshev(f.pos_x, f.pos_y, cx, cy) <= 1);
 
         // ── Chiếm central BẮT BUỘC phải có cờ đồng minh CHẠM central (cheby≤1).
         // Nếu chưa có → tự bridge: cắm chuỗi cờ tiến dần tới sát central, rồi mới công.
-        if (!ownReachCentral) {
+        if (!reachCentralAny) {
           // ── LUẬT: đủ centralDowCap cờ dở → BẮT BUỘC xây xong ít nhất 1 (gần central nhất) TRƯỚC KHI cắm tiếp.
           // Nếu không, bot sẽ cắm dở lung tung từ frontier cũ mà không bao giờ tiến được tới central.
           if (building.length >= centralDowCap && building.length > 0) {
@@ -3381,7 +3412,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
             // Lỗi khác (có thể server bắt đứng gần ô) → fallback di chuyển tới ô rồi cắm
             const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
             if (distPlace > 0) {
-              if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
+        if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0 && !forceReplan) {
                 summary.status = "WAITING";
                 summary.action = "transit_to_place_central";
                 summary.dest = cell;
@@ -3416,7 +3447,29 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           }
         }
 
-        // CÔNG CENTRAL TỪ XA trước; chỉ đi tới tâm khi server bắt buộc đứng gần
+        // CÔNG CENTRAL — tham khảo tính năng "central thủ - công": đứng sát tâm (manhattan≤1)
+        // rồi mới attack_position. Bridge đã chạm central (reachCentralAny) là đủ điều kiện công,
+        // KHÔNG cần cờ built cheby≤1. Nếu bot đang ở xa → đi tới tâm trước (giống runHoangCoAttackCentralAuto).
+        const atCenter = manhattan(me.x, me.y, cx, cy) <= 1;
+        if (!atCenter) {
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc(
+            "rpc_hoang_co_move",
+            { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
+            accessToken
+          );
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distC * 3)));
+          summary.moved = true;
+          summary.dest = { x: cx, y: cy };
+          summary.action = "move_to_attack_central";
+          summary.status = "WAITING";
+          summary.etaSeconds = eta;
+          summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+          summary.reason = `Central · bridge đã chạm central → đi tới tâm để công @(${cx},${cy}) · ETA ${eta}s`;
+          onLog?.("INFO", summary.reason);
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
         try {
           const res = await rpc(
             "rpc_hoang_co_attack_position",
@@ -4458,6 +4511,11 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
 export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
   const onLog = options.onLog;
+
+  // Mission riêng: Chiếm resource (break_mode === "resource") — cắm→xây→chiếm mỏ, ưu tiên gần trước
+  if (settings.break_mode === "resource") {
+    return runHoangCoResourceMode(options);
+  }
 
   // Mission riêng: Phá cờ (cắm → xây → phá cờ địch gần nhất)
   if (settings.auto_break_flag === true || settings.mission === "pha_co" || settings.mission === "break_flag") {
