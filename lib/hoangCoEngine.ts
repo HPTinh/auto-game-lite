@@ -757,7 +757,7 @@ function pickSiegePlaceCell(opts: {
   /** Ô đã not_adjacent / fail — bỏ qua */
   excludeCells?: Set<string>;
 }): Pos | null {
-  const { map, clanId, me, enemy, maxHop = 1, reclaimPos, excludeCells } = opts;
+  const { map, clanId, me, enemy, maxHop = 3, reclaimPos, excludeCells } = opts;
   const gridW = Math.max(20, Math.floor(n(map?.config?.grid_w, 85)));
   const gridH = Math.max(20, Math.floor(n(map?.config?.grid_h, 85)));
   const occ = occupiedCells(map);
@@ -766,21 +766,26 @@ function pickSiegePlaceCell(opts: {
   const ownAll = flags.filter((f) => f.clan_id === clanId);
   const excluded = excludeCells || new Set<string>();
 
-  // Reclaim: cắm ngay ô cờ địch vừa mất nếu trống
+  // Khoảng cách gần nhất từ 1 ô tới cờ ĐÃ XÂY của mình (mốc neo cắm, luật: cheby≤3)
+  const friendlyDist = (x: number, y: number): number => {
+    if (!ownBuilt.length) return 99;
+    return Math.min(...ownBuilt.map((f) => chebyshev(f.pos_x, f.pos_y, x, y)));
+  };
+
+  // Reclaim: cắm ngay ô cờ địch vừa mất nếu trống & kề cờ built mình (cheby≤3)
   if (reclaimPos) {
     const rx = Math.floor(reclaimPos.x);
     const ry = Math.floor(reclaimPos.y);
     if (rx >= 0 && ry >= 0 && rx < gridW && ry < gridH && !occ.has(cellKey(rx, ry))) {
-      // Chỉ reclaim nếu gần bridge mình (hop từ built/me ≤ maxHop+1)
-      const nearBridge =
-        ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, rx, ry) <= maxHop + 1) ||
-        chebyshev(me.x, me.y, rx, ry) <= maxHop + 2;
-      if (nearBridge) return { x: rx, y: ry };
+      if (ownBuilt.length > 0 && ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, rx, ry) <= 3)) {
+        return { x: rx, y: ry };
+      }
     }
   }
 
-  // Anchor CHỈ từ cờ built (và dở) — KHÔNG neo từ me khi đứng vành địch
-  // (me@(13,52) + place (13,53) = death circle)
+  // Anchor từ cờ built (chỉ cờ built làm mốc neo). Nếu không có built → không cắm
+  // (phải xây trước). Mốc dở/me chỉ fallback, nhưng friendlyDist≤3 sẽ loại bỏ ô
+  // không kề cờ built.
   const anchors: Pos[] = [];
   if (ownBuilt.length) {
     for (const f of ownBuilt) anchors.push({ x: f.pos_x, y: f.pos_y });
@@ -824,8 +829,6 @@ function pickSiegePlaceCell(opts: {
         if (seen.has(k) || occ.has(k) || excluded.has(k)) continue;
         seen.add(k);
 
-        // Server not_adjacent: ô cắm phải kề anchor (hop từ cờ built)
-        // Chỉ anchor là cờ built (không cắm “từ me” khi me đứng vành địch)
         const toEnemy = chebyshev(x, y, enemy.pos_x, enemy.pos_y);
         // Quy tắc 3×3: cấm đặt tâm cờ mình cách tâm địch ≤1 (vùng toả sẽ phủ tâm địch)
         if (toEnemy <= 1) continue;
@@ -834,17 +837,21 @@ function pickSiegePlaceCell(opts: {
         // CHỈ nhận ô TIẾN GẦN địch hơn mặt trận hiện tại (toEnemy < minBuiltToEnemy).
         // Cấm đặt ngang hàng / lùi → tránh cắm cờ sát nhau chồng chất vô nghĩa.
         if (toEnemy >= minBuiltToEnemy) continue;
+        // Ô cắm phải gần cờ đồng minh ĐÃ XÂY (cheby≤3, bằng tầm phá) — luật mốc neo
+        const fd = friendlyDist(x, y);
+        if (fd > 3) continue;
         // Không cắm đúng ô me đang đứng quanh địch nếu me không phải trên cờ mình (tránh vòng)
         if (x === me.x && y === me.y && hop > 0) continue;
 
         let score =
           toEnemy * 100 +
-          hop * 2 +
+          fd * 25 +
           manhattan(x, y, me.x, me.y) * 0.1;
         // Giữ chuỗi cờ thẳng hàng: ưu tiên ô sát mặt trận (tránh tỏa ngang)
         if (frontier) score += chebyshev(x, y, frontier.x, frontier.y) * 1.5;
-        if (hop === 1) score -= 50; // bắt buộc ưu kề built
-        if (hop > 1) score += 40; // phạt hop>1 (dễ not_adjacent)
+        // Ưu tiên kề (cheby≤1) nhất, rồi cheby 2, 3 (robust nếu server chỉ cho kề)
+        if (fd <= 1) score -= 50;
+        else score += (fd - 1) * 20;
         if (x === enemy.pos_x && y === enemy.pos_y) score -= 300;
         cands.push({ x, y, score });
       }
@@ -852,9 +859,9 @@ function pickSiegePlaceCell(opts: {
     if (cands.some((c) => chebyshev(c.x, c.y, enemy.pos_x, enemy.pos_y) <= 1)) break;
   }
 
-  // Fallback: ô kề cờ địch
+  // Fallback: ô xung quanh cờ địch — vẫn phải TIẾN GẦN mặt trận & kề cờ built (cheby≤3)
   if (!cands.length) {
-    for (let r = 1; r <= 4; r++) {
+    for (let r = 1; r <= 5; r++) {
       for (let dx = -r; dx <= r; dx++) {
         for (let dy = -r; dy <= r; dy++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
@@ -865,10 +872,12 @@ function pickSiegePlaceCell(opts: {
           // Fallback vẫn phải TIẾN GẦN địch hơn mặt trận (tránh cắm lùi/vô nghĩa)
           if (r >= minBuiltToEnemy) continue;
           if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
+          const fd = friendlyDist(x, y);
+          if (fd > 3) continue;
           cands.push({
             x,
             y,
-            score: r * 8 + manhattan(x, y, me.x, me.y) - (r <= 2 ? 30 : 0),
+            score: r * 8 + fd * 25 + manhattan(x, y, me.x, me.y) - (r <= 2 ? 30 : 0),
           });
         }
       }
@@ -3753,7 +3762,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
               clanId,
               me,
               enemy,
-              maxHop: hopMax,
+              maxHop: 3,
               reclaimPos: attempt === 0 ? reclaimPos : null,
               excludeCells: excludePlace,
             });

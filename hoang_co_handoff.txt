@@ -18,8 +18,8 @@
       siege_points (0→siege_max, thường 600).
     * "Đứng giữa cờ" = my_position == flag.pos (manhattan 0). siege_flag/siege
       CHỈ bật khi đứng ĐÚNG tâm (cheby 0).
-    * "hop place" = cắm cờ mới kề cờ built của mình (cheby≤1). Server không cho
-      hop >1 (lỗi not_adjacent).
+    * "hop place" = cắm cờ mới phải gần cờ built của mình (cheby≤3, BẰNG TẦM PHÁ).
+      Ưu tiên kề (cheby≤1); server báo not_adjacent nếu ô cắm quá xa mọi cờ built.
     * QUY TẮC 3×3 (2026-08, user xác nhận):
         - Mỗi cờ = tâm 3×3 (vùng toả ±1 mỗi chiều).
         - CẮM: cấm đặt tâm cờ mình cách tâm địch ≤1 (vùng 3×3 phủ lên tâm địch).
@@ -269,14 +269,20 @@
          đã có 3 cờ đồng minh CHƯA xây xong. Khi buildSlotsFull → ƯU TIÊN XÂY XONG 1 cờ
          dở GẦN ĐỊCH NHẤT (buildToFree) để có cờ built làm mỏ neo mở rộng, tiếp cận cờ
          đối phương rồi mới phá tiếp (thay vì chỉ chờ). Xây xong 1 → slot trống → cắm tiếp.
-       - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
-       - ★ CẮM TỐI ƯU (pickSiegePlaceCell :749): cấm toEnemy≤1 (vùng phủ tâm địch).
-         QUAN TRỌNG: CHỈ NHẬN ô TIẾN GẦN địch hơn MẶT TRẬN hiện tại
-         (toEnemy < minBuiltToEnemy, minBuiltToEnemy = cheby cờ built gần địch nhất).
-         CẤM đặt ngang hàng / lùi → không cắm cờ sát nhau chồng chất vô nghĩa. Mỗi cờ đặt
-         xong phải đưa mặt trận lại gần địch 1 bước (cheby giảm) cho tới khi đạt cheby≤3
-         (đủ phá theo luật 3×3) thì chuyển ASSAULT. score ưu tiên toEnemy nhỏ + ô sát
-         mặt trận (giữ chuỗi thẳng, không tỏa ngang). Fallback vẫn phải toEnemy<minBuiltToEnemy.
+       - Cắm từ anchor cờ built (hopMax=3, KHÔNG neo từ me trên vành địch).
+         ★ LUẬT MỐC NEO (2026-08, user xác nhận): ô cắm BẮT BUỘC phải gần cờ đồng minh
+         ĐÃ XÂY (is_built) trong khoảng cách cheby≤3 (BẰNG TẦM PHÁ cờ). Chỉ tính cờ built
+         làm mốc (không tính cờ dở). Ưu tiên kề (cheby≤1) khi có ô kề tiến gần được; chỉ
+         dùng đến cheby≤3 khi không còn ô kề nào tiến gần mặt trận. (Robust nếu server
+         thực tế chỉ cho kề ≤1 — khi đó code tự chọn ô cheby≤1.)
+       - ★ CẮM TỐI ƯU (pickSiegePlaceCell :749): cấm toEnemy≤1 (vùng phủ tâm đích).
+         QUAN TRỌNG: CHỈ NHẬN ô TIẾN GẦN đích hơn MẶT TRẬN hiện tại
+         (toEnemy < minBuiltToEnemy, minBuiltToEnemy = cheby cờ built gần đich nhất)
+         VÀ cách cờ built gần nhất ≤3 (friendlyDist). CẤM đặt ngang hàng / lùi → không
+         cắm cờ sát nhau chồng chất vô nghĩa. Mỗi cờ đặt xong phải đưa mặt trận lại gần
+         địch hơn 1 bước (cheby giảm) cho tới khi đạt cheby≤3 (đủ phá theo luật 3×3) thì
+         chuyển ASSAULT. score ưu tiên toEnemy nhỏ + friendlyDist nhỏ (kề trước) + ô sát
+         mặt trận (giữ chuỗi thẳng). Fallback vẫn phải toEnemy<minBuiltToEnemy + friendlyDist≤3.
        - sticky break_pending_place đến khi place xong
        - place not_adjacent → exclude ô, thử ô khác (tối đa 4 ô)
        - place too_close enemy → DỪNG CẮM, force assault tick sau
