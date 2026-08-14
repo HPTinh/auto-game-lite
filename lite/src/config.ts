@@ -335,7 +335,7 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     resource_attack_radius: 3,
     /**
      * Chủ động đi chiếm resource (mỏ): sau khi phá hết cờ địch, bot tự bridge cờ
-     * cheby≤1 tới mỏ rồi attack_position tới khi captured. Mặc định hướng "đi xa".
+     * cheby≤1 tới mỏ rồi attack_position tới khi captured. Mặc định ưu tiên mỏ gần trước, rồi lan xa dần.
      */
     auto_capture_resource: true,
     /** Ô cờ địch vừa phá — tự reclaim nếu chưa chạm cờ kế */

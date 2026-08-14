@@ -1422,27 +1422,35 @@ async function tryChipNearResource(
   return summary;
 }
 
-/** Chọn mỏ để chiếm: gần nhất, chưa của mình, không protected, không có thủ clan khác, còn HP. Ưu tiên stronghold/tier cao. */
+/** Chọn mỏ để chiếm: ƯU TIÊN MỎ GẦN TRƯỚC (gần bot nhất), rồi LAN XA DẦN.
+ *  Loại: đã của mình / đang protected / có thủ clan khác / hết HP.
+ *  Thứ tự: (1) gần bot nhất → (2) sát lãnh thổ ta (cheby≤3 cờ built) để mở rộng liền mạch
+ *  → (3) stronghold → (4) tier cao → (5) ít HP hơn. */
 function pickResourceToCapture(map: any, me: Pos, clanId: string, maxDist = 999): ReturnType<typeof parseMines>[number] | null {
   const mines = parseMines(map);
   const now = Date.now();
+  const ownBuilt = parseFlags(map).filter((f) => f.clan_id === clanId && f.is_built === true);
   const cands = mines
     .map((m) => {
+      const mx = Math.floor(n(m.pos_x));
+      const my = Math.floor(n(m.pos_y));
       const raw = (Array.isArray(map?.resources) ? map.resources : []).find(
         (r: any) => String(r?.node_id ?? r?.id) === String(m.node_id)
       );
       const prot = raw?.protection_until ? Date.parse(String(raw.protection_until)) : 0;
       const protectedNow = Number.isFinite(prot) && prot > now;
       const hp = m.struct_hp_current;
-      const dist = manhattan(m.pos_x, m.pos_y, me.x, me.y);
+      const dist = manhattan(mx, my, me.x, me.y);
+      const adj = ownBuilt.some((f) => chebyshev(Math.floor(n(f.pos_x)), Math.floor(n(f.pos_y)), mx, my) <= 3) ? 0 : 1;
       const mine = clanId && m.holder_clan_id === clanId;
       const defOther = resourceDefendedByOtherClan(map, m.node_id, clanId);
-      return { m, hp, dist, protectedNow, mine, defOther };
+      return { m, hp, dist, adj, protectedNow, mine, defOther };
     })
     .filter((x) => x.dist <= maxDist && x.hp > 0 && !x.protectedNow && !x.mine && !x.defOther)
     .sort(
       (a, b) =>
         a.dist - b.dist ||
+        a.adj - b.adj ||
         (b.m.is_stronghold ? 1 : 0) - (a.m.is_stronghold ? 1 : 0) ||
         (b.m.tier || 0) - (a.m.tier || 0) ||
         a.hp - b.hp
@@ -3338,7 +3346,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.finishedAt = new Date().toISOString();
         return summary;
       }
-      // ── Chiếm resource (chủ động đi xa) — sau khi hết cờ địch (hoặc xong central)
+      // ── Chiếm resource (ưu tiên mỏ gần trước, rồi lan xa dần) — sau khi hết cờ địch (hoặc xong central)
       if (settings.auto_capture_resource !== false) {
         const resSum = await runHoangCoCaptureResource(options);
         if (resSum) return resSum;
