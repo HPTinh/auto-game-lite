@@ -1572,22 +1572,7 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       return baseSummary({ reason: `Resource ${target.label}: chưa có cờ chạm (cheby≤1) · không tìm được ô bridge`, nextDelayMs: 10000 });
     }
     const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
-    const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
-    if (distPlace > 0) {
-      if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 0, characterId)) {
-        const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
-        if (smart && (smart.x !== me.x || smart.y !== me.y)) {
-          await leaveDefense(characterId, accessToken, onLog);
-          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-          return baseSummary({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Resource ${target.label}: ô bridge (${cell.x},${cell.y}) có địch → né ${smart.label} @(${smart.x},${smart.y})` });
-        }
-      }
-      await leaveDefense(characterId, accessToken, onLog);
-      const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
-      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-      return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: bridge cắm @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) tiến tới sát mỏ` });
-    }
+    // ── CẮM CỜ TỪ XA: không cần đứng tại ô, chỉ cần ô hợp lệ (kề cờ built, trong tầm).
     try {
       const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
       const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
@@ -1610,12 +1595,23 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
         selfPlacedFlagIds: [...selfPlaced],
         dest: { x: cell.x, y: cell.y },
         action: "place_resource_bridge",
-        reason: `Resource ${target.label}: đã cắm+xây bridge #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · xong check chạm mỏ`,
+        reason: `Resource ${target.label}: cắm TỪ XA #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · xong check chạm mỏ`,
       });
     } catch (e: any) {
       if (isPlaceFullError(e)) return baseSummary({ reason: `Resource ${target.label}: flags FULL · chờ slot bridge`, nextDelayMs: 25000 });
       if (isNotAdjacentError(e)) return baseSummary({ reason: `Resource ${target.label}: not_adjacent @(${cell.x},${cell.y}) · thử ô khác`, nextDelayMs: 10000 });
       if (isPlaceTooCloseToEnemyError(e)) return baseSummary({ reason: `Resource ${target.label}: đè tâm địch @(${cell.x},${cell.y}) · thử ô khác`, nextDelayMs: 10000 });
+      // Lỗi khác (có thể server bắt đứng gần ô) → fallback đi tới ô rồi cắm
+      const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+      if (distPlace > 0) {
+        if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
+          return baseSummary({ status: "WAITING", action: "transit_to_place_resource", etaSeconds: me.eta, dest: { x: cell.x, y: cell.y }, nextDelayMs: Math.max(2000, me.eta * 1000 + 1500), reason: `Resource ${target.label}: (fallback) chờ tới ô @(${cell.x},${cell.y})` });
+        }
+        await leaveDefense(characterId, accessToken, onLog);
+        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
+        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+        return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: (fallback) đi tới ô rồi cắm @(${cell.x},${cell.y}) (cách mỏ ${cellToT})` });
+      }
       onLog?.("WARN", `Resource bridge place: ${(e?.message || e).toString().slice(0, 100)}`);
       return baseSummary({ reason: `Resource ${target.label}: place bridge lỗi · chờ`, nextDelayMs: 10000 });
     }
@@ -3162,25 +3158,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
               (a, b) =>
                 chebyshev(a.pos_x, a.pos_y, cx, cy) - chebyshev(b.pos_x, b.pos_y, cx, cy)
             )[0];
-            const bdist = manhattan(buildFocus.pos_x, buildFocus.pos_y, me.x, me.y);
-            if (bdist > 0) {
-              await leaveDefense(characterId, accessToken, onLog);
-              const mv = await rpc(
-                "rpc_hoang_co_move",
-                { p_character_id: characterId, p_dest_x: buildFocus.pos_x, p_dest_y: buildFocus.pos_y },
-                accessToken
-              );
-              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, bdist * 3)));
-              summary.moved = true;
-              summary.dest = { x: buildFocus.pos_x, y: buildFocus.pos_y };
-              summary.action = "move_to_build_central_bridge";
-              summary.status = "WAITING";
-              summary.etaSeconds = eta;
-              summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-              summary.reason = `Central · đủ ${building.length}/${centralDowCap} cờ dở → ƯU TIÊN xây #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) trước khi cắm tiếp`;
-              summary.finishedAt = new Date().toISOString();
-              return summary;
-            }
+            // XÂY TỪ XA trước; chỉ đi tới ô khi server bắt buộc đứng gần
             try {
               await rpc(
                 "rpc_hoang_co_start_build",
@@ -3189,7 +3167,37 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
               );
               summary.built = 1;
             } catch (be: any) {
-              onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${(be?.message || "").slice(0, 100)}`);
+              const msg = String(be?.message || be?.data?.error || be?.data?.reason || "");
+              const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề/i.test(msg);
+              if (needMove) {
+                const bdist = manhattan(buildFocus.pos_x, buildFocus.pos_y, me.x, me.y);
+                if (bdist > 0) {
+                  await leaveDefense(characterId, accessToken, onLog);
+                  const mv = await rpc(
+                    "rpc_hoang_co_move",
+                    { p_character_id: characterId, p_dest_x: buildFocus.pos_x, p_dest_y: buildFocus.pos_y },
+                    accessToken
+                  );
+                  const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, bdist * 3)));
+                  summary.moved = true;
+                  summary.dest = { x: buildFocus.pos_x, y: buildFocus.pos_y };
+                  summary.action = "move_to_build_central_bridge";
+                  summary.status = "WAITING";
+                  summary.etaSeconds = eta;
+                  summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+                  summary.reason = `Central · đủ ${building.length}/${centralDowCap} cờ dở → (fallback) đi xây #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y})`;
+                  summary.finishedAt = new Date().toISOString();
+                  return summary;
+                }
+                try {
+                  await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: buildFocus.flag_id }, accessToken);
+                  summary.built = 1;
+                } catch (be2: any) {
+                  onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${String(be2?.message || "").slice(0, 100)}`);
+                }
+              } else {
+                onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${msg.slice(0, 100)}`);
+              }
             }
             summary.action = "start_build_central_bridge";
             summary.status = "WAITING";
@@ -3207,25 +3215,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
                 (a, b) =>
                   chebyshev(a.pos_x, a.pos_y, cx, cy) - chebyshev(b.pos_x, b.pos_y, cx, cy)
               )[0];
-              const bdist = manhattan(buildFocus.pos_x, buildFocus.pos_y, me.x, me.y);
-              if (bdist > 0) {
-                await leaveDefense(characterId, accessToken, onLog);
-                const mv = await rpc(
-                  "rpc_hoang_co_move",
-                  { p_character_id: characterId, p_dest_x: buildFocus.pos_x, p_dest_y: buildFocus.pos_y },
-                  accessToken
-                );
-                const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, bdist * 3)));
-                summary.moved = true;
-                summary.dest = { x: buildFocus.pos_x, y: buildFocus.pos_y };
-                summary.action = "move_to_build_central_bridge";
-                summary.status = "WAITING";
-                summary.etaSeconds = eta;
-                summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-                summary.reason = `Central · bridge: đi xây cờ dở #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) → làm mốc chạm central`;
-                summary.finishedAt = new Date().toISOString();
-                return summary;
-              }
+              // XÂY TỪ XA trước; chỉ đi tới ô khi server bắt buộc đứng gần
               try {
                 await rpc(
                   "rpc_hoang_co_start_build",
@@ -3234,7 +3224,37 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
                 );
                 summary.built = 1;
               } catch (be: any) {
-                onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${(be?.message || "").slice(0, 100)}`);
+                const msg = String(be?.message || be?.data?.error || be?.data?.reason || "");
+                const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề/i.test(msg);
+                if (needMove) {
+                  const bdist = manhattan(buildFocus.pos_x, buildFocus.pos_y, me.x, me.y);
+                  if (bdist > 0) {
+                    await leaveDefense(characterId, accessToken, onLog);
+                    const mv = await rpc(
+                      "rpc_hoang_co_move",
+                      { p_character_id: characterId, p_dest_x: buildFocus.pos_x, p_dest_y: buildFocus.pos_y },
+                      accessToken
+                    );
+                    const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, bdist * 3)));
+                    summary.moved = true;
+                    summary.dest = { x: buildFocus.pos_x, y: buildFocus.pos_y };
+                    summary.action = "move_to_build_central_bridge";
+                    summary.status = "WAITING";
+                    summary.etaSeconds = eta;
+                    summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+                    summary.reason = `Central · bridge: (fallback) đi xây cờ dở #${buildFocus.flag_id} @(${buildFocus.pos_x},${buildFocus.pos_y}) → làm mốc chạm central`;
+                    summary.finishedAt = new Date().toISOString();
+                    return summary;
+                  }
+                  try {
+                    await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: buildFocus.flag_id }, accessToken);
+                    summary.built = 1;
+                  } catch (be2: any) {
+                    onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${String(be2?.message || "").slice(0, 100)}`);
+                  }
+                } else {
+                  onLog?.("WARN", `Central · start_build #${buildFocus.flag_id}: ${msg.slice(0, 100)}`);
+                }
               }
               summary.action = "start_build_central_bridge";
               summary.status = "WAITING";
@@ -3305,36 +3325,8 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
             summary.finishedAt = new Date().toISOString();
             return summary;
           }
-          const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
-          if (distPlace > 0) {
-            if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
-              summary.status = "WAITING";
-              summary.action = "transit_to_place_central";
-              summary.dest = cell;
-              summary.etaSeconds = me.eta;
-              summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1500);
-              summary.reason = `Central · chờ tới ô bridge @(${cell.x},${cell.y}) (cách central ${cellToC}) · ETA ${me.eta}s`;
-              summary.finishedAt = new Date().toISOString();
-              return summary;
-            }
-            await leaveDefense(characterId, accessToken, onLog);
-            const mv = await rpc(
-              "rpc_hoang_co_move",
-              { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y },
-              accessToken
-            );
-            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-            summary.moved = true;
-            summary.dest = cell;
-            summary.action = "move_to_place_central_bridge";
-            summary.status = "WAITING";
-            summary.etaSeconds = eta;
-            summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-            summary.reason = `Central · bridge: cắm @(${cell.x},${cell.y}) (cách central ${cellToC}) tiến tới chạm central`;
-            summary.finishedAt = new Date().toISOString();
-            return summary;
-          }
-          // Đứng đúng ô → place ngay + start_build
+          // ── CẮM CỜ TỪ XA: game cho phép cắm tại ô hợp lệ mà KHÔNG cần đứng tại ô đó.
+          // Thử cắm từ xa trước; chỉ fallback di chuyển tới ô khi server bắt buộc (lỗi quá xa/cần đứng gần).
           try {
             const res = await rpc(
               "rpc_hoang_co_place_flag",
@@ -3367,19 +3359,13 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
             }
             summary.status = "WAITING";
             summary.nextDelayMs = pollMs;
-            summary.reason = `Central · đã cắm+xây bridge #${flagId} @(${cell.x},${cell.y}) (cách central ${cellToC}) · xong check chạm central`;
+            summary.reason = `Central · cắm TỪ XA @(${cell.x},${cell.y}) (cách central ${cellToC}) · xong check chạm central`;
+            onLog?.("SUCCESS", summary.reason);
             summary.finishedAt = new Date().toISOString();
             return summary;
-          } catch (e: any) {
-            if (isPlaceTooCloseToEnemyError(e)) {
-              onLog?.("WARN", `Central · place @(${cell.x},${cell.y}) đè tâm/trùng · thử ô khác`);
-              return summary;
-            }
-            if (isNotAdjacentError(e)) {
-              onLog?.("WARN", `Central · not_adjacent @(${cell.x},${cell.y}) · thử ô khác`);
-              return summary;
-            }
-            if (isPlaceFullError(e)) {
+          } catch (pe: any) {
+            const msg = String(pe?.message || pe?.data?.error || pe?.data?.reason || "");
+            if (isPlaceFullError(pe)) {
               summary.status = "WAITING";
               summary.reason = `Central · flags FULL · chờ slot rảnh để bridge`;
               summary.nextDelayMs = 25_000;
@@ -3387,7 +3373,44 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
               summary.finishedAt = new Date().toISOString();
               return summary;
             }
-            onLog?.("WARN", `Central · place bridge: ${(e?.message || e).toString().slice(0, 100)}`);
+            if (isPlaceTooCloseToEnemyError(pe) || isNotAdjacentError(pe)) {
+              onLog?.("WARN", `Central · place @(${cell.x},${cell.y}) không hợp lệ (đè tâm/không kề) · thử ô khác`);
+              summary.status = "WAITING";
+              summary.nextDelayMs = 10_000;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+            // Lỗi khác (có thể server bắt đứng gần ô) → fallback di chuyển tới ô rồi cắm
+            const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+            if (distPlace > 0) {
+              if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
+                summary.status = "WAITING";
+                summary.action = "transit_to_place_central";
+                summary.dest = cell;
+                summary.etaSeconds = me.eta;
+                summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1500);
+                summary.reason = `Central · (fallback) chờ tới ô bridge @(${cell.x},${cell.y}) (cách central ${cellToC}) · ETA ${me.eta}s`;
+                summary.finishedAt = new Date().toISOString();
+                return summary;
+              }
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc(
+                "rpc_hoang_co_move",
+                { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y },
+                accessToken
+              );
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+              summary.moved = true;
+              summary.dest = cell;
+              summary.action = "move_to_place_central_bridge";
+              summary.status = "WAITING";
+              summary.etaSeconds = eta;
+              summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+              summary.reason = `Central · (fallback) đi tới ô rồi cắm @(${cell.x},${cell.y}) (cách central ${cellToC})`;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+            onLog?.("WARN", `Central · place @(${cell.x},${cell.y}) lỗi: ${msg.slice(0, 100)}`);
             summary.status = "WAITING";
             summary.nextDelayMs = 10_000;
             summary.finishedAt = new Date().toISOString();
@@ -3395,24 +3418,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           }
         }
 
-        if (distC > 1) {
-          await leaveDefense(characterId, accessToken, onLog);
-          const mv = await rpc(
-            "rpc_hoang_co_move",
-            { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
-            accessToken
-          );
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distC * 3)));
-          summary.moved = true;
-          summary.dest = { x: cx, y: cy };
-          summary.action = "move_to_attack_central";
-          summary.status = "WAITING";
-          summary.etaSeconds = eta;
-          summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
-          summary.reason = `Central · đi chiếm central @(${cx},${cy}) · ETA ${eta}s`;
-          summary.finishedAt = new Date().toISOString();
-          return summary;
-        }
+        // CÔNG CENTRAL TỪ XA trước; chỉ đi tới tâm khi server bắt buộc đứng gần
         try {
           const res = await rpc(
             "rpc_hoang_co_attack_position",
@@ -3428,9 +3434,29 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
             : `Central · công central HP còn ${rem} · chờ tick sau`;
           summary.nextDelayMs = captured || rem === 0 ? 45_000 : 12_000;
         } catch (ce: any) {
+          const msg = String(ce?.message || ce?.data?.error || ce?.data?.reason || "");
+          const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề|phải/i.test(msg);
+          if (needMove && distC > 1) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc(
+              "rpc_hoang_co_move",
+              { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
+              accessToken
+            );
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distC * 3)));
+            summary.moved = true;
+            summary.dest = { x: cx, y: cy };
+            summary.action = "move_to_attack_central";
+            summary.status = "WAITING";
+            summary.etaSeconds = eta;
+            summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+            summary.reason = `Central · (fallback) đi chiếm central @(${cx},${cy}) · ETA ${eta}s`;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
           summary.action = "attack_position_central";
           summary.status = "WAITING";
-          summary.reason = `Central · công central lỗi: ${(ce?.message || "").slice(0, 120)}`;
+          summary.reason = `Central · công central lỗi: ${msg.slice(0, 120)}`;
           summary.nextDelayMs = 15_000;
         }
         onLog?.("INFO", `HC Phá cờ: ${summary.reason}`);
