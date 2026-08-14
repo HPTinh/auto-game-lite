@@ -3131,10 +3131,13 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const allEnemy = flags.filter((f) => isEnemyFlag(f, clanId));
     let enemyFlags: any[] = filterEnemyFlags(flags, clanId, targetClan);
     // Mode central: phá SẠCH cờ địch trong box central trước, rồi chiếm central
+    centralPlan = planCentralCapture({ map, clanId, centralRadius: settings.central_radius });
     if (breakMode === "central") {
-      centralPlan = planCentralCapture({ map, clanId, centralRadius: settings.central_radius });
       enemyFlags = centralPlan.enemyAround.filter((f: any) => isEnemyFlag(f, clanId));
     }
+    // Luôn thử chiếm central khi: (1) đang ở mode central, HOẶC (2) hết cờ địch để phá mà central chưa chạm.
+    // Fix: tránh bot cắm loang ra (expand) mãi mà không bao giờ đóng cầu vào tâm.
+    const wantCentral = breakMode === "central" || (!enemyFlags.length && !centralPlan.ownReachCentral);
 
     logFlagScan(onLog, flags, clanId, enemyFlags, targetClan);
 
@@ -3142,8 +3145,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
 
     if (!enemyFlags.length) {
       // Mode central: phá sạch cờ địch box central → tiến lên chiếm central
-      if (breakMode === "central") {
-        if (!centralPlan) centralPlan = planCentralCapture({ map, clanId, centralRadius: settings.central_radius });
+      if (wantCentral) {
         const cx = centralPlan.central.x;
         const cy = centralPlan.central.y;
         const holder = (centralPlan.central.holder_clan_id || "").toString();
