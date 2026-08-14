@@ -224,10 +224,13 @@
      (Xem runHoangCoBreakFlagAuto :2717 — khối if(!enemyFlags.length) phân nhánh central.)
 
    A) Chọn target (sortBreakTargets :1007):
-     - filter enemy: isEnemyFlag (clan_id≠mình) + filterEnemyFlags(theo target_clan_name)
-     - skip_defended: bỏ cờ có defenders clan khác (isFlagDefendedByOtherClan :900)
-     - ƯU TIÊN nearPool (ownBuilt cheby≤1) → CHỈ PHÁ
-     - sort: near → focus_attack → gần me → is_built → siege thấp (đang chip) → focus
+      - filter enemy: isEnemyFlag (clan_id≠mình) + filterEnemyFlags(theo target_clan_name)
+      - skip_defended: bỏ cờ có defenders clan khác (isFlagDefendedByOtherClan :900)
+      - ƯU TIÊN nearPool = cờ địch ĐÃ NEAR → CHỈ PHÁ (cấm cắm)
+        · near = ownBuilt cheby≤1 HOẶC NHÂN VẬT đang đứng cheby≤1 cờ địch
+          (canReachEnemyFlag :873 đã tính cả me — fix: đứng gần địch cũng ưu tiên phá)
+        · còn nearPool>0 mà target hiện tại chưa near → bẻ sang phá cờ near, KHÔNG expand
+      - sort: near(me/built) → focus_attack → gần me → is_built → siege thấp → focus
 
   B) Flee linh hoạt (mặc định BẬT, :2832):
      - hostilesNear(player địch) trong fleeRadius
@@ -245,17 +248,20 @@
          · territoryNear=true → chờ 10s sync (không cắm vòng)
          · territoryNear=false + standByCenter → về neo cờ built cắm hop đúng kề
 
-  D) EXPAND khi chưa near (:3107+):
-     - Chờ in_transit (không spam leave+move) — death circle 2
-     - planBridgeToEnemy: neo=ownBuilt gần địch, hopsLeft
-     - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
-     - Cờ dở sát (cheby≤1): chỉ xây, không cắm thêm vòng
-     - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
-     - sticky break_pending_place đến khi place xong
-     - place not_adjacent → exclude ô, thử ô khác (tối đa 4 ô)
-     - place too_close enemy → DỪNG CẮM, force assault tick sau
-     - flags full / build slots full → chỉ xây/chờ
-     - tryChipNearResource (:1095) nếu an toàn (không thủ clan khác), không chen khi dở sát
+   D) EXPAND khi chưa near (:3107+):
+      - Chờ in_transit (không spam leave+move) — death circle 2
+      - planBridgeToEnemy: neo=ownBuilt gần địch, hopsLeft
+      - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
+      - Cờ dở sát (cheby≤1): chỉ xây, không cắm thêm vòng
+      - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
+      - ★ CẮM TỐI ƯU (pickSiegePlaceCell :748): score ưu tiên toEnemy NHỎ NHẤT
+        (cắm sát cờ địch nhất) → CẤM ĐẶT LÙI (progress<0, toEnemy>1 bị loại).
+        Không cắm dính nhau xa địch; mỗi cờ là 1 bước tiến gần địch hơn.
+      - sticky break_pending_place đến khi place xong
+      - place not_adjacent → exclude ô, thử ô khác (tối đa 4 ô)
+      - place too_close enemy → DỪNG CẮM, force assault tick sau
+      - flags full / build slots full → chỉ xây/chờ
+      - tryChipNearResource (:1095) nếu an toàn (không thủ clan khác), không chen khi dở sát
 
   E) leave_defense (hàm :96): chỉ gọi khi rời pin / đổi việc / flee / move đi.
 

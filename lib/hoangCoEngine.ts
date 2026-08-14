@@ -819,21 +819,22 @@ function pickSiegePlaceCell(opts: {
         if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
         const fromA = chebyshev(a.x, a.y, enemy.pos_x, enemy.pos_y);
         const progress = fromA - toEnemy;
-        if (progress < 0 && toEnemy > 2) continue;
+        // Cấm đặt lùi (xa địch hơn neo) — chỉ nhận ô tiến gần địch hoặc ngang hàng
+        if (progress < 0 && toEnemy > 1) continue;
         // Không cắm đúng ô me đang đứng quanh địch nếu me không phải trên cờ mình (tránh vòng)
         if (x === me.x && y === me.y && hop > 0) continue;
 
         let score =
-          toEnemy * 20 +
+          toEnemy * 60 +
           hop * 2 +
-          manhattan(x, y, me.x, me.y) * 0.3 -
-          progress * 15;
-        if (toEnemy === 1) score -= 150;
-        else if (toEnemy === 2) score -= 40;
-        else if (toEnemy >= 3) score += (toEnemy - 2) * 25;
+          manhattan(x, y, me.x, me.y) * 0.1 -
+          progress * 20;
+        if (toEnemy === 1) score -= 200;
+        else if (toEnemy === 2) score -= 60;
+        else if (toEnemy >= 3) score += (toEnemy - 2) * 40;
         if (hop === 1) score -= 50; // bắt buộc ưu kề built
         if (hop > 1) score += 40; // phạt hop>1 (dễ not_adjacent)
-        if (x === enemy.pos_x && y === enemy.pos_y) score -= 200;
+        if (x === enemy.pos_x && y === enemy.pos_y) score -= 300;
         cands.push({ x, y, score });
       }
     }
@@ -870,8 +871,15 @@ function pickSiegePlaceCell(opts: {
  * Cờ clan built chạm 3×3 cờ địch.
  * 3×3 = ô giữa cờ + 8 ô quanh → chebyshev ≤ 1 (KHÔNG dùng ≤2 — dễ “đứng vành” không vào giữa).
  */
-function canReachEnemyFlag(ownBuilt: Flag[], enemy: Flag): boolean {
-  return ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, enemy.pos_x, enemy.pos_y) <= 1);
+function canReachEnemyFlag(
+  ownBuilt: Flag[],
+  enemy: Flag,
+  me?: { x: number; y: number }
+): boolean {
+  // Cờ built mình chạm 3×3 địch (cheby≤1) HOẶC nhân vật đang đứng kề cờ địch (cheby≤1)
+  if (ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, enemy.pos_x, enemy.pos_y) <= 1)) return true;
+  if (me && chebyshev(me.x, me.y, enemy.pos_x, enemy.pos_y) <= 1) return true;
+  return false;
 }
 
 /** Số cờ địch đã chạm được từ cờ built mình */
@@ -1139,8 +1147,8 @@ function sortBreakTargets(
   cfgSiegeMax: number
 ): Flag[] {
   return [...pool].sort((a, b) => {
-    const ra = canReachEnemyFlag(ownBuilt, a) ? 0 : 1;
-    const rb = canReachEnemyFlag(ownBuilt, b) ? 0 : 1;
+    const ra = canReachEnemyFlag(ownBuilt, a, me) ? 0 : 1;
+    const rb = canReachEnemyFlag(ownBuilt, b, me) ? 0 : 1;
     if (ra !== rb) return ra - rb;
     const da = manhattan(a.pos_x, a.pos_y, me.x, me.y);
     const db = manhattan(b.pos_x, b.pos_y, me.x, me.y);
@@ -2901,7 +2909,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
 
     // ── ƯU TIÊN 1: mọi cờ địch ĐÃ NEAR (cờ built mình cheby≤1) → CHỈ PHÁ, cấm expand
     const focusAttackId = Math.floor(n(settings.focus_attack_flag_id, 0)) || 0;
-    const nearPool = undefended.filter((f) => canReachEnemyFlag(ownBuilt, f));
+    const nearPool = undefended.filter((f) => canReachEnemyFlag(ownBuilt, f, me));
     const forceAssaultFromPlace = settings.break_force_assault === true;
     let enemy: Flag;
     let assaultOnly = false;
@@ -2927,7 +2935,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     const distMe = manhattan(destX, destY, me.x, me.y);
     const onSpot = me.x === destX && me.y === destY;
     // territoryNear = cờ built mình chạm 3×3 địch (cheby≤1)
-    const territoryNear = canReachEnemyFlag(ownBuilt, enemy) || assaultOnly;
+    const territoryNear = canReachEnemyFlag(ownBuilt, enemy, me) || assaultOnly;
     // Cờ dở đã sát địch — chỉ XÂY xong, KHÔNG cắm thêm vòng
     const ringBuilding = building.filter(
       (f) => chebyshev(f.pos_x, f.pos_y, destX, destY) <= 1
@@ -3298,7 +3306,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     }
 
     // Có BẤT KỲ cờ near khác → không expand, đợi tick (assault pool)
-    if (nearPool.length > 0 && !canReachEnemyFlag(ownBuilt, enemy) && ringBuilding.length === 0) {
+    if (nearPool.length > 0 && !canReachEnemyFlag(ownBuilt, enemy, me) && ringBuilding.length === 0) {
       summary.status = "WAITING";
       summary.reason = `Phá cờ · còn ${nearPool.length} cờ near · ưu tiên phá, không expand`;
       summary.nextDelayMs = 5_000;
