@@ -920,7 +920,8 @@ function pickPlaceCellTowardTarget(opts: {
   const flags = parseFlags(map);
   const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
   const friendlyDist = (x: number, y: number): number => {
-    if (!ownBuilt.length) return 99;
+    // Chưa có cờ built → neo từ vị trí bot (bootstrap cờ đầu tiên từ chỗ đứng)
+    if (!ownBuilt.length) return chebyshev(me.x, me.y, x, y);
     return Math.min(...ownBuilt.map((f) => chebyshev(f.pos_x, f.pos_y, x, y)));
   };
   const anchors: Pos[] = ownBuilt.length
