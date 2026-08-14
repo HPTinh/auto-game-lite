@@ -850,7 +850,7 @@
           </div>`;
       } else if (featureId === "hoang_co") {
         modalEl.classList.remove("wide");
-        $("modalBody").innerHTML = hoangCoModalHtml(cur);
+        $("modalBody").innerHTML = hoangCoModalHtml(cur, modal.accId, true);
         bindHoangCoModalEvents();
       } else {
         modalEl.classList.remove("wide");
@@ -880,7 +880,7 @@
       return opts;
     }
 
-    function hoangCoModalHtml(draft) {
+    function hoangCoModalHtml(draft, accId, showScanner) {
       const bool = (k, def) => {
         const v = draft[k];
         if (v === undefined || v === null) return def;
@@ -921,11 +921,9 @@
         <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", true)?"checked":""}/><label>Lúc bridge: chip resource (không thủ clan khác)</label></div>
         <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
         <div class="mu" style="font-size:11px;margin-bottom:6px"><b>Nâng cao</b> — quét tập trung &amp; central:</div>
-        <div class="f">
-          <label>Scanner account id</label>
-          <input type="text" data-k="hc_scanner_account_id" value="${esc(draft.hc_scanner_account_id||"")}" placeholder="để trống thì mỗi acc tự quét"/>
-        </div>
-        <div class="mu" style="font-size:10px;margin:2px 0 6px;opacity:.8">Chỉ định 1 acc quét map → bể chung. Acc khác đọc bể chung (đỡ nặng server). Để trống = mỗi acc tự quét như cũ.</div>
+        ${showScanner ? `
+        <div class="f chk"><input type="checkbox" id="hcScannerChk" ${String(draft.hc_scanner_account_id||"") === String(accId)?"checked":""}/><label>Tài khoản này làm <b>Scanner chính</b> (quét map chung)</label></div>
+        <div class="mu" style="font-size:10px;margin:2px 0 6px;opacity:.8">Chỉ nên tick <b>1</b> tài khoản. Acc được tick quét map_state → ghi bể chung; các acc khác đọc bể chung (đỡ nặng). Bỏ tick = acc tự quét như cũ.</div>` : ``}
         <div class="f">
           <label>Bán kính central (ô)</label>
           <input type="number" min="4" max="40" data-k="central_radius" value="${esc(draft.central_radius ?? 12)}"/>
@@ -1091,7 +1089,7 @@
 
       let fieldsHtml = "";
       if (fid === "hoang_co") {
-        fieldsHtml = hoangCoModalHtml(modal.draft);
+        fieldsHtml = hoangCoModalHtml(modal.draft, modal.accId, false);
       } else if (fid === "world_boss") {
         fieldsHtml = `<div class="mu" style="font-size:12px">World Boss không có setting — chỉ bật/tắt feature.</div>`;
       } else if (fid === "craft") {
@@ -1257,6 +1255,14 @@
         if (modal.featureId === "hoang_co") {
           if (Array.isArray(modal.draft?.enemy_clan_list)) settings.enemy_clan_list = modal.draft.enemy_clan_list;
           if (modal.draft?.enemy_clan_list_at) settings.enemy_clan_list_at = modal.draft.enemy_clan_list_at;
+          // Scanner chính: tick checkbox -> gán id acc này; bỏ tick -> clear (nếu trước là acc này)
+          const scEl = document.getElementById("hcScannerChk");
+          if (scEl) {
+            const prev = settings.hc_scanner_account_id || "";
+            settings.hc_scanner_account_id = scEl.checked
+              ? modal.accId
+              : (prev === modal.accId ? "" : prev);
+          }
         }
         const { accId, featureId } = modal;
         await api(`/api/accounts/${accId}/features`, {
