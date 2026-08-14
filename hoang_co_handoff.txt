@@ -92,13 +92,17 @@
   Lỗi server (P0001) quan trọng — engine có hàm detect tương ứng:
     "not_near"      → isNotNearError (:2576). siege khi chưa chạm địch.
     "not_adjacent"  → isNotAdjacentError (:979). place không kề cờ built.
-     too_close/gần địch → isPlaceTooCloseToEnemyError (:1122).
-                       ★ QUY TẮC MỚI (2026-08): được cắm VÀNH cờ địch (cheby≥1)
-                         để tạo near tức thì. Chỉ còn coi là lỗi khi ĐÈ TÂM/TRÙNG
-                         cờ địch (occupied/on_flag). Nên hàm này GIỜ chỉ bắt
-                         on_flag/occupied/overlap/trùng — không bắt "near_enemy".
-                       → canPlaceAt (:955) là hàm chuẩn: cấm occ, cấm tâm địch
-                         (cheby 0), cho phép vành địch (cheby≥1), ngoài grid.
+      too_close/gần địch → isPlaceTooCloseToEnemyError (:1122).
+                        ★ QUY TẮC CẮM/PHÁ MỚI (2026-08, user xác nhận):
+                          Mỗi cờ = tâm 3×3 (vùng toả ±1 mỗi chiều).
+                          CẮM: cấm đặt tâm cờ mình cách tâm địch ≤1 (vì vùng 3×3
+                          phủ lên tâm địch). Được phép cách ≥2 (vùng chỉ chạm vành,
+                          không phủ tâm). Đè tâm (cheby=0) cấm.
+                          PHÁ: chỉ cần cờ đồng minh ĐÃ XÂY (is_built) cách tâm địch
+                          ≤3 (vùng 3×3 hai bên kề/chồng lấp, không cần đè tâm).
+                          → canPlaceAt (:135): cấm occ, cấm tâm địch cheby≤1,
+                            ngoài grid. isPlaceTooCloseToEnemyError GIỜ chỉ bắt
+                            on_flag/occupied/overlap/trùng — không bắt near_enemy.
      max_flag/quota/full → isPlaceFullError (:964).
 
 ================================================================================
@@ -174,7 +178,7 @@
   ── Biến nội bộ LỚN (trong engine, không phải settings) ──
     assaultLock (:2773)    = territoryNear || standByCenter → KHÓA chỉ MOVE+SIEGE,
                              cấm cắm vành/chip/hop. Chống death circle.
-    territoryNear          = ownBuilt.any(cheby≤1 với địch) (canReachEnemyFlag :839)
+    territoryNear          = ownBuilt.any(cheby≤3 với địch, cờ built) (canReachEnemyFlag :873)
     nearPool               = enemyFlags lọc territoryNear → ưu tiên phá, không expand
     phaseLabel             EXPAND_BRIDGE | BUILD_RING_ONLY | ASSAULT_MOVE_CENTER |
                              ASSAULT_SIEGE  (state hiển thị)
@@ -254,9 +258,10 @@
       - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
       - Cờ dở sát (cheby≤1): chỉ xây, không cắm thêm vòng
       - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
-      - ★ CẮM TỐI ƯU (pickSiegePlaceCell :748): score ưu tiên toEnemy NHỎ NHẤT
-        (cắm sát cờ địch nhất) → CẤM ĐẶT LÙI (progress<0, toEnemy>1 bị loại).
-        Không cắm dính nhau xa địch; mỗi cờ là 1 bước tiến gần địch hơn.
+      - ★ CẮM TỐI ƯU (pickSiegePlaceCell :748): cấm toEnemy≤1 (vùng phủ tâm địch),
+        ưu tiên toEnemy=2 (gần địch NHẤT được phép, vùng chỉ chạm vành đủ phá).
+        score: toEnemy=2 → -200, toEnemy=3 → -80, toEnemy≥4 phạt. → CẤM ĐẶT LÙI
+        (progress<0 bị loại). Không cắm dính nhau xa địch; mỗi cờ tiến gần địch hơn.
       - sticky break_pending_place đến khi place xong
       - place not_adjacent → exclude ô, thử ô khác (tối đa 4 ô)
       - place too_close enemy → DỪNG CẮM, force assault tick sau
