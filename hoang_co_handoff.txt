@@ -227,14 +227,14 @@
                     tiến lên central (move nếu cheby>1, rồi attack_position central).
      (Xem runHoangCoBreakFlagAuto :2717 — khối if(!enemyFlags.length) phân nhánh central.)
 
-   A) Chọn target (sortBreakTargets :1007):
-      - filter enemy: isEnemyFlag (clan_id≠mình) + filterEnemyFlags(theo target_clan_name)
-      - skip_defended: bỏ cờ có defenders clan khác (isFlagDefendedByOtherClan :900)
-      - ƯU TIÊN nearPool = cờ địch ĐÃ NEAR → CHỈ PHÁ (cấm cắm)
-        · near = ownBuilt cheby≤1 HOẶC NHÂN VẬT đang đứng cheby≤1 cờ địch
-          (canReachEnemyFlag :873 đã tính cả me — fix: đứng gần địch cũng ưu tiên phá)
-        · còn nearPool>0 mà target hiện tại chưa near → bẻ sang phá cờ near, KHÔNG expand
-      - sort: near(me/built) → focus_attack → gần me → is_built → siege thấp → focus
+    A) Chọn target (sortBreakTargets :1151):
+       - filter enemy: isEnemyFlag (clan_id≠mình) + filterEnemyFlags(theo target_clan_name)
+       - skip_defended: bỏ cờ có defenders clan khác (isFlagDefendedByOtherClan :900)
+       - ƯU TIÊN nearPool = cờ địch ĐÃ NEAR (canReachEnemyFlag cheby≤3) → CHỈ PHÁ (cấm cắm)
+       - sort (sửa 2026-08): (1) cờ built mình cheby≤1 THỰC SỰ sát → xông ngay;
+         (2) cờ GẦN MẶT TRẬN mình nhất (min cheby từ ownBuilt, KHÔNG theo khoảng cách me —
+         đảm bảo bridge đi đúng hướng, không bỏ cờ địch sát để đi cắm cờ xa);
+         (3) tie-break gần me → is_built → siege thấp → focus_attack.
 
   B) Flee linh hoạt (mặc định BẬT, :2832):
      - hostilesNear(player địch) trong fleeRadius
@@ -258,10 +258,13 @@
       - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
       - Cờ dở sát (cheby≤1): chỉ xây, không cắm thêm vòng
       - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
-      - ★ CẮM TỐI ƯU (pickSiegePlaceCell :748): cấm toEnemy≤1 (vùng phủ tâm địch),
-        ưu tiên toEnemy=2 (gần địch NHẤT được phép, vùng chỉ chạm vành đủ phá).
-        score: toEnemy=2 → -200, toEnemy=3 → -80, toEnemy≥4 phạt. → CẤM ĐẶT LÙI
-        (progress<0 bị loại). Không cắm dính nhau xa địch; mỗi cờ tiến gần địch hơn.
+      - ★ CẮM TỐI ƯU (pickSiegePlaceCell :748): cấm toEnemy≤? — THỰC TẾ: cấm toEnemy≤1
+        (vùng phủ tâm địch). QUAN TRỌNG: CHỈ NHẬN ô TIẾN GẦN địch hơn MẶT TRẬN hiện tại
+        (toEnemy < minBuiltToEnemy, minBuiltToEnemy = cheby cờ built gần địch nhất).
+        CẤM đặt ngang hàng / lùi → không cắm cờ sát nhau chồng chất vô nghĩa. Mỗi cờ đặt
+        xong phải đưa mặt trận lại gần địch 1 bước (cheby giảm) cho tới khi đạt cheby≤3
+        (đủ phá theo luật 3×3) thì chuyển ASSAULT. score ưu tiên toEnemy nhỏ + ô sát
+        mặt trận (giữ chuỗi thẳng, không tỏa ngang). Fallback vẫn phải toEnemy<minBuiltToEnemy.
       - sticky break_pending_place đến khi place xong
       - place not_adjacent → exclude ô, thử ô khác (tối đa 4 ô)
       - place too_close enemy → DỪNG CẮM, force assault tick sau

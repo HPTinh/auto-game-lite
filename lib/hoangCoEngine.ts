@@ -795,6 +795,19 @@ function pickSiegePlaceCell(opts: {
       chebyshev(a.x, a.y, enemy.pos_x, enemy.pos_y) - chebyshev(b.x, b.y, enemy.pos_x, enemy.pos_y)
   );
 
+  // Mặt trận = cờ built mình gần địch nhất; minBuiltToEnemy = khoảng cách mặt trận tới địch
+  let frontier: Pos | null = null;
+  let minBuiltToEnemy = 99;
+  if (ownBuilt.length) {
+    const fb = [...ownBuilt].sort(
+      (a, b) =>
+        chebyshev(a.pos_x, a.pos_y, enemy.pos_x, enemy.pos_y) -
+        chebyshev(b.pos_x, b.pos_y, enemy.pos_x, enemy.pos_y)
+    )[0];
+    frontier = { x: fb.pos_x, y: fb.pos_y };
+    minBuiltToEnemy = chebyshev(frontier.x, frontier.y, enemy.pos_x, enemy.pos_y);
+  }
+
   type Cand = { x: number; y: number; score: number };
   const cands: Cand[] = [];
   const seen = new Set<string>();
@@ -818,22 +831,18 @@ function pickSiegePlaceCell(opts: {
         if (toEnemy <= 1) continue;
         // canPlaceAt: cấm occupied / đè tâm địch (cheby≤1) / ngoài grid
         if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
-        const fromA = chebyshev(a.x, a.y, enemy.pos_x, enemy.pos_y);
-        const progress = fromA - toEnemy;
-        // Cấm đặt lùi (xa địch hơn neo) — chỉ nhận ô tiến gần địch hoặc ngang hàng
-        if (progress < 0 && toEnemy > 1) continue;
+        // CHỈ nhận ô TIẾN GẦN địch hơn mặt trận hiện tại (toEnemy < minBuiltToEnemy).
+        // Cấm đặt ngang hàng / lùi → tránh cắm cờ sát nhau chồng chất vô nghĩa.
+        if (toEnemy >= minBuiltToEnemy) continue;
         // Không cắm đúng ô me đang đứng quanh địch nếu me không phải trên cờ mình (tránh vòng)
         if (x === me.x && y === me.y && hop > 0) continue;
 
         let score =
-          toEnemy * 60 +
+          toEnemy * 100 +
           hop * 2 +
-          manhattan(x, y, me.x, me.y) * 0.1 -
-          progress * 20;
-        // Ưu tiên ô gần địch NHẤT được phép: toEnemy=2 (sát vành địch, đã đủ phá, không phủ tâm)
-        if (toEnemy === 2) score -= 200;
-        else if (toEnemy === 3) score -= 80;
-        else if (toEnemy >= 4) score += (toEnemy - 3) * 40;
+          manhattan(x, y, me.x, me.y) * 0.1;
+        // Giữ chuỗi cờ thẳng hàng: ưu tiên ô sát mặt trận (tránh tỏa ngang)
+        if (frontier) score += chebyshev(x, y, frontier.x, frontier.y) * 1.5;
         if (hop === 1) score -= 50; // bắt buộc ưu kề built
         if (hop > 1) score += 40; // phạt hop>1 (dễ not_adjacent)
         if (x === enemy.pos_x && y === enemy.pos_y) score -= 300;
@@ -853,6 +862,9 @@ function pickSiegePlaceCell(opts: {
           const y = enemy.pos_y + dy;
           if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
           if (occ.has(cellKey(x, y))) continue;
+          // Fallback vẫn phải TIẾN GẦN địch hơn mặt trận (tránh cắm lùi/vô nghĩa)
+          if (r >= minBuiltToEnemy) continue;
+          if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
           cands.push({
             x,
             y,
@@ -1143,13 +1155,24 @@ function sortBreakTargets(
   focusAttackId: number,
   cfgSiegeMax: number
 ): Flag[] {
+  // Khoảng cách gần nhất từ cờ built mình tới 1 cờ địch (mặt trận)
+  const minBuiltDist = (f: Flag): number => {
+    if (!ownBuilt.length) return 99;
+    return Math.min(...ownBuilt.map((o) => chebyshev(o.pos_x, o.pos_y, f.pos_x, f.pos_y)));
+  };
   return [...pool].sort((a, b) => {
-    const ra = canReachEnemyFlag(ownBuilt, a) ? 0 : 1;
-    const rb = canReachEnemyFlag(ownBuilt, b) ? 0 : 1;
-    if (ra !== rb) return ra - rb;
-    const da = manhattan(a.pos_x, a.pos_y, me.x, me.y);
-    const db = manhattan(b.pos_x, b.pos_y, me.x, me.y);
+    // 1) Ưu tiên cờ ĐÃ THỰC SỰ sát (cờ built mình cheby≤1) → xông ngay
+    const pa = ownBuilt.some((o) => chebyshev(o.pos_x, o.pos_y, a.pos_x, a.pos_y) <= 1) ? 0 : 1;
+    const pb = ownBuilt.some((o) => chebyshev(o.pos_x, o.pos_y, b.pos_x, b.pos_y) <= 1) ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    // 2) Ưu tiên cờ GẦN MẶT TRẬN mình nhất (đảm bảo bridge đi đúng hướng, không lạc)
+    const da = minBuiltDist(a);
+    const db = minBuiltDist(b);
     if (da !== db) return da - db;
+    // 3) Gần nhân vật (tốc độ) làm tie-break
+    const ma = manhattan(a.pos_x, a.pos_y, me.x, me.y);
+    const mb = manhattan(b.pos_x, b.pos_y, me.x, me.y);
+    if (ma !== mb) return ma - mb;
     const ba = a.is_built === true ? 0 : 1;
     const bb = b.is_built === true ? 0 : 1;
     if (ba !== bb) return ba - bb;
