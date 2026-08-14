@@ -3451,6 +3451,48 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         // rồi mới attack_position. Bridge đã chạm central (reachCentralAny) là đủ điều kiện công,
         // KHÔNG cần cờ built cheby≤1. Nếu bot đang ở xa → đi tới tâm trước (giống runHoangCoAttackCentralAuto).
         const atCenter = manhattan(me.x, me.y, cx, cy) <= 1;
+        // Game yêu cầu cờ BUILT chạm central (cheby≤1) mới công được. Nếu cờ chạm còn DỞ
+        // (vừa cắm tới central nhưng chưa xây) → build nó trước rồi mới tới tâm công (tham khảo thủ-công).
+        const touchDow = building.find((f) => chebyshev(f.pos_x, f.pos_y, cx, cy) <= 1);
+        if (touchDow) {
+          try {
+            await rpc(
+              "rpc_hoang_co_start_build",
+              { p_character_id: characterId, p_flag_id: touchDow.flag_id },
+              accessToken
+            );
+            summary.built = 1;
+          } catch (be: any) {
+            const msg = String(be?.message || be?.data?.error || be?.data?.reason || "");
+            const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề/i.test(msg);
+            if (needMove && manhattan(touchDow.pos_x, touchDow.pos_y, me.x, me.y) > 0) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc(
+                "rpc_hoang_co_move",
+                { p_character_id: characterId, p_dest_x: touchDow.pos_x, p_dest_y: touchDow.pos_y },
+                accessToken
+              );
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+              summary.moved = true;
+              summary.dest = { x: touchDow.pos_x, y: touchDow.pos_y };
+              summary.action = "move_to_build_central_touch";
+              summary.status = "WAITING";
+              summary.etaSeconds = eta;
+              summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2_000);
+              summary.reason = `Central · (cần cờ BUILT chạm central) đi xây cờ chạm #${touchDow.flag_id} @(${touchDow.pos_x},${touchDow.pos_y})`;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+            onLog?.("WARN", `Central · start_build cờ chạm #${touchDow.flag_id}: ${msg.slice(0, 100)}`);
+          }
+          summary.action = "start_build_central_touch";
+          summary.status = "WAITING";
+          summary.nextDelayMs = pollMs;
+          summary.reason = `Central · xây cờ chạm central #${touchDow.flag_id} trước khi công`;
+          onLog?.("SUCCESS", summary.reason);
+          summary.finishedAt = new Date().toISOString();
+          return summary;
+        }
         if (!atCenter) {
           await leaveDefense(characterId, accessToken, onLog);
           const mv = await rpc(
