@@ -842,16 +842,11 @@ function pickSiegePlaceCell(opts: {
         // Không cắm đúng ô me đang đứng quanh địch nếu me không phải trên cờ mình (tránh vòng)
         if (x === me.x && y === me.y && hop > 0) continue;
 
-        let score =
-          toEnemy * 100 +
-          fd * 25 +
-          manhattan(x, y, me.x, me.y) * 0.1;
-        // Giữ chuỗi cờ thẳng hàng: ưu tiên ô sát mặt trận (tránh tỏa ngang)
-        if (frontier) score += chebyshev(x, y, frontier.x, frontier.y) * 1.5;
-        // Ưu tiên kề (cheby≤1) nhất, rồi cheby 2, 3 (robust nếu server chỉ cho kề)
-        if (fd <= 1) score -= 50;
-        else score += (fd - 1) * 20;
-        if (x === enemy.pos_x && y === enemy.pos_y) score -= 300;
+        // Tối ưu khoảng cách: ưu tiên ô GẦN ĐỊCH NHẤT (toEnemy nhỏ nhất, weight áp đảo),
+        // rồi kề sát cờ built (fd nhỏ), cuối là ít di chuyển. Luôn kéo gần cờ địch.
+        let score = toEnemy * 1000 + fd * 30 + manhattan(x, y, me.x, me.y) * 0.1;
+        if (fd <= 1) score -= 40;
+        if (x === enemy.pos_x && y === enemy.pos_y) score -= 500;
         cands.push({ x, y, score });
       }
     }
@@ -876,7 +871,7 @@ function pickSiegePlaceCell(opts: {
           cands.push({
             x,
             y,
-            score: r * 8 + fd * 25 + manhattan(x, y, me.x, me.y) - (r <= 2 ? 30 : 0),
+            score: r * 1000 + fd * 25 + manhattan(x, y, me.x, me.y) * 0.1 - (r <= 2 ? 40 : 0),
           });
         }
       }
@@ -954,11 +949,11 @@ function pickPlaceCellTowardTarget(opts: {
         if (toT >= chebyshev(a.x, a.y, tx, ty)) continue; // tiến gần mục tiêu
         const fd = friendlyDist(x, y);
         if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
-        let score = toT * 100 + fd * 25 + manhattan(x, y, me.x, me.y) * 0.1;
-        if (frontier) score += chebyshev(x, y, frontier.x, frontier.y) * 1.5;
-        if (fd <= 1) score -= 50;
-        else score += (fd - 1) * 20;
-        if (x === tx && y === ty) score -= allowOnTarget ? 200 : 300;
+        // Tối ưu khoảng cách: ưu tiên ô GẦN MỤC TIÊU NHẤT (toT nhỏ nhất, weight áp đảo),
+        // rồi kề sát cờ built (fd nhỏ), cuối là ít di chuyển. Luôn tiến gần mục tiêu.
+        let score = toT * 1000 + fd * 30 + manhattan(x, y, me.x, me.y) * 0.1;
+        if (fd <= 1) score -= 40;
+        if (x === tx && y === ty) score -= allowOnTarget ? 500 : 800;
         cands.push({ x, y, score });
       }
     }
