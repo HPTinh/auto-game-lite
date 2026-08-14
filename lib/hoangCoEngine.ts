@@ -898,15 +898,22 @@ function pickSiegePlaceCell(opts: {
  *   (2) TIẾN GẦN central hơn mặt trận (toC < minBuiltToCentral),
  *   (3) kề cờ đồng minh ĐÃ XÂY (friendlyDist≤3, bằng tầm phá), ưu tiên kề (cheby≤1).
  */
-function pickCentralPlaceCell(opts: {
+/**
+ * Chọn ô cắm tiến dần tới mục tiêu (tx,ty).
+ * Dùng chung cho: central (allowOnTarget=false) và resource (allowOnTarget=true).
+ * Ràng buộc: canPlaceAt.ok + kề cờ built cheby≤3 + tiến gần mục tiêu (toT < minBuiltToTarget).
+ */
+function pickPlaceCellTowardTarget(opts: {
   map: any;
   clanId: string;
   me: Pos;
-  cx: number;
-  cy: number;
+  tx: number;
+  ty: number;
   maxHop?: number;
+  /** true: cho phép đặt TRÊN ô mục tiêu (resource). false: cấm (central) */
+  allowOnTarget?: boolean;
 }): Pos | null {
-  const { map, clanId, me, cx, cy, maxHop = 3 } = opts;
+  const { map, clanId, me, tx, ty, maxHop = 3, allowOnTarget = false } = opts;
   const gridW = Math.max(20, Math.floor(n(map?.config?.grid_w, 85)));
   const gridH = Math.max(20, Math.floor(n(map?.config?.grid_h, 85)));
   const occ = occupiedCells(map);
@@ -919,9 +926,9 @@ function pickCentralPlaceCell(opts: {
   const anchors: Pos[] = ownBuilt.length
     ? ownBuilt.map((f) => ({ x: f.pos_x, y: f.pos_y }))
     : [{ x: me.x, y: me.y }];
-  anchors.sort((a, b) => chebyshev(a.x, a.y, cx, cy) - chebyshev(b.x, b.y, cx, cy));
+  anchors.sort((a, b) => chebyshev(a.x, a.y, tx, ty) - chebyshev(b.x, b.y, tx, ty));
   const frontier = anchors[0] ? { x: anchors[0].x, y: anchors[0].y } : null;
-  const minBuiltToCentral = frontier ? chebyshev(frontier.x, frontier.y, cx, cy) : 99;
+  const minBuiltToTarget = frontier ? chebyshev(frontier.x, frontier.y, tx, ty) : 99;
 
   type Cand = { x: number; y: number; score: number };
   const cands: Cand[] = [];
@@ -937,17 +944,17 @@ function pickCentralPlaceCell(opts: {
         const k = cellKey(x, y);
         if (seen.has(k) || occ.has(k)) continue;
         seen.add(k);
-        const toC = chebyshev(x, y, cx, cy);
-        if (toC < 1) continue; // không đặt trên tâm central
+        const toT = chebyshev(x, y, tx, ty);
+        if (!allowOnTarget && toT < 1) continue; // không đặt trên tâm (central)
         if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
-        if (toC >= minBuiltToCentral) continue; // tiến gần central
+        if (toT >= minBuiltToTarget) continue; // tiến gần mục tiêu
         const fd = friendlyDist(x, y);
         if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
-        let score = toC * 100 + fd * 25 + manhattan(x, y, me.x, me.y) * 0.1;
+        let score = toT * 100 + fd * 25 + manhattan(x, y, me.x, me.y) * 0.1;
         if (frontier) score += chebyshev(x, y, frontier.x, frontier.y) * 1.5;
         if (fd <= 1) score -= 50;
         else score += (fd - 1) * 20;
-        if (x === cx && y === cy) score -= 300;
+        if (x === tx && y === ty) score -= allowOnTarget ? 200 : 300;
         cands.push({ x, y, score });
       }
     }
@@ -955,6 +962,25 @@ function pickCentralPlaceCell(opts: {
   if (!cands.length) return null;
   cands.sort((a, b) => a.score - b.score);
   return { x: cands[0].x, y: cands[0].y };
+}
+
+function pickCentralPlaceCell(opts: {
+  map: any;
+  clanId: string;
+  me: Pos;
+  cx: number;
+  cy: number;
+  maxHop?: number;
+}): Pos | null {
+  return pickPlaceCellTowardTarget({
+    map: opts.map,
+    clanId: opts.clanId,
+    me: opts.me,
+    tx: opts.cx,
+    ty: opts.cy,
+    maxHop: opts.maxHop,
+    allowOnTarget: false,
+  });
 }
 
 /**
@@ -1392,6 +1418,188 @@ async function tryChipNearResource(
   }
   summary.finishedAt = new Date().toISOString();
   return summary;
+}
+
+/** Chọn mỏ để chiếm: gần nhất, chưa của mình, không protected, không có thủ clan khác, còn HP. Ưu tiên stronghold/tier cao. */
+function pickResourceToCapture(map: any, me: Pos, clanId: string, maxDist = 999): ReturnType<typeof parseMines>[number] | null {
+  const mines = parseMines(map);
+  const now = Date.now();
+  const cands = mines
+    .map((m) => {
+      const raw = (Array.isArray(map?.resources) ? map.resources : []).find(
+        (r: any) => String(r?.node_id ?? r?.id) === String(m.node_id)
+      );
+      const prot = raw?.protection_until ? Date.parse(String(raw.protection_until)) : 0;
+      const protectedNow = Number.isFinite(prot) && prot > now;
+      const hp = m.struct_hp_current;
+      const dist = manhattan(m.pos_x, m.pos_y, me.x, me.y);
+      const mine = clanId && m.holder_clan_id === clanId;
+      const defOther = resourceDefendedByOtherClan(map, m.node_id, clanId);
+      return { m, hp, dist, protectedNow, mine, defOther };
+    })
+    .filter((x) => x.dist <= maxDist && x.hp > 0 && !x.protectedNow && !x.mine && !x.defOther)
+    .sort(
+      (a, b) =>
+        a.dist - b.dist ||
+        (b.m.is_stronghold ? 1 : 0) - (a.m.is_stronghold ? 1 : 0) ||
+        (b.m.tier || 0) - (a.m.tier || 0) ||
+        a.hp - b.hp
+    );
+  return cands.length ? cands[0].m : null;
+}
+
+/**
+ * Chiếm resource (mỏ): đứng trên ô mỏ + attack_position lặp tới captured.
+ * BẮT BUỘC có cờ đồng minh ĐÃ XÂY cheby≤1 với mỏ (như central).
+ * Nếu chưa → tự bridge chuỗi cờ tiến tới sát mỏ, rồi mới công.
+ * Chỉ gọi khi không còn cờ địch để phá (ưu tiên phá cờ trước).
+ */
+async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<HoangCoRunSummary | null> {
+  const settings = options.settings || {};
+  if (settings.auto_capture_resource === false) return null;
+  const onLog = options.onLog;
+  const characterId = options.characterId;
+  const accessToken = options.accessToken;
+  const pollMs = 12_000;
+  const onlyWhenEventLive = settings.only_when_event_live !== false;
+  try {
+    const status = await rpc("rpc_hoang_co_status", { p_character_id: characterId }, accessToken);
+    const eventLive = status?.is_event_live === true || status?.season?.status === "event_live";
+    const eligible = status?.eligibility?.eligible !== false;
+    const clanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+    if (onlyWhenEventLive && !eventLive) return null;
+    if (!eligible || !clanId) return null;
+    const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+    const me = myPos(map);
+    if (!me || me.dead) return null;
+    const target = pickResourceToCapture(map, me, clanId, 999);
+    if (!target) return null;
+    const resTile = { x: Math.floor(n(target.pos_x)), y: Math.floor(n(target.pos_y)) };
+    const flags = parseFlags(map);
+    const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
+    const building = incompleteClanFlags(flags, clanId);
+    const touched = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) <= 1);
+
+    const baseSummary = (over: Partial<HoangCoRunSummary>): HoangCoRunSummary => ({
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "WAITING",
+      nextDelayMs: pollMs,
+      phase: "capture_resource",
+      ...over,
+    });
+
+    // ── Đã có cờ chạm mỏ → đi tới ô mỏ + attack_position (reuse loop chip)
+    if (touched) {
+      const chip = await tryChipNearResource({
+        map,
+        me,
+        clanId,
+        characterId,
+        accessToken,
+        settings: { ...settings, resource_attack_radius: 999 },
+        onLog,
+        summary: baseSummary({}),
+      });
+      return chip;
+    }
+
+    // ── Chưa có cờ chạm → bridge chuỗi cờ tới sát mỏ
+    const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
+    const usedFlags = flags.filter((f) => f.clan_id === clanId).length;
+    const maxFlags = Math.floor(n(map?.config?.flag_limit, 30)) || 30;
+
+    // Ưu tiên xây tiếp cờ dở đang tiến gần mỏ (khi đã đủ slot xây)
+    const buildingToward = [...building]
+      .map((f) => ({ f, d: chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) }))
+      .sort((a, b) => a.d - b.d);
+    if (buildingToward.length > 0 && building.length >= cfgMaxBuild) {
+      const focus = buildingToward[0].f;
+      const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
+      if (dist > 0) {
+        if (!isPosSafeFromHostiles(map, clanId, focus.pos_x, focus.pos_y, 1, characterId)) {
+          const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
+          if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+            return baseSummary({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Resource ${target.label}: ô bridge có địch → né ${smart.label} @(${smart.x},${smart.y})` });
+          }
+        }
+        await leaveDefense(characterId, accessToken, onLog);
+        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: focus.pos_x, p_dest_y: focus.pos_y }, accessToken);
+        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
+        return baseSummary({ moved: true, dest: { x: focus.pos_x, y: focus.pos_y }, action: "move_to_build_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: đi xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) → sát mỏ` });
+      }
+      await leaveDefense(characterId, accessToken, onLog);
+      try {
+        await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: focus.flag_id }, accessToken);
+      } catch (be: any) {
+        onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 100)}`);
+      }
+      return baseSummary({ built: 1, flagId: focus.flag_id, action: "start_build_resource_bridge", reason: `Resource ${target.label}: xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y})` });
+    }
+
+    if (usedFlags >= maxFlags) {
+      return baseSummary({ reason: `Resource ${target.label}: flags FULL ${usedFlags}/${maxFlags} · chờ slot để bridge`, nextDelayMs: 25000 });
+    }
+
+    const cell = pickPlaceCellTowardTarget({ map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: true });
+    if (!cell) {
+      return baseSummary({ reason: `Resource ${target.label}: chưa có cờ chạm (cheby≤1) · không tìm được ô bridge`, nextDelayMs: 10000 });
+    }
+    const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
+    const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+    if (distPlace > 0) {
+      if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 1, characterId)) {
+        const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
+        if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+          return baseSummary({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Resource ${target.label}: ô bridge (${cell.x},${cell.y}) có địch → né ${smart.label} @(${smart.x},${smart.y})` });
+        }
+      }
+      await leaveDefense(characterId, accessToken, onLog);
+      const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+      return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: bridge cắm @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) tiến tới sát mỏ` });
+    }
+    try {
+      const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
+      const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
+      let selfPlaced = Array.isArray(settings.self_placed_flag_ids)
+        ? settings.self_placed_flag_ids.map((x: any) => Math.floor(n(x))).filter((x: number) => x > 0)
+        : [];
+      const selfPlacedSet = new Set(selfPlaced);
+      if (flagId && !selfPlacedSet.has(flagId)) selfPlaced.push(flagId);
+      if (flagId) {
+        try {
+          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken);
+        } catch (be: any) {
+          onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 100)}`);
+        }
+      }
+      return baseSummary({
+        placed: 1,
+        built: flagId ? 1 : 0,
+        flagId,
+        selfPlacedFlagIds: [...selfPlaced],
+        dest: { x: cell.x, y: cell.y },
+        action: "place_resource_bridge",
+        reason: `Resource ${target.label}: đã cắm+xây bridge #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · xong check chạm mỏ`,
+      });
+    } catch (e: any) {
+      if (isPlaceFullError(e)) return baseSummary({ reason: `Resource ${target.label}: flags FULL · chờ slot bridge`, nextDelayMs: 25000 });
+      if (isNotAdjacentError(e)) return baseSummary({ reason: `Resource ${target.label}: not_adjacent @(${cell.x},${cell.y}) · thử ô khác`, nextDelayMs: 10000 });
+      if (isPlaceTooCloseToEnemyError(e)) return baseSummary({ reason: `Resource ${target.label}: đè tâm địch @(${cell.x},${cell.y}) · thử ô khác`, nextDelayMs: 10000 });
+      onLog?.("WARN", `Resource bridge place: ${(e?.message || e).toString().slice(0, 100)}`);
+      return baseSummary({ reason: `Resource ${target.label}: place bridge lỗi · chờ`, nextDelayMs: 10000 });
+    }
+  } catch (e: any) {
+    onLog?.("WARN", `runHoangCoCaptureResource: ${(e?.message || e).toString().slice(0, 120)}`);
+    return null;
+  }
 }
 
 export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
@@ -3085,6 +3293,12 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         summary.finishedAt = new Date().toISOString();
         return summary;
       }
+      // ── Chiếm resource (chủ động đi xa) — sau khi hết cờ địch (hoặc xong central)
+      if (settings.auto_capture_resource !== false) {
+        const resSum = await runHoangCoCaptureResource(options);
+        if (resSum) return resSum;
+      }
+
       summary.status = "DONE";
       summary.reason = targetClan
         ? `Không còn cờ bang "${targetClan}" (map có ${allEnemy.length} cờ địch khác / total ${flags.length})`
