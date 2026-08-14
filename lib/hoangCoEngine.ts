@@ -316,13 +316,12 @@ function logFlagScan(
     .slice(0, 14)
     .map(([name, c]) => `${name}×${c}`)
     .join(" · ");
-  const builtN = enemyFlags.filter((f) => f.is_built === true).length;
-  const buildingN = enemyFlags.length - builtN;
+  const ownBuiltN = own.filter((f) => f.is_built === true).length;
+  const ownBuildingN = own.length - ownBuiltN;
   onLog?.(
     "INFO",
-    `HC Phá cờ · SCAN map_state: total=${flags.length} own=${own.length} enemy=${allEnemy.length}` +
-      (targetClan ? ` filter="${targetClan}"→${enemyFlags.length}` : ` target=*→${enemyFlags.length}`) +
-      ` (built ${builtN} / dở ${buildingN})` +
+    `HC Phá cờ · SCAN map_state: total=${flags.length} own=${own.length} (built ${ownBuiltN} / dở ${ownBuildingN}) enemy=${allEnemy.length}` +
+      (targetClan ? ` · target="${targetClan}"→${enemyFlags.length}` : ` · target=*→${enemyFlags.length}`) +
       (clanSummary ? ` · bang: ${clanSummary}${byClan.size > 14 ? "…" : ""}` : "")
   );
   // Liệt kê cờ đang nhắm (tối đa 20) — user check tay map_state
@@ -924,9 +923,10 @@ function pickPlaceCellTowardTarget(opts: {
     if (!ownBuilt.length) return chebyshev(me.x, me.y, x, y);
     return Math.min(...ownBuilt.map((f) => chebyshev(f.pos_x, f.pos_y, x, y)));
   };
-  const anchors: Pos[] = ownBuilt.length
-    ? ownBuilt.map((f) => ({ x: f.pos_x, y: f.pos_y }))
-    : [{ x: me.x, y: me.y }];
+  const anchors: Pos[] = [
+    ...ownBuilt.map((f) => ({ x: f.pos_x, y: f.pos_y })),
+    { x: me.x, y: me.y },
+  ];
   anchors.sort((a, b) => chebyshev(a.x, a.y, tx, ty) - chebyshev(b.x, b.y, tx, ty));
   const frontier = anchors[0] ? { x: anchors[0].x, y: anchors[0].y } : null;
   const minBuiltToTarget = frontier ? chebyshev(frontier.x, frontier.y, tx, ty) : 99;
@@ -950,7 +950,8 @@ function pickPlaceCellTowardTarget(opts: {
         if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
         // Bỏ qua ô có player địch đè lên (tránh cắm vào chỗ bị chiếm); vẫn cho phép địch cự ly 1 (vùng tranh chấp)
         if (!isPosSafeFromHostiles(map, clanId, x, y, 0)) continue;
-        if (toT >= minBuiltToTarget) continue; // tiến gần mục tiêu
+        // Tiến gần mục tiêu theo TỪNG anchor (không bị kẹt bởi mốc toàn cục)
+        if (toT >= chebyshev(a.x, a.y, tx, ty)) continue; // tiến gần mục tiêu
         const fd = friendlyDist(x, y);
         if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
         let score = toT * 100 + fd * 25 + manhattan(x, y, me.x, me.y) * 0.1;
@@ -3182,8 +3183,27 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
               summary.finishedAt = new Date().toISOString();
               return summary;
             }
+            // Không có ô bridge & không cờ dở → tiến gần central để tái neo từ vị trí bot
+            if (distC > 1) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc(
+                "rpc_hoang_co_move",
+                { p_character_id: characterId, p_dest_x: cx, p_dest_y: cy },
+                accessToken
+              );
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distC * 3)));
+              summary.moved = true;
+              summary.dest = { x: cx, y: cy };
+              summary.action = "move_to_central_no_bridge";
+              summary.status = "WAITING";
+              summary.etaSeconds = eta;
+              summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+              summary.reason = `Central · chưa có ô bridge & không cờ dở · tiến gần central @(${cx},${cy}) để cắm bridge`;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
             summary.status = "WAITING";
-            summary.reason = `Central · chưa có cờ chạm central (cheby≤1) · không tìm được ô bridge · chờ`;
+            summary.reason = `Central · đã sát central nhưng chưa có cờ chạm (cheby≤1) · không tìm được ô bridge · chờ`;
             summary.nextDelayMs = 10_000;
             onLog?.("WARN", summary.reason);
             summary.finishedAt = new Date().toISOString();
