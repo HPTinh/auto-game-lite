@@ -479,6 +479,7 @@
             <td>
               <div class="name">${esc(acc.characterName || acc.email)}</div>
               <div class="mu" style="font-size:11px">${esc(acc.email)}</div>
+              <div class="mu" style="font-size:10px">ID: <span style="user-select:all">${esc(acc.id)}</span> <button type="button" class="mini" data-copy="${esc(acc.id)}" title="Copy Account ID" style="font-size:10px;padding:0 4px;line-height:1.4">⧉</button></div>
               <div class="mu" style="font-size:11px">Lv ${v(acc.level)} · VIP ${v(acc.vipLevel)} · Rank ${v(acc.rankLabel)}</div>
               <div class="mu" style="font-size:11px">Power ${fmtNum(acc.power)} · ATK ${fmtNum(acc.atk)} · DEF ${fmtNum(acc.def)} · LS ${fmtNum(acc.spiritStones)}</div>
             </td>
@@ -1406,6 +1407,13 @@
         e.preventDefault();
         e.stopPropagation();
         openModal(gear.dataset.set, gear.dataset.f);
+        return;
+      }
+      const copyBtn = e.target.closest("button[data-copy]");
+      if (copyBtn) {
+        e.preventDefault();
+        try { await navigator.clipboard.writeText(copyBtn.dataset.copy); msg("Đã copy Account ID", true); }
+        catch { msg("Copy ID fail — bôi đen rồi Ctrl+C", false); }
         return;
       }
       const btn = e.target.closest("button[data-act]");
