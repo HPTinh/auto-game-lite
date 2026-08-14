@@ -3536,8 +3536,27 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    // (2) Slot xây full hoặc cờ map full → không cắm
+    // (2) Slot xây full (đủ 3 cờ đồng minh CHƯA xây xong) → KHÔNG THỂ cắm thêm.
+    // Server cấm đặt khi đã có 3 cờ dở. Ưu tiên XÂY XONG ít nhất 1 cờ dở (gần địch
+    // nhất) để có cờ built làm mỏ neo mở rộng, tiếp cận cờ đối phương rồi mới phá tiếp.
     if (buildSlotsFull) {
+      const buildToFree = [...building].sort((a, b) => {
+        const da = chebyshev(a.pos_x, a.pos_y, destX, destY);
+        const db = chebyshev(b.pos_x, b.pos_y, destX, destY);
+        if (da !== db) return da - db;
+        const sa = selfPlacedSet.has(a.flag_id) ? 0 : 1;
+        const sb = selfPlacedSet.has(b.flag_id) ? 0 : 1;
+        if (sa !== sb) return sa - sb;
+        return manhattan(a.pos_x, a.pos_y, me.x, me.y) - manhattan(b.pos_x, b.pos_y, me.x, me.y);
+      })[0];
+      if (buildToFree) {
+        onLog?.(
+          "INFO",
+          `Phá cờ · 3 cờ dở đủ slot (limit ${cfgMaxBuild}) · ƯU TIÊN xây xong #${buildToFree.flag_id}` +
+            ` @(${buildToFree.pos_x},${buildToFree.pos_y}) (gần địch nhất) để có cờ built mở rộng → rồi phá tiếp`
+        );
+        return await doBuildBridge(buildToFree);
+      }
       summary.status = "WAITING";
       summary.reason = `Phá cờ · đủ ${building.length}/${cfgMaxBuild} cờ đang xây · chờ built → #${enemy.flag_id}`;
       summary.nextDelayMs = pollMs;

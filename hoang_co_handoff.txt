@@ -252,12 +252,16 @@
          · territoryNear=true → chờ 10s sync (không cắm vòng)
          · territoryNear=false + standByCenter → về neo cờ built cắm hop đúng kề
 
-   D) EXPAND khi chưa near (:3107+):
-      - Chờ in_transit (không spam leave+move) — death circle 2
-      - planBridgeToEnemy: neo=ownBuilt gần địch, hopsLeft
-      - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
-      - Cờ dở sát (cheby≤1): chỉ xây, không cắm thêm vòng
-      - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
+    D) EXPAND khi chưa near (:3107+):
+       - Chờ in_transit (không spam leave+move) — death circle 2
+       - planBridgeToEnemy: neo=ownBuilt gần địch, hopsLeft
+       - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
+       - Cờ dở sát (cheby≤1): chỉ xây, không cờ vòng
+       - ★ LUẬT 3 CỜ DỞ (limit=flag_building_max, mặc định 3): server CẤM cắm thêm khi
+         đã có 3 cờ đồng minh CHƯA xây xong. Khi buildSlotsFull → ƯU TIÊN XÂY XONG 1 cờ
+         dở GẦN ĐỊCH NHẤT (buildToFree) để có cờ built làm mỏ neo mở rộng, tiếp cận cờ
+         đối phản rồi mới phá tiếp (thay vì chỉ chờ). Xây xong 1 → slot trống → cắm tiếp.
+       - Cắm hopMax=1 từ anchor cờ built (KHÔNG neo từ me trên vành địch)
       - ★ CẮM TỐI ƯU (pickSiegePlaceCell :748): cấm toEnemy≤? — THỰC TẾ: cấm toEnemy≤1
         (vùng phủ tâm địch). QUAN TRỌNG: CHỈ NHẬN ô TIẾN GẦN địch hơn MẶT TRẬN hiện tại
         (toEnemy < minBuiltToEnemy, minBuiltToEnemy = cheby cờ built gần địch nhất).
