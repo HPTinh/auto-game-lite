@@ -5611,8 +5611,71 @@ export default function AutoGameDashboard() {
                     </div>
                   )}
 
+                  {selectedFeatureId === 'hoang_co' && (
+                    <div className="space-y-4">
+                      <div className="rounded border border-amber-900/50 bg-amber-950/10 p-3">
+                        <div className="text-sm font-semibold text-amber-200 mb-1">Auto Hoàng Cổ — Phá cờ & Chiếm tài nguyên</div>
+                        <p className="text-[11px] text-gray-500">Ưu tiên phá cờ địch, sau khi hết cờ mới đi chiếm resource (cần cờ đồng minh cheby≤1 với mỏ). Mode central: phá sạch cờ trong box central rồi chiếm central.</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Chế độ phá</label>
+                          <select value={tempSettings.break_mode || 'any'} onChange={(e) => updateTempSetting('break_mode', e.target.value)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none">
+                            <option value="any">Phá any (gần nhất)</option>
+                            <option value="central">Chiếm central</option>
+                            <option value="clan_wipe">Tất cả cờ 1 bang</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Tên bang cần phá (clan_wipe, trống = mọi địch)</label>
+                          <input value={tempSettings.target_clan_name || ''} onChange={(e) => updateTempSetting('target_clan_name', e.target.value)} placeholder="Tên bang hội" className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none font-mono" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Bán kính central (box)</label>
+                          <input type="number" min={4} value={tempSettings.central_radius ?? 12} onChange={(e) => updateTempSetting('central_radius', Number(e.target.value) || 12)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Acc quét scan tập trung (trống = tự quét)</label>
+                          <input value={tempSettings.hc_scanner_account_id || ''} onChange={(e) => updateTempSetting('hc_scanner_account_id', e.target.value)} placeholder="character id" className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none font-mono" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Scan hết hạn sau (ms)</label>
+                          <input type="number" min={1000} value={tempSettings.scan_stale_ms ?? 8000} onChange={(e) => updateTempSetting('scan_stale_ms', Number(e.target.value) || 8000)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Bán kính chip resource</label>
+                          <input type="number" min={1} value={tempSettings.resource_attack_radius ?? 3} onChange={(e) => updateTempSetting('resource_attack_radius', Number(e.target.value) || 3)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs uppercase tracking-wider text-gray-400">Bán kính né địch (flee)</label>
+                          <input type="number" min={1} max={3} value={tempSettings.flee_radius ?? 2} onChange={(e) => updateTempSetting('flee_radius', Number(e.target.value) || 2)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-amber-500 outline-none" />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded border border-gray-700 bg-gray-900/50 p-3">
+                        <label className="flex items-center gap-2 text-sm text-gray-200">
+                          <input type="checkbox" checked={tempSettings.auto_break_flag === true} onChange={(e) => updateTempSetting('auto_break_flag', e.target.checked)} className="rounded bg-gray-700 border-gray-600 text-amber-500" />
+                          Bật mission Phá cờ (cắm→xây→phá)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-200">
+                          <input type="checkbox" checked={tempSettings.auto_capture_resource !== false} onChange={(e) => updateTempSetting('auto_capture_resource', e.target.checked)} className="rounded bg-gray-700 border-gray-600 text-amber-500" />
+                          Chủ động đi chiếm resource (mỏ)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-200">
+                          <input type="checkbox" checked={tempSettings.attack_near_resource !== false} onChange={(e) => updateTempSetting('attack_near_resource', e.target.checked)} className="rounded bg-gray-700 border-gray-600 text-amber-500" />
+                          Chip resource gần khi rảnh
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-200">
+                          <input type="checkbox" checked={tempSettings.flee_on_enemy_near !== false} onChange={(e) => updateTempSetting('flee_on_enemy_near', e.target.checked)} className="rounded bg-gray-700 border-gray-600 text-amber-500" />
+                          Địch gần → tạm né
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Generic Setting Placeholder for others */}
-                  {!['farm', 'craft', 'origin', 'buff', 'auto_equip', 'breakthrough', 'me_cung', 'ki_ngo', 'claim_exp', 'world_cup_checkin', 'onboarding_claim', 'body_cult', 'achievement', 'world_boss', 'mail_giftcode', 'log', 'stats'].includes(selectedFeatureId) && (
+                  {!['farm', 'craft', 'origin', 'buff', 'auto_equip', 'breakthrough', 'me_cung', 'ki_ngo', 'claim_exp', 'world_cup_checkin', 'onboarding_claim', 'body_cult', 'achievement', 'world_boss', 'mail_giftcode', 'log', 'stats', 'hoang_co'].includes(selectedFeatureId) && (
                     <div className="space-y-1">
                       <label className="block text-xs uppercase tracking-wider text-gray-400">Tuỳ chọn mặc định</label>
                       <select className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-gray-200 focus:border-blue-500 outline-none">
