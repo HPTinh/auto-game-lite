@@ -232,7 +232,12 @@
      - "clan_wipe": giống "any" NHƯNG ép target_clan_name (phá sạch bang đó).
      - "central"  : enemyFlags = planCentralCapture().enemyAround (cờ địch trong
                     box central_radius quanh central). Khi enemyFlags rỗng →
-                    tiến lên central (move nếu cheby>1, rồi attack_position central).
+                    chiếm central NHƯNG BẮT BUỘC phải có cờ đồng minh ĐÃ XÂY chạm
+                    central (cheby≤1, vùng 3×3 phủ tâm central — ownReachCentral).
+                    Nếu chưa có → TỰ BRIDGE: pickCentralPlaceCell (:thêm mới) cắm
+                    chuỗi cờ tiến dần từ cờ mình tới sát central (mỗi cờ kề cờ trước
+                    ≤3, toC<minBuiltToCentral), xây xong rồi mới move lên central và
+                    attack_position central. Chỉ attack_position khi ownReachCentral.
      (Xem runHoangCoBreakFlagAuto :2747 — khối if(!enemyFlags.length) :2832 phân nhánh central.)
 
     A) Chọn target (sortBreakTargets :1151):

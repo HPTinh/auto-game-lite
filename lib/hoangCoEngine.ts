@@ -891,6 +891,73 @@ function pickSiegePlaceCell(opts: {
 }
 
 /**
+ * Chọn ô cắm để bridge tiến tới central (tâm cx,cy).
+ * Quy tắc (2026-08, user xác nhận): cờ chiếm central phải CHẠM central (cheby≤1,
+ * vùng 3×3 phủ tâm central). Ô cắm phải:
+ *   (1) cách tâm central ≥1 (không đặt trên tâm),
+ *   (2) TIẾN GẦN central hơn mặt trận (toC < minBuiltToCentral),
+ *   (3) kề cờ đồng minh ĐÃ XÂY (friendlyDist≤3, bằng tầm phá), ưu tiên kề (cheby≤1).
+ */
+function pickCentralPlaceCell(opts: {
+  map: any;
+  clanId: string;
+  me: Pos;
+  cx: number;
+  cy: number;
+  maxHop?: number;
+}): Pos | null {
+  const { map, clanId, me, cx, cy, maxHop = 3 } = opts;
+  const gridW = Math.max(20, Math.floor(n(map?.config?.grid_w, 85)));
+  const gridH = Math.max(20, Math.floor(n(map?.config?.grid_h, 85)));
+  const occ = occupiedCells(map);
+  const flags = parseFlags(map);
+  const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
+  const friendlyDist = (x: number, y: number): number => {
+    if (!ownBuilt.length) return 99;
+    return Math.min(...ownBuilt.map((f) => chebyshev(f.pos_x, f.pos_y, x, y)));
+  };
+  const anchors: Pos[] = ownBuilt.length
+    ? ownBuilt.map((f) => ({ x: f.pos_x, y: f.pos_y }))
+    : [{ x: me.x, y: me.y }];
+  anchors.sort((a, b) => chebyshev(a.x, a.y, cx, cy) - chebyshev(b.x, b.y, cx, cy));
+  const frontier = anchors[0] ? { x: anchors[0].x, y: anchors[0].y } : null;
+  const minBuiltToCentral = frontier ? chebyshev(frontier.x, frontier.y, cx, cy) : 99;
+
+  type Cand = { x: number; y: number; score: number };
+  const cands: Cand[] = [];
+  const seen = new Set<string>();
+  for (const a of anchors) {
+    for (let dx = -maxHop; dx <= maxHop; dx++) {
+      for (let dy = -maxHop; dy <= maxHop; dy++) {
+        const hop = Math.max(Math.abs(dx), Math.abs(dy));
+        if (hop < 1 || hop > maxHop) continue;
+        const x = a.x + dx;
+        const y = a.y + dy;
+        if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
+        const k = cellKey(x, y);
+        if (seen.has(k) || occ.has(k)) continue;
+        seen.add(k);
+        const toC = chebyshev(x, y, cx, cy);
+        if (toC < 1) continue; // không đặt trên tâm central
+        if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
+        if (toC >= minBuiltToCentral) continue; // tiến gần central
+        const fd = friendlyDist(x, y);
+        if (fd > 3) continue; // mốc neo: kề cờ built (cheby≤3)
+        let score = toC * 100 + fd * 25 + manhattan(x, y, me.x, me.y) * 0.1;
+        if (frontier) score += chebyshev(x, y, frontier.x, frontier.y) * 1.5;
+        if (fd <= 1) score -= 50;
+        else score += (fd - 1) * 20;
+        if (x === cx && y === cy) score -= 300;
+        cands.push({ x, y, score });
+      }
+    }
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => a.score - b.score);
+  return { x: cands[0].x, y: cands[0].y };
+}
+
+/**
  * Cờ clan built chạm 3×3 cờ địch.
  * 3×3 = ô giữa cờ + 8 ô quanh → chebyshev ≤ 1 (KHÔNG dùng ≤2 — dễ “đứng vành” không vào giữa).
  */
@@ -2846,6 +2913,136 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
         const cy = centralPlan.central.y;
         const holder = (centralPlan.central.holder_clan_id || "").toString();
         const distC = chebyshev(me.x, me.y, cx, cy);
+        const ownReachCentral = centralPlan.ownReachCentral;
+
+        // ── Chiếm central BẮT BUỘC phải có cờ đồng minh CHẠM central (cheby≤1).
+        // Nếu chưa có → tự bridge: cắm chuỗi cờ tiến dần tới sát central, rồi mới công.
+        if (!ownReachCentral) {
+          const cell = pickCentralPlaceCell({ map, clanId, me, cx, cy, maxHop: 3 });
+          if (!cell) {
+            summary.status = "WAITING";
+            summary.reason = `Central · chưa có cờ chạm central (cheby≤1) · không tìm được ô bridge · chờ`;
+            summary.nextDelayMs = 10_000;
+            onLog?.("WARN", summary.reason);
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+          const cellToC = chebyshev(cell.x, cell.y, cx, cy);
+          // Ô cắm có địch đứng → né tạm
+          if (!isPosSafeFromHostiles(map, clanId, cell.x, cell.y, 1, characterId)) {
+            const smart = pickSmartSafeDest({
+              map, me, myClanId: clanId, myCharacterId: characterId,
+              ownBuilt, building, nearEnemies: [], safeR: 2,
+            });
+            if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc(
+                "rpc_hoang_co_move",
+                { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y },
+                accessToken
+              );
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+              summary.moved = true;
+              summary.dest = { x: smart.x, y: smart.y };
+              summary.action = "flee_smart_central_bridge";
+              summary.status = "WAITING";
+              summary.etaSeconds = eta;
+              summary.nextDelayMs = Math.max(2_500, eta * 1000 + 1500);
+              summary.reason = `Central · ô bridge (${cell.x},${cell.y}) có địch → né ${smart.label} @(${smart.x},${smart.y})`;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+          }
+          const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+          if (distPlace > 0) {
+            if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
+              summary.status = "WAITING";
+              summary.action = "transit_to_place_central";
+              summary.dest = cell;
+              summary.etaSeconds = me.eta;
+              summary.nextDelayMs = Math.max(2_000, me.eta * 1000 + 1500);
+              summary.reason = `Central · chờ tới ô bridge @(${cell.x},${cell.y}) (cách central ${cellToC}) · ETA ${me.eta}s`;
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc(
+              "rpc_hoang_co_move",
+              { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y },
+              accessToken
+            );
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+            summary.moved = true;
+            summary.dest = cell;
+            summary.action = "move_to_place_central_bridge";
+            summary.status = "WAITING";
+            summary.etaSeconds = eta;
+            summary.nextDelayMs = Math.max(3_000, eta * 1000 + 2000);
+            summary.reason = `Central · bridge: cắm @(${cell.x},${cell.y}) (cách central ${cellToC}) tiến tới chạm central`;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+          // Đứng đúng ô → place ngay + start_build
+          try {
+            const res = await rpc(
+              "rpc_hoang_co_place_flag",
+              { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y },
+              accessToken
+            );
+            const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
+            summary.placed = 1;
+            summary.action = "place_central_bridge";
+            summary.dest = cell;
+            if (flagId) {
+              summary.flagId = flagId;
+              if (!selfPlacedSet.has(flagId)) {
+                selfPlaced.push(flagId);
+                selfPlacedSet.add(flagId);
+              }
+            }
+            summary.selfPlacedFlagIds = [...selfPlaced];
+            if (flagId) {
+              try {
+                await rpc(
+                  "rpc_hoang_co_start_build",
+                  { p_character_id: characterId, p_flag_id: flagId },
+                  accessToken
+                );
+                summary.built = 1;
+              } catch (be: any) {
+                onLog?.("WARN", `Central · start_build fail: ${(be?.message || "").slice(0, 100)}`);
+              }
+            }
+            summary.status = "WAITING";
+            summary.nextDelayMs = pollMs;
+            summary.reason = `Central · đã cắm+xây bridge #${flagId} @(${cell.x},${cell.y}) (cách central ${cellToC}) · xong check chạm central`;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          } catch (e: any) {
+            if (isPlaceTooCloseToEnemyError(e)) {
+              onLog?.("WARN", `Central · place @(${cell.x},${cell.y}) đè tâm/trùng · thử ô khác`);
+              return summary;
+            }
+            if (isNotAdjacentError(e)) {
+              onLog?.("WARN", `Central · not_adjacent @(${cell.x},${cell.y}) · thử ô khác`);
+              return summary;
+            }
+            if (isPlaceFullError(e)) {
+              summary.status = "WAITING";
+              summary.reason = `Central · flags FULL · chờ slot rảnh để bridge`;
+              summary.nextDelayMs = 25_000;
+              onLog?.("WARN", summary.reason);
+              summary.finishedAt = new Date().toISOString();
+              return summary;
+            }
+            onLog?.("WARN", `Central · place bridge: ${(e?.message || e).toString().slice(0, 100)}`);
+            summary.status = "WAITING";
+            summary.nextDelayMs = 10_000;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+        }
+
         if (distC > 1) {
           await leaveDefense(characterId, accessToken, onLog);
           const mv = await rpc(
