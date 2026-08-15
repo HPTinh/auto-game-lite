@@ -1490,8 +1490,8 @@ function pickResourceToCapture(map: any, me: Pos, clanId: string, maxDist = 999)
 
 /**
  * Chiếm resource (mỏ): đứng trên ô mỏ + attack_position lặp tới captured.
- * BẮT BUỘC có cờ đồng minh ĐÃ XÂY cheby≤1 với mỏ (như central).
- * Nếu chưa → tự bridge chuỗi cờ tiến tới sát mỏ, rồi mới công.
+ * BẮT BUỘC có cờ đồng minh ĐÃ XÂY cheby≤2 với mỏ (GIỐNG vệ tinh).
+ * Nếu chưa → tự bridge chuỗi cờ từ cờ clan gần nhất (cheby≤3/lần) tới khi có cờ ≤2, rồi mới công.
  * Chỉ gọi khi không còn cờ địch để phá (ưu tiên phá cờ trước).
  */
 async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<HoangCoRunSummary | null> {
@@ -1519,7 +1519,12 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
     const flags = parseFlags(map);
     const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
     const building = incompleteClanFlags(flags, clanId);
-    const touched = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) <= 1);
+    // Chiếm mỏ GIỐNG hệt vệ tinh:
+    //  BẮT BUỘC có cờ đồng minh BUILT trong cheby <= 2 của mỏ (game không cho công nếu thiếu cờ clan kề).
+    //  Nếu chưa → cắm bridge từ cờ clan GẦN NHẤT (cheby <= 3 placement = nhảy tới 3 ô/lần) cho tới khi có
+    //  cờ nằm trong cheby <= 2. Đã có cờ -> người chơi đứng trên ô mỏ rồi attack_position(resource).
+    const touched = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) <= 2);
+    const touchDow = building.find((f) => chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) <= 2);
 
     const baseSummary = (over: Partial<HoangCoRunSummary>): HoangCoRunSummary => ({
       startedAt: new Date().toISOString(),
@@ -1530,129 +1535,103 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       ...over,
     });
 
-    // ── Đã có cờ chạm mỏ → đi tới ô mỏ + attack_position (reuse loop chip)
-    if (touched) {
-      const chip = await tryChipNearResource({
-        map,
-        me,
-        clanId,
-        characterId,
-        accessToken,
-        settings: { ...settings, resource_attack_radius: 999 },
-        onLog,
-        summary: baseSummary({}),
-      });
-      return chip;
-    }
-
-    // ── Chưa có cờ chạm → bridge chuỗi cờ tới sát mỏ
-    const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
-    const usedFlags = flags.filter((f) => f.clan_id === clanId).length;
-    const maxFlags = Math.floor(n(map?.config?.flag_limit, 30)) || 30;
-
-    // Ưu tiên xây tiếp cờ dở đang tiến gần mỏ (khi đã đủ slot xây)
-    const buildingToward = [...building]
-      .map((f) => ({ f, d: chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) }))
-      .sort((a, b) => a.d - b.d);
-    if (buildingToward.length > 0 && building.length >= cfgMaxBuild) {
-      const focus = buildingToward[0].f;
-      const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
-      if (dist > 0) {
-          if (!isPosSafeFromHostiles(map, clanId, focus.pos_x, focus.pos_y, 0, characterId)) {
-          const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
-          if (smart && (smart.x !== me.x || smart.y !== me.y)) {
-            await leaveDefense(characterId, accessToken, onLog);
-            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
-            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-            return baseSummary({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Resource ${target.label}: ô bridge có địch → né ${smart.label} @(${smart.x},${smart.y})` });
-          }
-        }
-        await leaveDefense(characterId, accessToken, onLog);
-        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: focus.pos_x, p_dest_y: focus.pos_y }, accessToken);
-        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
-        return baseSummary({ moved: true, dest: { x: focus.pos_x, y: focus.pos_y }, action: "move_to_build_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: đi xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) → sát mỏ` });
-      }
-      await leaveDefense(characterId, accessToken, onLog);
+    // ── Cờ chạm mỏ ĐÃ cắm NHƯNG chưa BUILT (cheby <=2) → xây nốt trước
+    if (touchDow) {
       try {
-        await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: focus.flag_id }, accessToken);
+        await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: touchDow.flag_id }, accessToken);
       } catch (be: any) {
-        onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 100)}`);
-      }
-      return baseSummary({ built: 1, flagId: focus.flag_id, action: "start_build_resource_bridge", reason: `Resource ${target.label}: xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y})` });
-    }
-
-    if (usedFlags >= maxFlags) {
-      return baseSummary({ reason: `Resource ${target.label}: flags FULL ${usedFlags}/${maxFlags} · chờ slot để bridge`, nextDelayMs: 25000 });
-    }
-
-    // ── CẮM CỜ TỪ XA: game cho phép cắm cờ mới cách cờ built đồng minh đến cheby ≤ 3 (3x3)
-    // → mỗi lần cắm nhảy tới 3 ô về phía mỏ. Thử lần lượt ô ứng viên; ô bị reject → loại, thử ô kế.
-    const excluded = new Set<string>();
-    let lastCell: Pos | null = null;
-    let placed = false;
-    for (let attempt = 0; attempt < 8 && !placed; attempt++) {
-      const cell = pickPlaceCellTowardTargetList({
-        map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: true, maxFriendlyDist: 3, exclude: excluded,
-      })[0];
-      if (!cell) break;
-      lastCell = cell;
-      const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
-      try {
-        const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
-        const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
-        let selfPlaced = Array.isArray(settings.self_placed_flag_ids)
-          ? settings.self_placed_flag_ids.map((x: any) => Math.floor(n(x))).filter((x: number) => x > 0)
-          : [];
-        const selfPlacedSet = new Set(selfPlaced);
-        if (flagId && !selfPlacedSet.has(flagId)) selfPlaced.push(flagId);
-        if (flagId) {
-          try {
-            await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken);
-          } catch (be: any) {
-            onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 100)}`);
-          }
-        }
-        return baseSummary({
-          placed: 1,
-          built: flagId ? 1 : 0,
-          flagId,
-          selfPlacedFlagIds: [...selfPlaced],
-          dest: { x: cell.x, y: cell.y },
-          action: "place_resource_bridge",
-          reason: `Resource ${target.label}: cắm TỪ XA #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · xong check chạm mỏ`,
-        });
-      } catch (e: any) {
-        if (isPlaceFullError(e)) return baseSummary({ reason: `Resource ${target.label}: flags FULL · chờ slot bridge`, nextDelayMs: 25000 });
-        if (isNotAdjacentError(e) || isPlaceTooCloseToEnemyError(e)) {
-          excluded.add(cellKey(cell.x, cell.y));
-          onLog?.("WARN", `Resource ${target.label} · @(${cell.x},${cell.y}) báo lỗi · đổi ô (${(e?.message || "").toString().slice(0, 60)})`);
-          continue;
-        }
-        // Lỗi khác (có thể server bắt đứng gần ô) → fallback đi tới ô rồi cắm
-        const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
-        if (distPlace > 0) {
-          if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
-            return baseSummary({ status: "WAITING", action: "transit_to_place_resource", etaSeconds: me.eta, dest: { x: cell.x, y: cell.y }, nextDelayMs: Math.max(2000, me.eta * 1000 + 1500), reason: `Resource ${target.label}: (fallback) chờ tới ô @(${cell.x},${cell.y})` });
-          }
+        const msg = String(be?.message || be?.data?.error || be?.data?.reason || "");
+        const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề/i.test(msg);
+        if (needMove && manhattan(touchDow.pos_x, touchDow.pos_y, me.x, me.y) > 0) {
           await leaveDefense(characterId, accessToken, onLog);
-          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-          return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: (fallback) đi tới ô rồi cắm @(${cell.x},${cell.y}) (cách mỏ ${cellToT})` });
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: touchDow.pos_x, p_dest_y: touchDow.pos_y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+          return baseSummary({ moved: true, dest: { x: touchDow.pos_x, y: touchDow.pos_y }, action: "move_to_build_resource_touch", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: đi xây cờ chạm #${touchDow.flag_id} @(${touchDow.pos_x},${touchDow.pos_y})` });
         }
-        onLog?.("WARN", `Resource bridge place: ${(e?.message || e).toString().slice(0, 100)}`);
-        return baseSummary({ reason: `Resource ${target.label}: place bridge lỗi · chờ`, nextDelayMs: 10000 });
+        onLog?.("WARN", `Resource ${target.label} · start_build cờ chạm #${touchDow.flag_id}: ${msg.slice(0, 100)}`);
       }
+      return baseSummary({ built: 1, action: "start_build_resource_touch", reason: `Resource ${target.label} · xây cờ chạm #${touchDow.flag_id} trước khi công` });
     }
-    if (lastCell) {
-      const distPlace = manhattan(lastCell.x, lastCell.y, me.x, me.y);
-      if (distPlace > 0) {
-        await leaveDefense(characterId, accessToken, onLog);
-        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: lastCell.x, p_dest_y: lastCell.y }, accessToken);
-        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-        return baseSummary({ moved: true, dest: { x: lastCell.x, y: lastCell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: (fallback) đi tới ô bridge @(${lastCell.x},${lastCell.y})` });
+
+    // ── CHƯA có cờ clan BUILT trong cheby <= 2 của mỏ → BẮT BUỘC cắm bridge cho tới khi có.
+    if (!touched) {
+      const usedFlags = flags.filter((f) => f.clan_id === clanId).length;
+      const maxFlags = Math.floor(n(map?.config?.flag_limit, 30)) || 30;
+      if (usedFlags >= maxFlags) return baseSummary({ reason: `Resource ${target.label}: flags FULL ${usedFlags}/${maxFlags} · chờ slot bridge`, nextDelayMs: 25000 });
+      const excluded = new Set<string>();
+      let lastCell: Pos | null = null;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        // ưu tiên ô SÁT mỏ (cheby 1) neo từ cờ clan (allowOnTarget:false để không cắm TRÊN ô mỏ,
+        // giữ ô mỏ trống cho bot đứng công). Nếu không kề được, progress dần về phía mỏ.
+        const cell = pickPlaceCellTowardTargetList({
+          map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: false, maxFriendlyDist: 3, exclude: excluded,
+        })[0];
+        if (!cell) break;
+        lastCell = cell;
+        const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
+        try {
+          const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
+          const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
+          let selfPlaced = Array.isArray(settings.self_placed_flag_ids)
+            ? settings.self_placed_flag_ids.map((x: any) => Math.floor(n(x))).filter((x: number) => x > 0)
+            : [];
+          const selfPlacedSet = new Set(selfPlaced);
+          if (flagId && !selfPlacedSet.has(flagId)) selfPlaced.push(flagId);
+          if (flagId) {
+            try { await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken); } catch (be: any) { onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 80)}`); }
+          }
+          return baseSummary({
+            placed: 1,
+            built: flagId ? 1 : 0,
+            flagId,
+            selfPlacedFlagIds: [...selfPlaced],
+            dest: { x: cell.x, y: cell.y },
+            action: "place_resource_bridge",
+            reason: `Resource ${target.label}: cắm bridge #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · chờ cờ clan <=2`,
+          });
+        } catch (e: any) {
+          if (isPlaceFullError(e)) return baseSummary({ reason: `Resource ${target.label}: flags FULL · chờ slot bridge`, nextDelayMs: 25000 });
+          if (isNotAdjacentError(e) || isPlaceTooCloseToEnemyError(e)) {
+            excluded.add(cellKey(cell.x, cell.y));
+            onLog?.("WARN", `Resource ${target.label} · @(${cell.x},${cell.y}) lỗi · đổi ô (${(e?.message || "").toString().slice(0, 60)})`);
+            continue;
+          }
+          // Lỗi khác (thường quá xa) → đi tới ô đó rồi đặt ở lượt sau
+          const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+          if (distPlace > 0) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+            return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: đi tới ô bridge @(${cell.x},${cell.y})` });
+          }
+          onLog?.("WARN", `Resource bridge place: ${(e?.message || e).toString().slice(0, 100)}`);
+          return baseSummary({ reason: `Resource ${target.label}: place bridge lỗi · chờ`, nextDelayMs: 10000 });
+        }
       }
+      if (lastCell) {
+        const distPlace = manhattan(lastCell.x, lastCell.y, me.x, me.y);
+        if (distPlace > 0) {
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: lastCell.x, p_dest_y: lastCell.y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+          return baseSummary({ moved: true, dest: { x: lastCell.x, y: lastCell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: đi tới ô bridge @(${lastCell.x},${lastCell.y})` });
+        }
+      }
+      return baseSummary({ reason: `Resource ${target.label}: chưa có cờ clan <=2 · đang cắm bridge, chờ`, nextDelayMs: 8000 });
     }
-    return baseSummary({ reason: `Resource ${target.label}: không tìm được ô bridge hợp lệ (cần cờ built kề mỏ) · chờ`, nextDelayMs: 10000 });
+
+    // ── ĐÃ có cờ clan BUILT trong cheby <= 2 → đứng trên ô mỏ + attack_position(resource)
+    const chip = await tryChipNearResource({
+      map,
+      me,
+      clanId,
+      characterId,
+      accessToken,
+      settings: { ...settings, resource_attack_radius: 999 },
+      onLog,
+      summary: baseSummary({}),
+    });
+    return chip;
   } catch (e: any) {
     onLog?.("WARN", `runHoangCoCaptureResource: ${(e?.message || e).toString().slice(0, 120)}`);
     return null;
