@@ -1525,6 +1525,7 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
     //  cờ nằm trong cheby <= 2. Đã có cờ -> người chơi đứng trên ô mỏ rồi attack_position(resource).
     const touched = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) <= 2);
     const touchDow = building.find((f) => chebyshev(f.pos_x, f.pos_y, resTile.x, resTile.y) <= 2);
+    const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
 
     const baseSummary = (over: Partial<HoangCoRunSummary>): HoangCoRunSummary => ({
       startedAt: new Date().toISOString(),
@@ -1534,6 +1535,38 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       phase: "capture_resource",
       ...over,
     });
+
+    // ── FIX TREO: đảm bảo mọi cờ clan đã cắm THỰC SỰ ĐANG XÂY (build_progress > 0).
+    // place_flag ok nhưng start_build fail (player xa) → cờ kẹt trạng thái chưa xây, tính vào quota 3/3.
+    const unstarted = [...building]
+      .filter((f) => n(f.build_progress, 0) <= 0)
+      .sort((a, b) => chebyshev(a.pos_x, a.pos_y, resTile.x, resTile.y) - chebyshev(b.pos_x, b.pos_y, resTile.x, resTile.y));
+    if (unstarted.length > 0) {
+      const f = unstarted[0];
+      const dist = manhattan(f.pos_x, f.pos_y, me.x, me.y);
+      if (dist > 0) {
+        if (!isPosSafeFromHostiles(map, clanId, f.pos_x, f.pos_y, 0, characterId)) {
+          const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
+          if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+            return baseSummary({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_start_build", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Resource ${target.label}: ô cờ #${f.flag_id} có địch → né ${smart.label} @(${smart.x},${smart.y})` });
+          }
+        }
+        await leaveDefense(characterId, accessToken, onLog);
+        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: f.pos_x, p_dest_y: f.pos_y }, accessToken);
+        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
+        return baseSummary({ moved: true, dest: { x: f.pos_x, y: f.pos_y }, action: "move_to_start_build_resource", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: đi start_build cờ #${f.flag_id} @(${f.pos_x},${f.pos_y}) (đã cắm nhưng chưa xây)` });
+      }
+      await leaveDefense(characterId, accessToken, onLog);
+      try {
+        await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: f.flag_id }, accessToken);
+      } catch (be: any) {
+        onLog?.("WARN", `Resource ${target.label} · start_build #${f.flag_id}: ${String(be?.message || "").slice(0, 100)}`);
+      }
+      return baseSummary({ built: 1, action: "start_build_unstarted_resource", reason: `Resource ${target.label} · start_build cờ #${f.flag_id} (đã cắm nhưng chưa xây)` });
+    }
 
     // ── Cờ chạm mỏ ĐÃ cắm NHƯNG chưa BUILT (cheby <=2) → xây nốt trước
     if (touchDow) {
@@ -1555,6 +1588,11 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
 
     // ── CHƯA có cờ clan BUILT trong cheby <= 2 của mỏ → BẮT BUỘC cắm bridge cho tới khi có.
     if (!touched) {
+      // Đã đạt quota cờ đang xây (3/3) mà chưa có cờ BUILT <=2 → KHÔNG cắm thêm (tránh lỗi/kẹt),
+      // chờ các cờ đang xây hoàn thành rồi mới cắm tiếp / công.
+      if (building.length >= cfgMaxBuild) {
+        return baseSummary({ reason: `Resource ${target.label}: đang có ${building.length}/${cfgMaxBuild} cờ xây dở · chờ xong rồi cắm tiếp`, nextDelayMs: 5000 });
+      }
       const usedFlags = flags.filter((f) => f.clan_id === clanId).length;
       const maxFlags = Math.floor(n(map?.config?.flag_limit, 30)) || 30;
       if (usedFlags >= maxFlags) return baseSummary({ reason: `Resource ${target.label}: flags FULL ${usedFlags}/${maxFlags} · chờ slot bridge`, nextDelayMs: 25000 });
@@ -1724,6 +1762,7 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       const satTile = { x: cand.sx, y: cand.sy };
       const cityKey = String(sat.city_key || sat.display_order || "");
       const proximity = Math.min(2, Math.max(1, Math.floor(n(map?.config?.attack_proximity_radius, 3)) || 3));
+      const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
 
       // Công vệ tinh BẮT BUỘC cần có cờ đồng minh trong phạm vi cheby <= 2 (vệ tinh không cho công nếu
       // không có cờ clan kề). Người chơi chỉ cần đứng trong phạm vi công (cheby <= proximity) để gọi công.
@@ -1738,6 +1777,40 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
         phase: "capture_satellite",
         ...over,
       });
+
+      // ── FIX TREO: đảm bảo mọi cờ clan đã cắm THỰC SỰ ĐANG XÂY.
+      // Có trường hợp place_flag thành công nhưng start_build thất bại (vd player quá xa) → cờ nằm
+      // ở trạng thái "chưa built, build_progress=0" vĩnh viễn, tính vào quota 3/3 mà không tiến, gây kẹt.
+      // → với mọi cờ building có build_progress <= 0, đi tới và start_build.
+      const unstarted = [...building]
+        .filter((f) => n(f.build_progress, 0) <= 0)
+        .sort((a, b) => chebyshev(a.pos_x, a.pos_y, satTile.x, satTile.y) - chebyshev(b.pos_x, b.pos_y, satTile.x, satTile.y));
+      if (unstarted.length > 0) {
+        const f = unstarted[0];
+        const dist = manhattan(f.pos_x, f.pos_y, me.x, me.y);
+        if (dist > 0) {
+          if (!isPosSafeFromHostiles(map, clanId, f.pos_x, f.pos_y, 0, characterId)) {
+            const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
+            if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+              return base({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_start_build", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Vệ tinh ${cityKey}: ô cờ #${f.flag_id} có địch → né ${smart.label} @(${smart.x},${smart.y})` });
+            }
+          }
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: f.pos_x, p_dest_y: f.pos_y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
+          return base({ moved: true, dest: { x: f.pos_x, y: f.pos_y }, action: "move_to_start_build_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi start_build cờ #${f.flag_id} @(${f.pos_x},${f.pos_y}) (đã cắm nhưng chưa xây)` });
+        }
+        await leaveDefense(characterId, accessToken, onLog);
+        try {
+          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: f.flag_id }, accessToken);
+        } catch (be: any) {
+          onLog?.("WARN", `Vệ tinh ${cityKey} · start_build #${f.flag_id}: ${String(be?.message || "").slice(0, 100)}`);
+        }
+        return base({ built: 1, action: "start_build_unstarted_satellite", reason: `Vệ tinh ${cityKey} · start_build cờ #${f.flag_id} (đã cắm nhưng chưa xây)` });
+      }
 
       // ── Cờ chạm vệ tinh đã cắm NHƯNG chưa BUILT → xây trước
       if (touchDow) {
@@ -1762,6 +1835,11 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       // nhảy tới 3 ô/lần) đến ô SÁT vệ tinh (cheby <= 1 → nằm trong cheby <= 2). Hết cờ → xây, lượt sau
       // cờ thành BUILT → touched=true → mới được công.
       if (!touched) {
+        // Đã đạt quota cờ đang xây (3/3) mà chưa có cờ BUILT <=2 → KHÔNG cắm thêm (tránh lỗi/kẹt),
+        // chờ các cờ đang xây hoàn thành rồi mới cắm tiếp / công.
+        if (building.length >= cfgMaxBuild) {
+          return base({ reason: `Vệ tinh ${cityKey}: đang có ${building.length}/${cfgMaxBuild} cờ xây dở · chờ xong rồi cắm tiếp`, nextDelayMs: 5000 });
+        }
         const excluded = new Set<string>();
         let lastCell: Pos | null = null;
         for (let attempt = 0; attempt < 8; attempt++) {
