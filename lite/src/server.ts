@@ -408,6 +408,88 @@ app.get("/api/accounts/:id/hoang-co/clans", async (req, res) => {
 });
 
 /**
+ * DEBUG Hoàng Cổ: trả về map_state đã gọt gọn để chẩn đoán cắm cờ lung tung.
+ * Chỉ dùng tạm để xem layout cờ clan + vệ tinh. Chạy: fetch('/api/debug/hoang-co') trong console.
+ */
+app.get("/api/debug/hoang-co", async (_req, res) => {
+  try {
+    const accounts = store.list();
+    let runtime: any = null;
+    let accId = "";
+    for (const acc of accounts) {
+      try {
+        const rt = await ensureRuntime(acc.id);
+        if (rt?.accessToken && rt.characterId) {
+          runtime = rt;
+          accId = acc.id;
+          break;
+        }
+      } catch {
+        /* skip */
+      }
+    }
+    if (!runtime?.accessToken || !runtime.characterId) {
+      return res.status(400).json({ ok: false, error: "Chưa có account nào login" });
+    }
+    const BASE_URL = "https://jeassefmlprfnlszgvbs.supabase.co";
+    const GAME_API_KEY = "sb_publishable_vNnNBJooTMczVrWP7qCnhA_479q9nKB";
+    const r = await fetch(`${BASE_URL}/rest/v1/rpc/rpc_hoang_co_map_state`, {
+      method: "POST",
+      headers: {
+        apikey: GAME_API_KEY,
+        authorization: `Bearer ${runtime.accessToken}`,
+        "content-profile": "public",
+        "content-type": "application/json",
+        "x-client-info": "auto-lite/1.0",
+      },
+      body: JSON.stringify({ p_character_id: runtime.characterId }),
+    });
+    const map: any = await r.json();
+    const clanId = String(map?.my_clan_score?.clan_id || map?.eligibility?.clan_id || "");
+    const flags = Array.isArray(map?.flags) ? map.flags : [];
+    const myFlags = flags
+      .filter((f: any) => String(f.clan_id) === clanId)
+      .map((f: any) => ({
+        id: f.flag_id,
+        x: Math.floor(Number(f.pos_x)),
+        y: Math.floor(Number(f.pos_y)),
+        built: f.is_built === true,
+        building: f.is_built !== true,
+      }));
+    const sats = Array.isArray(map?.satellites)
+      ? map.satellites.map((s: any) => ({
+          key: s.city_key,
+          x: Math.floor(Number(s.pos_x)),
+          y: Math.floor(Number(s.pos_y)),
+          holder: String(s.holder_clan_id),
+          hp: s.boss_hp_current ?? s.boss_hp_max,
+        }))
+      : [];
+    const chars = Array.isArray(map?.characters) ? map.characters : [];
+    const me = chars.find((c: any) => String(c.character_id) === String(runtime.characterId)) || null;
+    const cfg = map?.config || {};
+    res.json({
+      ok: true,
+      accountId: accId,
+      clanId,
+      myPos: me ? { x: Math.floor(Number(me.pos_x)), y: Math.floor(Number(me.pos_y)) } : null,
+      config: {
+        central_min_satellites: cfg.central_min_satellites,
+        attack_proximity_radius: cfg.attack_proximity_radius,
+        max_simultaneous_build: cfg.max_simultaneous_build,
+        flag_limit: cfg.flag_limit,
+        grid_w: cfg.grid_w,
+        grid_h: cfg.grid_h,
+      },
+      satellites: sats,
+      myFlags,
+    });
+  } catch (e: any) {
+    res.status(400).json({ ok: false, error: e?.message || "debug fail" });
+  }
+});
+
+/**
  * Tải danh sách recipe — rpc_list_recipes.
  * body.category: alchemy | forging (luyện khí)
  * Lưu vào feature craft.settings.recipe_cache.
