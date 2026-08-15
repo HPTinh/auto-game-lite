@@ -1744,10 +1744,10 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       const sat = cand.s;
       const satTile = { x: cand.sx, y: cand.sy };
       const cityKey = String(sat.city_key || sat.display_order || "");
-      const proximity = Math.max(1, Math.floor(n(map?.config?.attack_proximity_radius, 3)) || 3);
+      const proximity = Math.min(2, Math.max(1, Math.floor(n(map?.config?.attack_proximity_radius, 3)) || 3));
 
-      const touchDow = building.find((f) => chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) <= 1);
-      const touched = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) <= 1);
+      // Công vệ tinh: game cho phép công khi người chơi trong phạm vi cheby <= 2 (không cần cờ chạm).
+      const touchDow = building.find((f) => chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) <= 2);
 
       const base = (over: Partial<HoangCoRunSummary>): HoangCoRunSummary => ({
         startedAt: new Date().toISOString(),
@@ -1776,128 +1776,59 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
         return base({ built: 1, action: "start_build_satellite_touch", reason: `Vệ tinh ${cityKey} · xây cờ chạm #${touchDow.flag_id} trước khi công` });
       }
 
-      // ── Ưu tiên xây nốt cờ DỞ đang tiến gần vệ tinh (giới hạn max_simultaneous_build)
-      // Giống central/resource: nếu đã có đủ cờ đang xây (vd 3), KHÔNG cắm mới mà đi xây cho xong.
-      const cfgMaxBuildSat = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
-      const buildingTowardSat = [...building]
-        .map((f) => ({ f, d: chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) }))
-        .sort((a, b) => a.d - b.d);
-      if (buildingTowardSat.length > 0 && building.length >= cfgMaxBuildSat) {
-        const focus = buildingTowardSat[0].f;
-        const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
-        if (dist > 0) {
-          if (!isPosSafeFromHostiles(map, clanId, focus.pos_x, focus.pos_y, 0, characterId)) {
-            const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
-            if (smart && (smart.x !== me.x || smart.y !== me.y)) {
-              await leaveDefense(characterId, accessToken, onLog);
-              const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
-              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
-              return base({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Vệ tinh ${cityKey}: ô bridge có địch → né ${smart.label} @(${smart.x},${smart.y})` });
-            }
-          }
-          await leaveDefense(characterId, accessToken, onLog);
-          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: focus.pos_x, p_dest_y: focus.pos_y }, accessToken);
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
-          return base({ moved: true, dest: { x: focus.pos_x, y: focus.pos_y }, action: "move_to_build_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) → sát vệ tinh` });
-        }
-        await leaveDefense(characterId, accessToken, onLog);
+      // ── Đã trong tầm công (cheby <= 2) → CÔNG LUÔN (không cần cắm cờ bridge)
+      const within = chebyshev(me.x, me.y, satTile.x, satTile.y) <= proximity;
+      if (within) {
         try {
-          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: focus.flag_id }, accessToken);
-        } catch (be: any) {
-          onLog?.("WARN", `Vệ tinh ${cityKey} · start_build bridge: ${(be?.message || "").slice(0, 100)}`);
-        }
-        return base({ built: 1, flagId: focus.flag_id, action: "start_build_satellite_bridge", reason: `Vệ tinh ${cityKey}: xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y})` });
-      }
-
-      // ── Chưa có cờ chạm → bridge cờ sát vệ tinh (cắm từ xa). Game cho phép cắm cờ mới
-      // cách cờ built đồng minh đến cheby ≤ 3 (3x3) → mỗi lần cắm nhảy tới 3 ô về phía vệ tinh.
-      // Bridge luôn neo từ cờ built GẦN vệ tinh NHẤT (frontier) → xây từ cờ mình tới sat.
-      if (!touched) {
-        const excluded = new Set<string>();
-        let lastCell: Pos | null = null;
-        for (let attempt = 0; attempt < 8; attempt++) {
-          const cell = pickPlaceCellTowardTargetList({
-            map, clanId, me, tx: satTile.x, ty: satTile.y, maxHop: 3, allowOnTarget: false, maxFriendlyDist: 3, exclude: excluded,
-          })[0];
-          if (!cell) break;
-          lastCell = cell;
-          const cellToT = chebyshev(cell.x, cell.y, satTile.x, satTile.y);
-          try {
-            const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
-            const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
-            if (flagId) {
+          const res = await rpc(
+            "rpc_hoang_co_attack_position",
+            { p_character_id: characterId, p_target_kind: "satellite", p_target_id: cityKey },
+            accessToken
+          );
+          const captured = res?.captured === true;
+          const rem = n(res?.remaining_hp, -1);
+          onLog?.("INFO", `Vệ tinh ${cityKey} · công: captured=${captured} remaining_hp=${rem}`);
+          return base({ action: "attack_position_satellite", reason: captured || rem === 0 ? `Vệ tinh ${cityKey} · ĐÃ CHIẾM` : `Vệ tinh ${cityKey} · công HP còn ${rem} · chờ tick` });
+        } catch (ae: any) {
+          const msg = String(ae?.message || ae?.data?.error || ae?.data?.reason || "");
+          // Công bị từ chối do thiếu cờ chạm → fallback: cắm 1 cờ chạm gần vệ tinh rồi công sau
+          const needFlag = /cờ|flag|phải có|must|adjac|kề|touch|chạm/i.test(msg);
+          if (needFlag) {
+            const cell = pickPlaceCellTowardTargetList({
+              map, clanId, me, tx: satTile.x, ty: satTile.y, maxHop: 3, allowOnTarget: false, maxFriendlyDist: 3,
+            })[0];
+            if (cell) {
               try {
-                await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken);
-              } catch (be: any) {
-                onLog?.("WARN", `Vệ tinh ${cityKey} · start_build: ${(be?.message || "").slice(0, 100)}`);
+                const pr = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
+                const flagId = Math.floor(n(pr?.flag?.flag_id || pr?.flag_id, 0));
+                if (flagId) {
+                  try { await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken); } catch (be: any) { onLog?.("WARN", `Vệ tinh ${cityKey} · start_build: ${(be?.message || "").slice(0, 80)}`); }
+                }
+                return base({ placed: 1, built: flagId ? 1 : 0, flagId, dest: { x: cell.x, y: cell.y }, action: "place_satellite_bridge", reason: `Vệ tinh ${cityKey}: (fallback) cắm cờ chạm #${flagId} @(${cell.x},${cell.y}) · công sau` });
+              } catch (pe: any) {
+                if (isPlaceFullError(pe)) return base({ reason: `Vệ tinh ${cityKey}: flags FULL · chờ slot`, nextDelayMs: 25_000 });
+                onLog?.("WARN", `Vệ tinh ${cityKey} · fallback bridge: ${String(pe?.message || "").slice(0, 80)}`);
               }
             }
-            return base({ placed: 1, built: flagId ? 1 : 0, flagId, dest: { x: cell.x, y: cell.y }, action: "place_satellite_bridge", reason: `Vệ tinh ${cityKey}: cắm TỪ XA #${flagId} @(${cell.x},${cell.y}) (cách ${cellToT}) · xong check chạm` });
-          } catch (pe: any) {
-            const msg = String(pe?.message || pe?.data?.error || pe?.data?.reason || "");
-            if (isPlaceFullError(pe)) return base({ reason: `Vệ tinh ${cityKey}: flags FULL · chờ slot`, nextDelayMs: 25_000 });
-            // không hợp lệ (không kề cờ / quá gần địch) → loại ô này, thử ô khác thực sự
-            if (isPlaceTooCloseToEnemyError(pe) || isNotAdjacentError(pe)) {
-              excluded.add(cellKey(cell.x, cell.y));
-              onLog?.("WARN", `Vệ tinh ${cityKey} · @(${cell.x},${cell.y}) báo lỗi · đổi ô (${msg.slice(0, 60)})`);
-              continue;
-            }
-            // lỗi khác (thường quá xa → cần đi tới) → đi rồi đặt ở lượt sau
-            const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
-            if (distPlace > 0) {
-              await leaveDefense(characterId, accessToken, onLog);
-              const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
-              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-              return base({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi tới ô bridge @(${cell.x},${cell.y})` });
-            }
-            onLog?.("WARN", `Vệ tinh ${cityKey} · place lỗi: ${msg.slice(0, 100)}`);
-            return base({ reason: `Vệ tinh ${cityKey}: place lỗi · chờ`, nextDelayMs: 10_000 });
           }
-        }
-        if (lastCell) {
-          const distPlace = manhattan(lastCell.x, lastCell.y, me.x, me.y);
-          if (distPlace > 0) {
-            await leaveDefense(characterId, accessToken, onLog);
-            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: lastCell.x, p_dest_y: lastCell.y }, accessToken);
-            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-            return base({ moved: true, dest: { x: lastCell.x, y: lastCell.y }, action: "move_to_place_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi tới ô bridge @(${lastCell.x},${lastCell.y})` });
-          }
-        }
-        return base({ reason: `Vệ tinh ${cityKey}: không tìm được ô bridge hợp lệ (cần cờ built kề vệ tinh) · chờ`, nextDelayMs: 10_000 });
-      }
-
-      // ── Đã có cờ chạm → đi sát vệ tinh (trong attack_proximity_radius) rồi công
-      const within = chebyshev(me.x, me.y, satTile.x, satTile.y) <= proximity;
-      if (!within) {
-        const dest = findSatelliteStandCell(map, me, satTile, proximity, clanId) ?? { x: satTile.x, y: satTile.y };
-        await leaveDefense(characterId, accessToken, onLog);
-        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: dest.x, p_dest_y: dest.y }, accessToken);
-        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, manhattan(dest.x, dest.y, me.x, me.y) * 3)));
-        return base({ moved: true, dest, action: "move_to_attack_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi sát vệ tinh @(${dest.x},${dest.y}) để công` });
-      }
-
-      try {
-        const res = await rpc(
-          "rpc_hoang_co_attack_position",
-          { p_character_id: characterId, p_target_kind: "satellite", p_target_id: cityKey },
-          accessToken
-        );
-        const captured = res?.captured === true;
-        const rem = n(res?.remaining_hp, -1);
-        onLog?.("INFO", `Vệ tinh ${cityKey} · công: captured=${captured} remaining_hp=${rem}`);
-        return base({ action: "attack_position_satellite", reason: captured || rem === 0 ? `Vệ tinh ${cityKey} · ĐÃ CHIẾM` : `Vệ tinh ${cityKey} · công HP còn ${rem} · chờ tick` });
-      } catch (ae: any) {
-        const msg = String(ae?.message || ae?.data?.error || ae?.data?.reason || "");
-        const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề|phải/i.test(msg);
-        if (needMove) {
+          // Lỗi khác (vd vẫn quá xa) → đi sát rồi công
           const dest = findSatelliteStandCell(map, me, satTile, proximity, clanId) ?? { x: satTile.x, y: satTile.y };
-          await leaveDefense(characterId, accessToken, onLog);
-          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: dest.x, p_dest_y: dest.y }, accessToken);
-          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, manhattan(dest.x, dest.y, me.x, me.y) * 3)));
-          return base({ moved: true, dest, action: "move_to_attack_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: (fallback) đi sát vệ tinh @(${dest.x},${dest.y})` });
+          if (manhattan(dest.x, dest.y, me.x, me.y) > 0) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: dest.x, p_dest_y: dest.y }, accessToken);
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, manhattan(dest.x, dest.y, me.x, me.y) * 3)));
+            return base({ moved: true, dest, action: "move_to_attack_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: (fallback) đi sát vệ tinh @(${dest.x},${dest.y})` });
+          }
+          return base({ action: "attack_position_satellite", reason: `Vệ tinh ${cityKey} · công lỗi: ${msg.slice(0, 120)}`, nextDelayMs: 15_000 });
         }
-        return base({ action: "attack_position_satellite", reason: `Vệ tinh ${cityKey} · công lỗi: ${msg.slice(0, 120)}`, nextDelayMs: 15_000 });
       }
+
+      // ── Chưa trong tầm → đi tới ô đứng cách <=2 rồi công (không cắm cờ bridge)
+      const dest = findSatelliteStandCell(map, me, satTile, proximity, clanId) ?? { x: satTile.x, y: satTile.y };
+      await leaveDefense(characterId, accessToken, onLog);
+      const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: dest.x, p_dest_y: dest.y }, accessToken);
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, manhattan(dest.x, dest.y, me.x, me.y) * 3)));
+      return base({ moved: true, dest, action: "move_to_attack_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi sát vệ tinh @(${dest.x},${dest.y}) để công` });
     } catch (e: any) {
       onLog?.("WARN", `runHoangCoCaptureSatellite: ${(e?.message || e).toString().slice(0, 120)}`);
       return null;
