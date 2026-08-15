@@ -1772,6 +1772,39 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
         return base({ built: 1, action: "start_build_satellite_touch", reason: `Vệ tinh ${cityKey} · xây cờ chạm #${touchDow.flag_id} trước khi công` });
       }
 
+      // ── Ưu tiên xây nốt cờ DỞ đang tiến gần vệ tinh (giới hạn max_simultaneous_build)
+      // Giống central/resource: nếu đã có đủ cờ đang xây (vd 3), KHÔNG cắm mới mà đi xây cho xong.
+      const cfgMaxBuildSat = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
+      const buildingTowardSat = [...building]
+        .map((f) => ({ f, d: chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) }))
+        .sort((a, b) => a.d - b.d);
+      if (buildingTowardSat.length > 0 && building.length >= cfgMaxBuildSat) {
+        const focus = buildingTowardSat[0].f;
+        const dist = manhattan(focus.pos_x, focus.pos_y, me.x, me.y);
+        if (dist > 0) {
+          if (!isPosSafeFromHostiles(map, clanId, focus.pos_x, focus.pos_y, 0, characterId)) {
+            const smart = pickSmartSafeDest({ map, me, myClanId: clanId, myCharacterId: characterId, ownBuilt, building, nearEnemies: [], safeR: 2 });
+            if (smart && (smart.x !== me.x || smart.y !== me.y)) {
+              await leaveDefense(characterId, accessToken, onLog);
+              const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: smart.x, p_dest_y: smart.y }, accessToken);
+              const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+              return base({ moved: true, dest: { x: smart.x, y: smart.y }, action: "flee_smart_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(2500, eta * 1000 + 1500), reason: `Vệ tinh ${cityKey}: ô bridge có địch → né ${smart.label} @(${smart.x},${smart.y})` });
+            }
+          }
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: focus.pos_x, p_dest_y: focus.pos_y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
+          return base({ moved: true, dest: { x: focus.pos_x, y: focus.pos_y }, action: "move_to_build_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y}) → sát vệ tinh` });
+        }
+        await leaveDefense(characterId, accessToken, onLog);
+        try {
+          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: focus.flag_id }, accessToken);
+        } catch (be: any) {
+          onLog?.("WARN", `Vệ tinh ${cityKey} · start_build bridge: ${(be?.message || "").slice(0, 100)}`);
+        }
+        return base({ built: 1, flagId: focus.flag_id, action: "start_build_satellite_bridge", reason: `Vệ tinh ${cityKey}: xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y})` });
+      }
+
       // ── Chưa có cờ chạm → bridge cờ sát vệ tinh (cắm từ xa, PHẢI kề cờ built đồng minh)
       // Bridge luôn neo từ cờ built GẦN vệ tinh NHẤT (frontier) → đúng ý: xây từ cờ mình tới sat,
       // không cắm từ vị trí bot đứng. maxFriendlyDist:1 = game bắt kề sát.
