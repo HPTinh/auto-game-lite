@@ -1536,6 +1536,23 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       ...over,
     });
 
+    // ── BƯỚC 0: phá cờ đối phương quanh mỏ (bắt buộc trước khi cắm cờ đồng minh).
+    const sieged = await trySiegeEnemyFlagNear({
+      map,
+      me,
+      clanId,
+      characterId,
+      accessToken,
+      onLog,
+      tx: resTile.x,
+      ty: resTile.y,
+      radius: 3,
+      baseSummary: baseSummary,
+      label: `Resource ${target.label}`,
+      pollMs,
+    });
+    if (sieged) return sieged;
+
     // ── FIX TREO: đảm bảo mọi cờ clan đã cắm THỰC SỰ ĐANG XÂY (build_progress > 0).
     // place_flag ok nhưng start_build fail (player xa) → cờ kẹt trạng thái chưa xây, tính vào quota 3/3.
     const unstarted = [...building]
@@ -1702,6 +1719,78 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
   }
 
   /**
+   * Phá cờ đối phương quanh một mục tiêu (vệ tinh / mỏ) trước khi cắm cờ đồng minh.
+   * Game yêu cầu: muốn cắm cờ/chiếm mục tiêu bị cờ địch khóa thì phải phá cờ địch trước.
+   * Trả summary nếu đang phá (caller return luôn), hoặc null nếu không có cờ địch gần.
+   * Cơ chế: đứng trên ô cờ địch → rpc_hoang_co_siege_flag (giống phá cờ mode).
+   */
+  async function trySiegeEnemyFlagNear(opts: {
+    map: any;
+    me: Pos;
+    clanId: string;
+    characterId: string;
+    accessToken: string;
+    onLog?: HoangCoAutoOptions["onLog"];
+    tx: number;
+    ty: number;
+    radius?: number;
+    baseSummary: (o: Partial<HoangCoRunSummary>) => HoangCoRunSummary;
+    label: string;
+    pollMs: number;
+  }): Promise<HoangCoRunSummary | null> {
+    const radius = opts.radius ?? 3;
+    const enemies = parseFlags(opts.map).filter((f: any) => isEnemyFlag(f, opts.clanId));
+    const near = enemies
+      .map((f: any) => ({ f, d: chebyshev(f.pos_x, f.pos_y, opts.tx, opts.ty) }))
+      .filter((x: any) => x.d <= radius)
+      .sort(
+        (a: any, b: any) =>
+          a.d - b.d ||
+          manhattan(a.f.pos_x, a.f.pos_y, opts.me.x, opts.me.y) - manhattan(b.f.pos_x, b.f.pos_y, opts.me.x, opts.me.y)
+      )[0];
+    if (!near) return null;
+    const ef = near.f;
+    const dist = manhattan(ef.pos_x, ef.pos_y, opts.me.x, opts.me.y);
+    if (dist > 0) {
+      await leaveDefense(opts.characterId, opts.accessToken, opts.onLog);
+      const mv = await rpc(
+        "rpc_hoang_co_move",
+        { p_character_id: opts.characterId, p_dest_x: ef.pos_x, p_dest_y: ef.pos_y },
+        opts.accessToken
+      );
+      const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+      return opts.baseSummary({
+        moved: true,
+        dest: { x: ef.pos_x, y: ef.pos_y },
+        action: "move_to_siege_enemy_flag",
+        etaSeconds: eta,
+        nextDelayMs: Math.max(3000, eta * 1000 + 2000),
+        reason: `${opts.label}: đi phá cờ địch #${ef.flag_id} @(${ef.pos_x},${ef.pos_y}) (cách mục tiêu ${near.d})`,
+      });
+    }
+    try {
+      const res = await rpc(
+        "rpc_hoang_co_siege_flag",
+        { p_character_id: opts.characterId, p_flag_id: ef.flag_id },
+        opts.accessToken
+      );
+      return opts.baseSummary({
+        action: "siege_enemy_flag",
+        siegePoints: n(res?.siege_points, 0),
+        siegeMax: n(res?.siege_max, 0),
+        nextDelayMs: opts.pollMs,
+        reason: `${opts.label}: phá cờ địch #${ef.flag_id} · siege ${n(res?.siege_points)}/${n(res?.siege_max)}`,
+      });
+    } catch (e: any) {
+      return opts.baseSummary({
+        action: "siege_enemy_flag",
+        nextDelayMs: 15_000,
+        reason: `${opts.label}: phá cờ địch #${ef.flag_id} lỗi: ${(e?.message || e).toString().slice(0, 100)}`,
+      });
+    }
+  }
+
+  /**
    * Chiếm vệ tinh (satellite) để đạt điều kiện công central.
    * Game chặn công central nếu clan chưa giữ đủ `central_min_satellites` vệ tinh
    * (báo lỗi insufficient_satellites). Quy trình: chọn vệ tinh GẦN NHẤT chưa thuộc
@@ -1777,6 +1866,24 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
         phase: "capture_satellite",
         ...over,
       });
+
+      // ── BƯỚC 0: phá cờ đối phương quanh vệ tinh (bắt buộc trước khi cắm cờ đồng minh).
+      // Nếu mục tiêu bị cờ địch khóa, phải phá cờ địch trong bán kính cheby <= 3 trước.
+      const sieged = await trySiegeEnemyFlagNear({
+        map,
+        me,
+        clanId,
+        characterId,
+        accessToken,
+        onLog,
+        tx: satTile.x,
+        ty: satTile.y,
+        radius: 3,
+        baseSummary: base,
+        label: `Vệ tinh ${cityKey}`,
+        pollMs,
+      });
+      if (sieged) return sieged;
 
       // ── FIX TREO: đảm bảo mọi cờ clan đã cắm THỰC SỰ ĐANG XÂY.
       // Có trường hợp place_flag thành công nhưng start_build thất bại (vd player quá xa) → cờ nằm
