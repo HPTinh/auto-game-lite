@@ -3355,10 +3355,34 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     if (!enemyFlags.length) {
       // Mode central: phá sạch cờ địch box central → tiến lên chiếm central
       if (wantCentral) {
-        // Gate: phải chiếm đủ vệ tinh (central_min_satellites) MỚI được công central.
-        // Nếu thiếu → đi chiếm vệ tinh gần nhất trước, rồi mới quay lại công central.
-        const satAction = await runHoangCoCaptureSatellite({ ...options, forceReplan });
-        if (satAction) return satAction;
+        // Gate bắt buộc: clan PHẢI có tối thiểu `central_min_satellites` vệ tinh MỚI được
+        // công central. Nếu chưa đủ → BẮT BUỘC đi chiếm vệ tinh thành công, tuyệt đối không
+        // chuyển sang công central khi còn thiếu (tránh lỗi insufficient_satellites).
+        const minSat = Math.max(1, Math.floor(n(map?.config?.central_min_satellites, 1)) || 1);
+        const mySat = (Array.isArray(map?.satellites) ? map.satellites : []).filter(
+          (s: any) => String(s.holder_clan_id) === clanId
+        ).length;
+        onLog?.(
+          "INFO",
+          `Central · kiểm tra vệ tinh: clan có ${mySat}/${minSat} vệ tinh${mySat < minSat ? " → BẮT BUỘC đi chiếm vệ tinh trước" : " → đủ điều kiện công central"}`
+        );
+        if (mySat < minSat) {
+          const satAction = await runHoangCoCaptureSatellite({ ...options, forceReplan });
+          if (satAction) return satAction;
+          // runHoangCoCaptureSatellite trả null: hoặc đã đủ (hiếm, do map trễ) hoặc lỗi tạm.
+          // Double-check lại; nếu vẫn thiếu → chờ, KHÔNG công central.
+          const mySat2 = (Array.isArray(map?.satellites) ? map.satellites : []).filter(
+            (s: any) => String(s.holder_clan_id) === clanId
+          ).length;
+          if (mySat2 < minSat) {
+            summary.status = "WAITING";
+            summary.phase = "capture_satellite";
+            summary.reason = `Central · clan chỉ có ${mySat2}/${minSat} vệ tinh · chưa chiếm được → bắt buộc chiếm vệ tinh trước`;
+            summary.nextDelayMs = 10_000;
+            summary.finishedAt = new Date().toISOString();
+            return summary;
+          }
+        }
         const cx = centralPlan.central.x;
         const cy = centralPlan.central.y;
         const holder = (centralPlan.central.holder_clan_id || "").toString();
