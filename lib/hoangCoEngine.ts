@@ -1585,14 +1585,14 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       return baseSummary({ reason: `Resource ${target.label}: flags FULL ${usedFlags}/${maxFlags} · chờ slot để bridge`, nextDelayMs: 25000 });
     }
 
-    // ── CẮM CỜ TỪ XA: PHẢI kề cờ built đồng minh (maxFriendlyDist:1, đúng luật game).
-    // Thử lần lượt các ô ứng viên; ô bị reject (không kề cờ / đè địch) → loại, thử ô kế.
+    // ── CẮM CỜ TỪ XA: game cho phép cắm cờ mới cách cờ built đồng minh đến cheby ≤ 3 (3x3)
+    // → mỗi lần cắm nhảy tới 3 ô về phía mỏ. Thử lần lượt ô ứng viên; ô bị reject → loại, thử ô kế.
     const excluded = new Set<string>();
     let lastCell: Pos | null = null;
     let placed = false;
     for (let attempt = 0; attempt < 8 && !placed; attempt++) {
       const cell = pickPlaceCellTowardTargetList({
-        map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: true, maxFriendlyDist: 1, exclude: excluded,
+        map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: true, maxFriendlyDist: 3, exclude: excluded,
       })[0];
       if (!cell) break;
       lastCell = cell;
@@ -1809,15 +1809,15 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
         return base({ built: 1, flagId: focus.flag_id, action: "start_build_satellite_bridge", reason: `Vệ tinh ${cityKey}: xây tiếp bridge #${focus.flag_id} @(${focus.pos_x},${focus.pos_y})` });
       }
 
-      // ── Chưa có cờ chạm → bridge cờ sát vệ tinh (cắm từ xa, PHẢI kề cờ built đồng minh)
-      // Bridge luôn neo từ cờ built GẦN vệ tinh NHẤT (frontier) → đúng ý: xây từ cờ mình tới sat,
-      // không cắm từ vị trí bot đứng. maxFriendlyDist:1 = game bắt kề sát.
+      // ── Chưa có cờ chạm → bridge cờ sát vệ tinh (cắm từ xa). Game cho phép cắm cờ mới
+      // cách cờ built đồng minh đến cheby ≤ 3 (3x3) → mỗi lần cắm nhảy tới 3 ô về phía vệ tinh.
+      // Bridge luôn neo từ cờ built GẦN vệ tinh NHẤT (frontier) → xây từ cờ mình tới sat.
       if (!touched) {
         const excluded = new Set<string>();
         let lastCell: Pos | null = null;
         for (let attempt = 0; attempt < 8; attempt++) {
           const cell = pickPlaceCellTowardTargetList({
-            map, clanId, me, tx: satTile.x, ty: satTile.y, maxHop: 3, allowOnTarget: false, maxFriendlyDist: 1, exclude: excluded,
+            map, clanId, me, tx: satTile.x, ty: satTile.y, maxHop: 3, allowOnTarget: false, maxFriendlyDist: 3, exclude: excluded,
           })[0];
           if (!cell) break;
           lastCell = cell;
