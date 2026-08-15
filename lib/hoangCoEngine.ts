@@ -1459,6 +1459,7 @@ function pickResourceToCapture(map: any, me: Pos, clanId: string, maxDist = 999)
   const mines = parseMines(map);
   const now = Date.now();
   const ownBuilt = parseFlags(map).filter((f) => f.clan_id === clanId && f.is_built === true);
+  const ownAllRes = [...ownBuilt, ...incompleteClanFlags(parseFlags(map), clanId)];
   const cands = mines
     .map((m) => {
       const mx = Math.floor(n(m.pos_x));
@@ -1470,7 +1471,7 @@ function pickResourceToCapture(map: any, me: Pos, clanId: string, maxDist = 999)
       const protectedNow = Number.isFinite(prot) && prot > now;
       const hp = m.struct_hp_current;
       const dist = manhattan(mx, my, me.x, me.y);
-      const adj = ownBuilt.some((f) => chebyshev(Math.floor(n(f.pos_x)), Math.floor(n(f.pos_y)), mx, my) <= 3) ? 0 : 1;
+      const adj = ownAllRes.some((f) => chebyshev(Math.floor(n(f.pos_x)), Math.floor(n(f.pos_y)), mx, my) <= 3) ? 0 : 1;
       const mine = clanId && m.holder_clan_id === clanId;
       const defOther = resourceDefendedByOtherClan(map, m.node_id, clanId);
       return { m, hp, dist, adj, protectedNow, mine, defOther };
@@ -1717,13 +1718,16 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       if (allCaptured) return null; // đã chiếm hết → xong (mode đứng riêng)
       if (!captureAll && mySat >= minSat) return null; // gate central: đủ điều kiện → nhường central chạy
 
-      // Parse cờ TRƯỚC để ưu tiên vệ tinh gần cờ mình nhất (khả thi chiếm = có cờ built kề gần)
+      // Parse cờ TRƯỚC để ưu tiên vệ tinh gần cờ mình nhất (khả thi chiếm = có cờ built/building kề gần).
+      // Quan trọng: tính CẢ cờ đang xây (building) — nếu đã có cờ clan ngay sát vệ tinh (dù chưa built)
+      // thì ưu tiên vệ tinh đó, đi xây nốt cờ sát rồi cắm cờ chạm (không kéo dài chuỗi từ xa).
       const flags = parseFlags(map);
       const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
       const building = incompleteClanFlags(flags, clanId);
+      const ownAll = [...ownBuilt, ...building];
       const nearestClanFlagDist = (sx: number, sy: number): number => {
-        if (!ownBuilt.length) return 9999;
-        return Math.min(...ownBuilt.map((f) => chebyshev(f.pos_x, f.pos_y, sx, sy)));
+        if (!ownAll.length) return 9999;
+        return Math.min(...ownAll.map((f) => chebyshev(f.pos_x, f.pos_y, sx, sy)));
       };
       // Ưu tiên 1: vệ tinh CÓ cờ mình gần nhất (dễ bridge nhất).
       // Ưu tiên 2 (hòa): gần bản thân để bớt đi. Bridge luôn neo từ cờ built gần vệ tinh nhất.
