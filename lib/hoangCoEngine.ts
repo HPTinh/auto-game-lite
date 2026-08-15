@@ -1584,54 +1584,74 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       return baseSummary({ reason: `Resource ${target.label}: flags FULL ${usedFlags}/${maxFlags} · chờ slot để bridge`, nextDelayMs: 25000 });
     }
 
-    const cell = pickPlaceCellTowardTarget({ map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: true });
-    if (!cell) {
-      return baseSummary({ reason: `Resource ${target.label}: chưa có cờ chạm (cheby≤1) · không tìm được ô bridge`, nextDelayMs: 10000 });
-    }
-    const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
-    // ── CẮM CỜ TỪ XA: không cần đứng tại ô, chỉ cần ô hợp lệ (kề cờ built, trong tầm).
-    try {
-      const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
-      const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
-      let selfPlaced = Array.isArray(settings.self_placed_flag_ids)
-        ? settings.self_placed_flag_ids.map((x: any) => Math.floor(n(x))).filter((x: number) => x > 0)
-        : [];
-      const selfPlacedSet = new Set(selfPlaced);
-      if (flagId && !selfPlacedSet.has(flagId)) selfPlaced.push(flagId);
-      if (flagId) {
-        try {
-          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken);
-        } catch (be: any) {
-          onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 100)}`);
+    // ── CẮM CỜ TỪ XA: PHẢI kề cờ built đồng minh (maxFriendlyDist:1, đúng luật game).
+    // Thử lần lượt các ô ứng viên; ô bị reject (không kề cờ / đè địch) → loại, thử ô kế.
+    const excluded = new Set<string>();
+    let lastCell: Pos | null = null;
+    let placed = false;
+    for (let attempt = 0; attempt < 8 && !placed; attempt++) {
+      const cell = pickPlaceCellTowardTargetList({
+        map, clanId, me, tx: resTile.x, ty: resTile.y, maxHop: 3, allowOnTarget: true, maxFriendlyDist: 1, exclude: excluded,
+      })[0];
+      if (!cell) break;
+      lastCell = cell;
+      const cellToT = chebyshev(cell.x, cell.y, resTile.x, resTile.y);
+      try {
+        const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
+        const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
+        let selfPlaced = Array.isArray(settings.self_placed_flag_ids)
+          ? settings.self_placed_flag_ids.map((x: any) => Math.floor(n(x))).filter((x: number) => x > 0)
+          : [];
+        const selfPlacedSet = new Set(selfPlaced);
+        if (flagId && !selfPlacedSet.has(flagId)) selfPlaced.push(flagId);
+        if (flagId) {
+          try {
+            await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken);
+          } catch (be: any) {
+            onLog?.("WARN", `Resource bridge start_build: ${(be?.message || "").slice(0, 100)}`);
+          }
         }
+        return baseSummary({
+          placed: 1,
+          built: flagId ? 1 : 0,
+          flagId,
+          selfPlacedFlagIds: [...selfPlaced],
+          dest: { x: cell.x, y: cell.y },
+          action: "place_resource_bridge",
+          reason: `Resource ${target.label}: cắm TỪ XA #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · xong check chạm mỏ`,
+        });
+      } catch (e: any) {
+        if (isPlaceFullError(e)) return baseSummary({ reason: `Resource ${target.label}: flags FULL · chờ slot bridge`, nextDelayMs: 25000 });
+        if (isNotAdjacentError(e) || isPlaceTooCloseToEnemyError(e)) {
+          excluded.add(cellKey(cell.x, cell.y));
+          onLog?.("WARN", `Resource ${target.label} · @(${cell.x},${cell.y}) báo lỗi · đổi ô (${(e?.message || "").toString().slice(0, 60)})`);
+          continue;
+        }
+        // Lỗi khác (có thể server bắt đứng gần ô) → fallback đi tới ô rồi cắm
+        const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+        if (distPlace > 0) {
+          if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
+            return baseSummary({ status: "WAITING", action: "transit_to_place_resource", etaSeconds: me.eta, dest: { x: cell.x, y: cell.y }, nextDelayMs: Math.max(2000, me.eta * 1000 + 1500), reason: `Resource ${target.label}: (fallback) chờ tới ô @(${cell.x},${cell.y})` });
+          }
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+          return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: (fallback) đi tới ô rồi cắm @(${cell.x},${cell.y}) (cách mỏ ${cellToT})` });
+        }
+        onLog?.("WARN", `Resource bridge place: ${(e?.message || e).toString().slice(0, 100)}`);
+        return baseSummary({ reason: `Resource ${target.label}: place bridge lỗi · chờ`, nextDelayMs: 10000 });
       }
-      return baseSummary({
-        placed: 1,
-        built: flagId ? 1 : 0,
-        flagId,
-        selfPlacedFlagIds: [...selfPlaced],
-        dest: { x: cell.x, y: cell.y },
-        action: "place_resource_bridge",
-        reason: `Resource ${target.label}: cắm TỪ XA #${flagId} @(${cell.x},${cell.y}) (cách mỏ ${cellToT}) · xong check chạm mỏ`,
-      });
-    } catch (e: any) {
-      if (isPlaceFullError(e)) return baseSummary({ reason: `Resource ${target.label}: flags FULL · chờ slot bridge`, nextDelayMs: 25000 });
-      if (isNotAdjacentError(e)) return baseSummary({ reason: `Resource ${target.label}: not_adjacent @(${cell.x},${cell.y}) · thử ô khác`, nextDelayMs: 10000 });
-      if (isPlaceTooCloseToEnemyError(e)) return baseSummary({ reason: `Resource ${target.label}: đè tâm địch @(${cell.x},${cell.y}) · thử ô khác`, nextDelayMs: 10000 });
-      // Lỗi khác (có thể server bắt đứng gần ô) → fallback đi tới ô rồi cắm
-      const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+    }
+    if (lastCell) {
+      const distPlace = manhattan(lastCell.x, lastCell.y, me.x, me.y);
       if (distPlace > 0) {
-        if (me.inTransit && me.destX === cell.x && me.destY === cell.y && me.eta > 0) {
-          return baseSummary({ status: "WAITING", action: "transit_to_place_resource", etaSeconds: me.eta, dest: { x: cell.x, y: cell.y }, nextDelayMs: Math.max(2000, me.eta * 1000 + 1500), reason: `Resource ${target.label}: (fallback) chờ tới ô @(${cell.x},${cell.y})` });
-        }
         await leaveDefense(characterId, accessToken, onLog);
-        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
+        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: lastCell.x, p_dest_y: lastCell.y }, accessToken);
         const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
-        return baseSummary({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: (fallback) đi tới ô rồi cắm @(${cell.x},${cell.y}) (cách mỏ ${cellToT})` });
+        return baseSummary({ moved: true, dest: { x: lastCell.x, y: lastCell.y }, action: "move_to_place_resource_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: (fallback) đi tới ô bridge @(${lastCell.x},${lastCell.y})` });
       }
-      onLog?.("WARN", `Resource bridge place: ${(e?.message || e).toString().slice(0, 100)}`);
-      return baseSummary({ reason: `Resource ${target.label}: place bridge lỗi · chờ`, nextDelayMs: 10000 });
     }
+    return baseSummary({ reason: `Resource ${target.label}: không tìm được ô bridge hợp lệ (cần cờ built kề mỏ) · chờ`, nextDelayMs: 10000 });
   } catch (e: any) {
     onLog?.("WARN", `runHoangCoCaptureResource: ${(e?.message || e).toString().slice(0, 120)}`);
     return null;
