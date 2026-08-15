@@ -1632,16 +1632,199 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
     settings: { ...(options.settings || {}), auto_capture_resource: true, break_mode: "resource" },
   });
   if (res) return res;
-  return {
-    startedAt: new Date().toISOString(),
-    finishedAt: new Date().toISOString(),
-    status: "WAITING",
-    nextDelayMs: 15_000,
-    phase: "capture_resource",
-    reason:
-      "Chiếm resource · không có mỏ chưa chiếm phù hợp (đã chiếm hết / có thủ địch / event chưa mở) · chờ",
-  };
-}
+    return {
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "WAITING",
+      nextDelayMs: 15_000,
+      phase: "capture_resource",
+      reason:
+        "Chiếm resource · không có mỏ chưa chiếm phù hợp (đã chiếm hết / có thủ địch / event chưa mở) · chờ",
+    };
+  }
+
+  /**
+   * Chiếm vệ tinh (satellite) để đạt điều kiện công central.
+   * Game chặn công central nếu clan chưa giữ đủ `central_min_satellites` vệ tinh
+   * (báo lỗi insufficient_satellites). Quy trình: chọn vệ tinh GẦN NHẤT chưa thuộc
+   * clan → bridge cờ chạm (cheby≤1) → đứng sát (trong attack_proximity_radius) →
+   * attack_position target_kind="satellite" cho đến khi clan chiếm được.
+   * Trả về null khi đã đủ vệ tinh (để central tự chạy) hoặc không có mục tiêu.
+   */
+  async function runHoangCoCaptureSatellite(options: HoangCoAutoOptions): Promise<HoangCoRunSummary | null> {
+    const settings = options.settings || {};
+    const onLog = options.onLog;
+    const characterId = options.characterId;
+    const accessToken = options.accessToken;
+    const pollMs = 12_000;
+    const onlyWhenEventLive = settings.only_when_event_live !== false;
+    try {
+      const status = await rpc("rpc_hoang_co_status", { p_character_id: characterId }, accessToken);
+      const eventLive = status?.is_event_live === true || status?.season?.status === "event_live";
+      const eligible = status?.eligibility?.eligible !== false;
+      const clanId = String(status?.eligibility?.clan_id || status?.my_clan_score?.clan_id || "");
+      if (onlyWhenEventLive && !eventLive) return null;
+      if (!eligible || !clanId) return null;
+      const map = options.mapOverride ?? await rpc("rpc_hoang_co_map_state", { p_character_id: characterId }, accessToken);
+      const me = myPos(map);
+      if (!me || me.dead) return null;
+
+      const satellites = Array.isArray(map?.satellites) ? map.satellites : [];
+      if (!satellites.length) return null;
+      const minSat = Math.max(1, Math.floor(n(map?.config?.central_min_satellites, 1)) || 1);
+      const mySat = satellites.filter((s: any) => String(s.holder_clan_id) === clanId).length;
+      if (mySat >= minSat) return null; // đủ điều kiện → nhường central chạy
+
+      const cand = satellites
+        .map((s: any) => ({
+          s,
+          d: manhattan(me.x, me.y, Math.floor(n(s.pos_x)), Math.floor(n(s.pos_y))),
+        }))
+        .filter((c: any) => String(c.s.holder_clan_id) !== clanId)
+        .sort((a: any, b: any) => a.d - b.d)[0];
+      if (!cand) return null;
+
+      const sat = cand.s;
+      const satTile = { x: Math.floor(n(sat.pos_x)), y: Math.floor(n(sat.pos_y)) };
+      const cityKey = String(sat.city_key || sat.display_order || "");
+      const proximity = Math.max(1, Math.floor(n(map?.config?.attack_proximity_radius, 3)) || 3);
+
+      const flags = parseFlags(map);
+      const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
+      const building = incompleteClanFlags(flags, clanId);
+      const touchDow = building.find((f) => chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) <= 1);
+      const touched = ownBuilt.some((f) => chebyshev(f.pos_x, f.pos_y, satTile.x, satTile.y) <= 1);
+
+      const base = (over: Partial<HoangCoRunSummary>): HoangCoRunSummary => ({
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        status: "WAITING",
+        nextDelayMs: pollMs,
+        phase: "capture_satellite",
+        ...over,
+      });
+
+      // ── Cờ chạm vệ tinh đã cắm NHƯNG chưa BUILT → xây trước
+      if (touchDow) {
+        try {
+          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: touchDow.flag_id }, accessToken);
+        } catch (be: any) {
+          const msg = String(be?.message || be?.data?.error || be?.data?.reason || "");
+          const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề/i.test(msg);
+          if (needMove && manhattan(touchDow.pos_x, touchDow.pos_y, me.x, me.y) > 0) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: touchDow.pos_x, p_dest_y: touchDow.pos_y }, accessToken);
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+            return base({ moved: true, dest: { x: touchDow.pos_x, y: touchDow.pos_y }, action: "move_to_build_satellite_touch", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi xây cờ chạm #${touchDow.flag_id} @(${touchDow.pos_x},${touchDow.pos_y})` });
+          }
+          onLog?.("WARN", `Vệ tinh ${cityKey} · start_build cờ chạm #${touchDow.flag_id}: ${msg.slice(0, 100)}`);
+        }
+        return base({ built: 1, action: "start_build_satellite_touch", reason: `Vệ tinh ${cityKey} · xây cờ chạm #${touchDow.flag_id} trước khi công` });
+      }
+
+      // ── Chưa có cờ chạm → bridge cờ sát vệ tinh (cắm từ xa)
+      if (!touched) {
+        const cell = pickPlaceCellTowardTarget({ map, clanId, me, tx: satTile.x, ty: satTile.y, maxHop: 3, allowOnTarget: false });
+        if (!cell) {
+          return base({ reason: `Vệ tinh ${cityKey}: chưa có cờ chạm (cheby≤1) · không tìm được ô bridge · chờ`, nextDelayMs: 10_000 });
+        }
+        const cellToT = chebyshev(cell.x, cell.y, satTile.x, satTile.y);
+        try {
+          const res = await rpc("rpc_hoang_co_place_flag", { p_character_id: characterId, p_pos_x: cell.x, p_pos_y: cell.y }, accessToken);
+          const flagId = Math.floor(n(res?.flag?.flag_id || res?.flag_id, 0));
+          if (flagId) {
+            try {
+              await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: flagId }, accessToken);
+            } catch (be: any) {
+              onLog?.("WARN", `Vệ tinh ${cityKey} · start_build: ${(be?.message || "").slice(0, 100)}`);
+            }
+          }
+          return base({ placed: 1, built: flagId ? 1 : 0, flagId, dest: { x: cell.x, y: cell.y }, action: "place_satellite_bridge", reason: `Vệ tinh ${cityKey}: cắm TỪ XA #${flagId} @(${cell.x},${cell.y}) (cách ${cellToT}) · xong check chạm` });
+        } catch (pe: any) {
+          const msg = String(pe?.message || pe?.data?.error || pe?.data?.reason || "");
+          if (isPlaceFullError(pe)) return base({ reason: `Vệ tinh ${cityKey}: flags FULL · chờ slot`, nextDelayMs: 25_000 });
+          if (isPlaceTooCloseToEnemyError(pe) || isNotAdjacentError(pe)) {
+            return base({ reason: `Vệ tinh ${cityKey}: ô @(${cell.x},${cell.y}) không hợp lệ · thử ô khác`, nextDelayMs: 10_000 });
+          }
+          const distPlace = manhattan(cell.x, cell.y, me.x, me.y);
+          if (distPlace > 0) {
+            await leaveDefense(characterId, accessToken, onLog);
+            const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: cell.x, p_dest_y: cell.y }, accessToken);
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, distPlace * 3)));
+            return base({ moved: true, dest: { x: cell.x, y: cell.y }, action: "move_to_place_satellite_bridge", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: (fallback) đi tới ô rồi cắm @(${cell.x},${cell.y})` });
+          }
+          onLog?.("WARN", `Vệ tinh ${cityKey} · place lỗi: ${msg.slice(0, 100)}`);
+          return base({ reason: `Vệ tinh ${cityKey}: place lỗi · chờ`, nextDelayMs: 10_000 });
+        }
+      }
+
+      // ── Đã có cờ chạm → đi sát vệ tinh (trong attack_proximity_radius) rồi công
+      const within = chebyshev(me.x, me.y, satTile.x, satTile.y) <= proximity;
+      if (!within) {
+        const dest = findSatelliteStandCell(map, me, satTile, proximity, clanId) ?? { x: satTile.x, y: satTile.y };
+        await leaveDefense(characterId, accessToken, onLog);
+        const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: dest.x, p_dest_y: dest.y }, accessToken);
+        const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, manhattan(dest.x, dest.y, me.x, me.y) * 3)));
+        return base({ moved: true, dest, action: "move_to_attack_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: đi sát vệ tinh @(${dest.x},${dest.y}) để công` });
+      }
+
+      try {
+        const res = await rpc(
+          "rpc_hoang_co_attack_position",
+          { p_character_id: characterId, p_target_kind: "satellite", p_target_id: cityKey },
+          accessToken
+        );
+        const captured = res?.captured === true;
+        const rem = n(res?.remaining_hp, -1);
+        onLog?.("INFO", `Vệ tinh ${cityKey} · công: captured=${captured} remaining_hp=${rem}`);
+        return base({ action: "attack_position_satellite", reason: captured || rem === 0 ? `Vệ tinh ${cityKey} · ĐÃ CHIẾM` : `Vệ tinh ${cityKey} · công HP còn ${rem} · chờ tick` });
+      } catch (ae: any) {
+        const msg = String(ae?.message || ae?.data?.error || ae?.data?.reason || "");
+        const needMove = /quá xa|too far|khoảng cách|distance|gần|near|stand|adjac|kề|phải/i.test(msg);
+        if (needMove) {
+          const dest = findSatelliteStandCell(map, me, satTile, proximity, clanId) ?? { x: satTile.x, y: satTile.y };
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: dest.x, p_dest_y: dest.y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, manhattan(dest.x, dest.y, me.x, me.y) * 3)));
+          return base({ moved: true, dest, action: "move_to_attack_satellite", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Vệ tinh ${cityKey}: (fallback) đi sát vệ tinh @(${dest.x},${dest.y})` });
+        }
+        return base({ action: "attack_position_satellite", reason: `Vệ tinh ${cityKey} · công lỗi: ${msg.slice(0, 120)}`, nextDelayMs: 15_000 });
+      }
+    } catch (e: any) {
+      onLog?.("WARN", `runHoangCoCaptureSatellite: ${(e?.message || e).toString().slice(0, 120)}`);
+      return null;
+    }
+  }
+
+  /** Tìm ô đứng an toàn gần vệ tinh (trong attack_proximity_radius), ưu tiên gần vệ tinh nhất. */
+  function findSatelliteStandCell(map: any, me: Pos, satTile: { x: number; y: number }, proximity: number, clanId: string): Pos | null {
+    const gridW = Math.max(20, Math.floor(n(map?.config?.grid_w, 85)));
+    const gridH = Math.max(20, Math.floor(n(map?.config?.grid_h, 85)));
+    const occ = occupiedCells(map);
+    let bestX = -1;
+    let bestY = -1;
+    let bestScore = Infinity;
+    for (let r = 1; r <= proximity; r++) {
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = satTile.x + dx;
+          const y = satTile.y + dy;
+          if (x < 0 || y < 0 || x >= gridW || y >= gridH) continue;
+          if (occ.has(cellKey(x, y))) continue;
+          if (clanId && !isPosSafeFromHostiles(map, clanId, x, y, 0)) continue;
+          const score = chebyshev(x, y, satTile.x, satTile.y) * 100 + manhattan(x, y, me.x, me.y);
+          if (bestX < 0 || score < bestScore) {
+            bestX = x;
+            bestY = y;
+            bestScore = score;
+          }
+        }
+      }
+      if (bestX >= 0) break;
+    }
+    return bestX >= 0 ? { x: bestX, y: bestY } : null;
+  }
 
 export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise<HoangCoRunSummary> {
   const settings = options.settings || {};
@@ -2454,6 +2637,10 @@ export async function runHoangCoAttackCentralAuto(options: HoangCoAutoOptions): 
       return summary;
     }
 
+    // Gate: thiếu vệ tinh (central_min_satellites) → đi chiếm vệ tinh gần nhất trước
+    const satAction = await runHoangCoCaptureSatellite(options);
+    if (satAction) return satAction;
+
     const why =
       !weHold
         ? `holder địch/khác`
@@ -3166,6 +3353,10 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     if (!enemyFlags.length) {
       // Mode central: phá sạch cờ địch box central → tiến lên chiếm central
       if (wantCentral) {
+        // Gate: phải chiếm đủ vệ tinh (central_min_satellites) MỚI được công central.
+        // Nếu thiếu → đi chiếm vệ tinh gần nhất trước, rồi mới quay lại công central.
+        const satAction = await runHoangCoCaptureSatellite({ ...options, forceReplan });
+        if (satAction) return satAction;
         const cx = centralPlan.central.x;
         const cy = centralPlan.central.y;
         const holder = (centralPlan.central.holder_clan_id || "").toString();
