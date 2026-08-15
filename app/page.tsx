@@ -5614,8 +5614,8 @@ export default function AutoGameDashboard() {
                   {selectedFeatureId === 'hoang_co' && (
                     <div className="space-y-4">
                       <div className="rounded border border-amber-900/50 bg-amber-950/10 p-3">
-                        <div className="text-sm font-semibold text-amber-200 mb-1">Auto Hoàng Cổ — Phá cờ / Chiếm central / Chiếm resource</div>
-                        <p className="text-[11px] text-gray-500">4 chế độ: any (phá cờ gần nhất), central (phá sạch box rồi chiếm central), clan_wipe (phá hết cờ 1 bang), resource (cắm chuỗi cờ tới mỏ chưa chiếm rồi chiếm, ưu tiên gần→xa). Central & resource đều cần cờ đồng minh cheby≤1 với mục tiêu.</p>
+                        <div className="text-sm font-semibold text-amber-200 mb-1">Auto Hoàng Cổ — Phá cờ / Chiếm central / Chiếm resource / Chiếm vệ tinh</div>
+                        <p className="text-[11px] text-gray-500">6 chế độ: any (phá cờ gần nhất), central (phá sạch box rồi chiếm central — tự động chiếm vệ tinh trước nếu thiếu), clan_wipe (phá hết cờ 1 bang), resource (chiếm mỏ ưu tiên gần→xa), resource_all (chiếm hết mọi mỏ), satellites (chiếm hết vệ tinh). Central & resource đều cần cờ đồng minh cheby≤1 với mục tiêu.</p>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -5626,6 +5626,8 @@ export default function AutoGameDashboard() {
                             <option value="central">Chiếm central</option>
                             <option value="clan_wipe">Tất cả cờ 1 bang</option>
                             <option value="resource">Chiếm resource (mỏ, ưu tiên gần→xa)</option>
+                            <option value="resource_all">Chiếm hết resource (mọi mỏ)</option>
+                            <option value="satellites">Chiếm vệ tinh (satellites)</option>
                           </select>
                         </div>
                         <div className="space-y-1">

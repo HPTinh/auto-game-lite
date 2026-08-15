@@ -1651,7 +1651,7 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
    * attack_position target_kind="satellite" cho đến khi clan chiếm được.
    * Trả về null khi đã đủ vệ tinh (để central tự chạy) hoặc không có mục tiêu.
    */
-  async function runHoangCoCaptureSatellite(options: HoangCoAutoOptions): Promise<HoangCoRunSummary | null> {
+  async function runHoangCoCaptureSatellite(options: HoangCoAutoOptions, captureAll = false): Promise<HoangCoRunSummary | null> {
     const settings = options.settings || {};
     const onLog = options.onLog;
     const characterId = options.characterId;
@@ -1673,7 +1673,9 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       if (!satellites.length) return null;
       const minSat = Math.max(1, Math.floor(n(map?.config?.central_min_satellites, 1)) || 1);
       const mySat = satellites.filter((s: any) => String(s.holder_clan_id) === clanId).length;
-      if (mySat >= minSat) return null; // đủ điều kiện → nhường central chạy
+      const allCaptured = !satellites.some((s: any) => String(s.holder_clan_id) !== clanId);
+      if (allCaptured) return null; // đã chiếm hết → xong (mode đứng riêng)
+      if (!captureAll && mySat >= minSat) return null; // gate central: đủ điều kiện → nhường central chạy
 
       const cand = satellites
         .map((s: any) => ({
@@ -4745,9 +4747,23 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
   const settings = options.settings || {};
   const onLog = options.onLog;
 
-  // Mission riêng: Chiếm resource (break_mode === "resource") — cắm→xây→chiếm mỏ, ưu tiên gần trước
-  if (settings.break_mode === "resource") {
+  // Mission riêng: Chiếm resource (break_mode === "resource" / "resource_all") — cắm→xây→chiếm mỏ, ưu tiên gần trước
+  if (settings.break_mode === "resource" || settings.break_mode === "resource_all") {
     return runHoangCoResourceMode(options);
+  }
+
+  // Mission riêng: Chiếm vệ tinh (break_mode === "satellites") — chiếm HẾT vệ tinh chưa thuộc clan
+  if (settings.break_mode === "satellites") {
+    const sat = await runHoangCoCaptureSatellite(options, true);
+    if (sat) return sat;
+    return {
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "WAITING",
+      nextDelayMs: 30_000,
+      phase: "capture_satellite",
+      reason: "Chiếm vệ tinh · đã chiếm hết (hoặc không có mục tiêu) · chờ",
+    };
   }
 
   // Mission riêng: Phá cờ (cắm → xây → phá cờ địch gần nhất)
