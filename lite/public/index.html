@@ -898,9 +898,12 @@
             <option value="any" ${String(draft.break_mode||"any")==="any"?"selected":""}>Any — phá gần nhất / theo bang (mặc định)</option>
             <option value="central" ${String(draft.break_mode||"any")==="central"?"selected":""}>Central — phá sạch cờ địch quanh central rồi chiếm</option>
             <option value="clan_wipe" ${String(draft.break_mode||"any")==="clan_wipe"?"selected":""}>Clan wipe — phá sạch toàn bộ cờ của 1 bang</option>
+            <option value="resource" ${String(draft.break_mode||"any")==="resource"?"selected":""}>Resource — chiếm mỏ (ưu tiên gần→xa)</option>
+            <option value="resource_all" ${String(draft.break_mode||"any")==="resource_all"?"selected":""}>Resource all — chiếm hết mọi mỏ</option>
+            <option value="satellites" ${String(draft.break_mode||"any")==="satellites"?"selected":""}>Satellites — chiếm hết vệ tinh</option>
           </select>
         </div>
-        <div class="mu" style="font-size:10px;margin:2px 0 6px;opacity:.8">Chọn Central / Clan wipe thì <b>phải bật ☑ Phá cờ</b> ở trên.</div>
+        <div class="mu" style="font-size:10px;margin:2px 0 6px;opacity:.8">Central / Clan wipe thì <b>phải bật ☑ Phá cờ</b>. Resource / Resource all / Satellites chạy độc lập, <b>không</b> cần bật Phá cờ. Central tự động đi chiếm vệ tinh trước nếu clan chưa có.</div>
         <div class="f">
           <label>Bang hội cần phá (chọn từ map)</label>
           <div style="display:flex;gap:6px;align-items:center">
