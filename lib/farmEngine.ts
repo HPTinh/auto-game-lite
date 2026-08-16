@@ -137,6 +137,7 @@ interface FarmRuntimeState {
   /** Máu tự thân lần gần nhất (để quyết định skill hồi máu khi < threshold) */
   lastSelfHp?: number;
   lastSelfHpMax?: number;
+  lastSelfHpAt?: number;
 }
 
 interface RealmChannelInfo {
@@ -714,7 +715,19 @@ function clearTargetQueue(runtime: FarmRuntimeState) {
 
 function isLimitError(error: any) {
   const raw = errorText(error);
-  return raw.includes("daily_limit") || raw.includes("online_limit") || raw.includes("time_limit") || raw.includes("limit_reached") || raw.includes("out_of_time") || raw.includes("expired");
+  return (
+    raw.includes("daily_limit") ||
+    raw.includes("online_limit") ||
+    raw.includes("time_limit") ||
+    raw.includes("limit_reached") ||
+    raw.includes("out_of_time") ||
+    raw.includes("expired") ||
+    raw.includes("budget") ||
+    raw.includes("quota") ||
+    raw.includes("remaining_sec") ||
+    raw.includes("hết thời gian") ||
+    raw.includes("ngân sách")
+  );
 }
 
 /** Lỗi cứng (auth/account) — phải dừng hẳn, không tự phục hồi. */
@@ -1683,7 +1696,7 @@ function getSelfHp(obj: any): { hp?: number; max?: number } {
   if (!obj || typeof obj !== "object") return {};
   const hpRaw = toNumber(
     firstDefined(
-      obj.self_hp, obj.player_hp, obj.char_hp, obj.character_hp, obj.hp, obj.current_hp,
+      obj.hp_after, obj.self_hp, obj.player_hp, obj.char_hp, obj.character_hp, obj.hp, obj.current_hp,
       obj.hp_current, obj.self?.hp, obj.player?.hp, obj.character?.hp
     )
   );
@@ -1696,6 +1709,37 @@ function getSelfHp(obj: any): { hp?: number; max?: number } {
   const hp = hpRaw != null && Number.isFinite(hpRaw) ? hpRaw : undefined;
   const max = maxRaw != null && Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : undefined;
   return { hp, max };
+}
+
+/** Lấy máu hiện tại + tối đa từ rpc_get_character_resources (nguồn xác thực nhất). */
+async function fetchCharacterResources(characterId: string, accessToken: string): Promise<{ hp?: number; hpMax?: number }> {
+  try {
+    const data = await rpc("rpc_get_character_resources", { p_character_id: characterId }, accessToken);
+    const hp = toNumber(data?.hp);
+    const hpMax = toNumber(data?.hp_max);
+    return {
+      hp: hp != null && Number.isFinite(hp) ? hp : undefined,
+      hpMax: hpMax != null && Number.isFinite(hpMax) && hpMax > 0 ? hpMax : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** Làm tươi máu tự thân vào runtime (cache ~4s để không gọi RPC mỗi softRescan). */
+async function refreshSelfHp(
+  runtime: any,
+  characterId: string,
+  accessToken: string,
+  onLog?: FarmAutoOptions["onLog"]
+): Promise<void> {
+  const now = Date.now();
+  if (runtime.lastSelfHpAt && now - (runtime.lastSelfHpAt as number) < 4000) return;
+  const r = await fetchCharacterResources(characterId, accessToken);
+  if (r.hp != null) runtime.lastSelfHp = r.hp;
+  if (r.hpMax != null) runtime.lastSelfHpMax = r.hpMax;
+  runtime.lastSelfHpAt = now;
+  if (r.hp == null) onLog?.("DEBUG", "Farm không đọc được HP từ rpc_get_character_resources");
 }
 
 /** Tìm máu tự thân từ snapshot (danh sách players khớp characterId, hoặc top-level self). */
@@ -2108,7 +2152,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const noMobBeforeRotate = bossPriorityMode ? 1 : Math.max(1, Number(settings.no_mob_before_rotate || 1));
   const maxHitsSameMobBeforeRefresh = Math.max(1, Number(settings.max_hits_same_mob_before_refresh || 60));
   // Chọn skill mỗi lượt: mặc định đánh thường (slot 0); nếu máu tự thân < threshold → skill hồi máu (mặc định slot 3).
-  // HP lấy từ kết quả attack / snapshot lần trước (lưu runtime.lastSelfHp).
+  // HP lấy từ rpc_get_character_resources (hp/hp_max) + kết quả attack (hp_after), lưu runtime.lastSelfHp.
+  await refreshSelfHp(runtime, characterId, accessToken, onLog);
   const skillPick = pickFarmSkillSlot(runtime, settings);
   const skillSlot = skillPick.skillSlot;
   if (skillSlot !== 0) onLog?.("INFO", `Farm chọn skill hồi máu: ${skillPick.reason}`);
@@ -2580,6 +2625,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             const s = getSelfHp(attackResult);
             if (s.hp != null) runtime.lastSelfHp = s.hp;
             if (s.max != null) runtime.lastSelfHpMax = s.max;
+            // Ngân sách farm hằng ngày: remaining_sec tính bằng giây, reset sau 00h qua ngày mới.
+            const rem = toNumber(attackResult?.budget?.remaining_sec);
+            if (rem != null && Number.isFinite(rem) && rem <= 0) {
+              onLog?.("WARN", "Farm: ngân sách ngày đã hết (remaining_sec<=0) · nghỉ tới 00h reset");
+            }
           }
           mpPotionUsedCount += attack.mpPotionUsedCount;
           mpPotionFailedCount += attack.mpPotionFailedCount;
