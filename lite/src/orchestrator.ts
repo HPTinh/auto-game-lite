@@ -92,12 +92,17 @@ function buildFarmEngineSettings(settings: Record<string, any>): Record<string, 
     boss_priority_fast = false;
   }
 
+  const singleChannel = settings.farm_single_channel !== false && settings.farm_single_channel !== "false";
+  const singleRealmCode = String(settings.farm_single_realm_code || (singleChannel ? "event_train_lk_15" : "")).trim();
+
   return {
     ...settings,
     multi_channel: multi,
     channel,
     from_channel: from,
     to_channel: to,
+    farm_single_channel: singleChannel,
+    farm_single_realm_code: singleRealmCode,
     mode,
     priority,
     boss_priority_mode,

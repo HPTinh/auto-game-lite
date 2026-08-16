@@ -151,8 +151,8 @@
         {k:"auto_use_mp_potion",l:"Uống MP khi hết mana (lk→lh)",t:"bool"},
         {k:"auto_buy_mp_potion",l:"Hết bình → mua pill_lk_mp",t:"bool"},
         {k:"mp_potion_buy_qty",l:"Mua mỗi lần (shop)",t:"select",o:["10","1"], hint:"Chỉ mua pill_lk_mp; mặc định 10"},
-        {k:"farm_single_channel",l:"Kênh đơn (1 kênh duy nhất, không quét)",t:"bool"},
-        {k:"farm_single_realm_code",l:"Realm code kênh đơn",t:"text", hint:"vd event_train_lk_15 — chỉ join kênh này, bỏ quét vùng/kênh"},
+        {k:"farm_single_channel",l:"Sự Kiện (K15)",t:"bool", d:true, hint:"Kênh đơn duy nhất — join thẳng realm_code, không quét vùng/kênh"},
+        {k:"farm_single_realm_code",l:"Realm code Sự Kiện (K15)",t:"text", d:"event_train_lk_15", hint:"Mặc định event_train_lk_15 — chỉ join kênh này, bỏ quét vùng/kênh"},
       ],
       pvp: [
         {k:"free_per_day",l:"Số trận tối đa / ngày",t:"number",min:1,max:200},
@@ -988,7 +988,8 @@
 
     function fieldHtml(f, val) {
       if (f.t === "bool") {
-        const on = val===true || val==="true" || val===1 || val==="1";
+        const def = f.d === true;
+        const on = (val===undefined || val===null || val==="") ? def : (val===true || val==="true" || val===1 || val==="1");
         return `<div class="f chk"><input type="checkbox" data-k="${f.k}" ${on?"checked":""}/><label>${esc(f.l)}</label></div>`;
       }
       if (f.t === "select") {
@@ -1022,7 +1023,9 @@
       }
       const min=f.min!=null?`min="${f.min}"`:"";
       const max=f.max!=null?`max="${f.max}"`:"";
-      return `<div class="f"><label>${esc(f.l)}</label><input type="${f.t==="number"?"number":"text"}" ${min} ${max} data-k="${f.k}" value="${esc(val??"")}"/></div>`;
+      const defv = f.d != null ? f.d : "";
+      const curv = (val===undefined || val===null || val==="") ? defv : val;
+      return `<div class="f"><label>${esc(f.l)}</label><input type="${f.t==="number"?"number":"text"}" ${min} ${max} data-k="${f.k}" value="${esc(curv)}"/></div>`;
     }
 
     function closeModal() {
