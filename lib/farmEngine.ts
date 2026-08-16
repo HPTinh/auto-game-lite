@@ -134,6 +134,9 @@ interface FarmRuntimeState {
   mobDeadStreak: number;
   /** Chuỗi lỗi kênh/realm → hard rejoin / rotate */
   channelErrorStreak: number;
+  /** Máu tự thân lần gần nhất (để quyết định skill hồi máu khi < threshold) */
+  lastSelfHp?: number;
+  lastSelfHpMax?: number;
 }
 
 interface RealmChannelInfo {
@@ -1675,6 +1678,54 @@ function attackMobHpAfter(result: any) {
   return toNumber(result.mob_hp_after ?? result.mob?.hp ?? result.mob?.hp_after ?? result.target_hp_after);
 }
 
+/** Trích máu tự thân từ 1 object (kết quả attack / entry player trong snapshot). Thử nhiều tên trường. */
+function getSelfHp(obj: any): { hp?: number; max?: number } {
+  if (!obj || typeof obj !== "object") return {};
+  const hpRaw = toNumber(
+    firstDefined(
+      obj.self_hp, obj.player_hp, obj.char_hp, obj.character_hp, obj.hp, obj.current_hp,
+      obj.hp_current, obj.self?.hp, obj.player?.hp, obj.character?.hp
+    )
+  );
+  const maxRaw = toNumber(
+    firstDefined(
+      obj.self_hp_max, obj.player_hp_max, obj.char_hp_max, obj.character_hp_max, obj.hp_max, obj.max_hp,
+      obj.hp_max_current, obj.self?.hp_max, obj.player?.hp_max, obj.character?.hp_max
+    )
+  );
+  const hp = hpRaw != null && Number.isFinite(hpRaw) ? hpRaw : undefined;
+  const max = maxRaw != null && Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : undefined;
+  return { hp, max };
+}
+
+/** Tìm máu tự thân từ snapshot (danh sách players khớp characterId, hoặc top-level self). */
+function extractSelfHp(snap: any, characterId: string): { hp?: number; max?: number } {
+  if (!snap) return {};
+  const players = Array.isArray(snap.players) ? snap.players : [];
+  const me = players.find(
+    (p: any) => p && String(p.character_id ?? p.id ?? p.char_id) === String(characterId)
+  );
+  if (me) return getSelfHp(me);
+  if (snap.self || snap.character_id != null) return getSelfHp(snap.self || snap);
+  return {};
+}
+
+/** Chọn skill_slot trước mỗi lượt attack: máu < threshold → skill hồi máu, ngược lại đánh thường (0). */
+function pickFarmSkillSlot(runtime: any, settings: Record<string, any>): { skillSlot: number; reason: string } {
+  if (settings.auto_heal_on_low_hp === false) return { skillSlot: 0, reason: "heal tắt" };
+  const healSlot = Math.max(0, Math.floor(Number(settings.farm_heal_skill_slot ?? 3)));
+  const threshold = Math.max(1, Math.min(99, Number(settings.farm_heal_hp_threshold ?? 50))) / 100;
+  const hp = runtime?.lastSelfHp;
+  const max = runtime?.lastSelfHpMax;
+  if (hp == null || max == null || max <= 0) {
+    return { skillSlot: 0, reason: "chưa biết máu" };
+  }
+  if (hp / max < threshold) {
+    return { skillSlot: healSlot, reason: `máu ${Math.round((hp / max) * 100)}% < ${Math.round(threshold * 100)}% → skill ${healSlot}` };
+  }
+  return { skillSlot: 0, reason: `máu ${Math.round((hp / max) * 100)}% ok` };
+}
+
 function attackSpeedSec(result: any) {
   if (!result) return null;
   return toNumber(result.atk_speed_sec ?? result.attack_speed_sec ?? result.cooldown_sec ?? result.next_attack_sec);
@@ -2056,7 +2107,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   const emptyScanDelayMs = Math.max(1000, Number(settings.empty_scan_delay_ms || 1000));
   const noMobBeforeRotate = bossPriorityMode ? 1 : Math.max(1, Number(settings.no_mob_before_rotate || 1));
   const maxHitsSameMobBeforeRefresh = Math.max(1, Number(settings.max_hits_same_mob_before_refresh || 60));
-  const skillSlot = 0;
+  // Chọn skill mỗi lượt: mặc định đánh thường (slot 0); nếu máu tự thân < threshold → skill hồi máu (mặc định slot 3).
+  // HP lấy từ kết quả attack / snapshot lần trước (lưu runtime.lastSelfHp).
+  const skillPick = pickFarmSkillSlot(runtime, settings);
+  const skillSlot = skillPick.skillSlot;
+  if (skillSlot !== 0) onLog?.("INFO", `Farm chọn skill hồi máu: ${skillPick.reason}`);
   const autoUseMpPotion = settings.auto_use_mp_potion !== false;
   // Uống MP: cascade lk→lh; mua shop chỉ pill_lk_mp
   const autoBuyMpPotion = settings.auto_buy_mp_potion !== false;
@@ -2521,6 +2576,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             maxPotionAttempts: Math.max(1, Math.min(3, Number(settings.mp_potion_max_retry || 2))),
           });
           attackResult = attack.attackResult;
+          {
+            const s = getSelfHp(attackResult);
+            if (s.hp != null) runtime.lastSelfHp = s.hp;
+            if (s.max != null) runtime.lastSelfHpMax = s.max;
+          }
           mpPotionUsedCount += attack.mpPotionUsedCount;
           mpPotionFailedCount += attack.mpPotionFailedCount;
           mpPotionBoughtCount += attack.mpPotionBoughtCount || 0;
@@ -2566,6 +2626,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
                   maxPotionAttempts: Math.max(1, Math.min(3, Number(settings.mp_potion_max_retry || 2))),
                 });
                 attackResult = attack.attackResult;
+                {
+                  const s = getSelfHp(attackResult);
+                  if (s.hp != null) runtime.lastSelfHp = s.hp;
+                  if (s.max != null) runtime.lastSelfHpMax = s.max;
+                }
                 mpPotionUsedCount += attack.mpPotionUsedCount;
                 mpPotionFailedCount += attack.mpPotionFailedCount;
                 mpPotionBoughtCount += attack.mpPotionBoughtCount || 0;
@@ -2883,6 +2948,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             afterAttackSummary = summarizeMobs(afterAttackSnapshot, realm);
             runtime.lastSnapshot = afterAttackSnapshot;
             runtime.lastSnapshotSummary = afterAttackSummary;
+            {
+              const s = extractSelfHp(afterAttackSnapshot, characterId);
+              if (s.hp != null) runtime.lastSelfHp = s.hp;
+              if (s.max != null) runtime.lastSelfHpMax = s.max;
+            }
             observed = inferObservedKill({
               target: next.target,
               beforeSnapshot: beforeAttackSnapshot,

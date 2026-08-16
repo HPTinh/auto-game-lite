@@ -114,6 +114,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     learned_apply_counter_by_channel: {},
     /** Số hit không kill rồi đảo counter (mặc định 3) */
     apply_counter_no_kill_flip_after: 3,
+    /** Tự động dùng skill hồi máu khi máu tự thân thấp */
+    auto_heal_on_low_hp: true,
+    /** Skill slot hồi máu (mặc định 3) */
+    farm_heal_skill_slot: 3,
+    /** Ngưỡng máu (%) để chuyển sang skill hồi máu (mặc định 50) */
+    farm_heal_hp_threshold: 50,
   },
   pvp: {
     /** Số trận tối đa / ngày (user nhập) — free và PK đều nằm trong trần này */
