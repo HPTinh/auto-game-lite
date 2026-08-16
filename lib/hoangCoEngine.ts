@@ -3920,6 +3920,21 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
           }
         }
 
+        // ── ĐÃ GIỮ CENTRAL → chuyển THỦ (ghim) như mode "Central thủ ↔ công":
+        // chiếm được rồi thì ghim thủ, hết lock_until thì tự chiếm lại.
+        if (holder === clanId) {
+          const defC = await runHoangCoDefendMineAuto(options);
+          if (defC) {
+            // Nếu còn lock → đang thủ (return luôn). Hết lock / chuyển Công → rơi xuống công lại.
+            const needCong = /hết lock|không phải clan|nhường Công|chuyển Công/i.test(defC.reason || "");
+            if (!needCong) {
+              onLog?.("INFO", `Central · clan mình đang giữ → ${defC.reason || "thủ"}`);
+              return defC;
+            }
+            onLog?.("INFO", `Central · hết lock_until → tự chiếm lại @(${cx},${cy})`);
+          }
+        }
+
         // CÔNG CENTRAL — tham khảo tính năng "central thủ - công": đứng sát tâm (manhattan≤1)
         // rồi mới attack_position. Bridge đã chạm central (reachCentralAny) là đủ điều kiện công,
         // KHÔNG cần cờ built cheby≤1. Nếu bot đang ở xa → đi tới tâm trước (giống runHoangCoAttackCentralAuto).
@@ -4514,8 +4529,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
       return summary;
     }
 
-    // Server not_adjacent: CHỈ hop=1 (kề cờ built). Bỏ hop=2 (log hop≤2 → cắm (13,53) từ neo (14,51) cheby=2 = sai)
-    const hopMax = 1;
+    // Server not_adjacent mặc định CHỈ hop=1 (kề cờ built). User có thể nới 2–3
+    // (break_hop_max) nếu server cho phép — cảnh báo rủi ro not_adjacent.
+    const hopMax = Math.max(1, Math.min(3, Math.floor(n(settings.break_hop_max, 1)) || 1));
     const plan = planBridgeToEnemy(ownBuilt, building, enemy, hopMax);
     const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.flag_building_max, 3)) || 3);
     const usedFlags = Math.floor(n(map?.config?.used_flags ?? map?.used_flags, ownBuilt.length + building.length));

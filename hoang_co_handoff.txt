@@ -1,7 +1,7 @@
 ================================================================================
   HOÀNG CỔ (Hoang Co) — HANDOFF / TÀI LIỆU CHO CHAT MỚI
   Project: Auto Best lite (HPTinh/auto-game-lite)
-  Cập nhật: 2026-08-15
+  Cập nhật: 2026-08-17  (đã đồng bộ code thực tế — engine giờ 5136 dòng)
   Repo: https://github.com/HPTinh/auto-game-lite.git
   Branch: main (deploy Render free — auto redeploy on push)
 ================================================================================
@@ -10,9 +10,9 @@
   ĐỌC NHANH (30 giây) — mở file là hiểu
 ================================================================================
 - Feature ID: hoang_co  |  UI label: "Hoàng Cổ"
-- Mọi logic nằm 1 file: lib/hoangCoEngine.ts (~3961 dòng). KHÔNG phân tán.
-- 1 timer gọi runHoangCoAuto() (hoangCoEngine.ts:3870) → phân nhánh theo settings.
-- Giao tiếp game = gọi Supabase RPC rpc_hoang_co_* (rpc :64, GAME_API_KEY :60).
+- Mọi logic nằm 1 file: lib/hoangCoEngine.ts (5136 dòng). KHÔNG phân tán.
+- 1 timer gọi runHoangCoAuto() (hoangCoEngine.ts:5026) → phân nhánh theo settings.
+- Giao tiếp game = gọi Supabase RPC rpc_hoang_co_* (rpc :67, GAME_API_KEY :60).
 - Concept cốt lõi:
     * Cờ = flags[] trong map_state. Mỗi cờ có pos_x/pos_y, clan_id, is_built,
       siege_points (0→siege_max, thường 600).
@@ -35,43 +35,61 @@
     2. standByCenter (me cheby≤1 tới flag.pos) → PHẢI MOVE vào giữa + siege,
        CẤM cắm ô vành (death circle).
     3. Chờ in_transit xong, không spam leave+move mỗi tick (death circle 2).
+- 4 MISSION riêng (entry :5026, chạy trước mọi phân nhánh khác):
+    * break_mode=resource / resource_all → runHoangCoResourceMode (:1702)
+    * break_mode=satellites           → runHoangCoCaptureSatellite(captureAll=true) (:1801)
+      (Cả 3 hàm capture này KHÔNG export riêng — chỉ gọi trong engine.)
+- forceReplan: scanner vừa publish scan MỚI → acc phụ bỏ chờ transit, re-plan/redirect ngay.
 
 ================================================================================
   1) FILE LIÊN QUAN
 ================================================================================
-  lib/hoangCoEngine.ts        ★ TOÀN BỘ LOGIC (entry + 6 mission + helpers)
+  lib/hoangCoEngine.ts        ★ TOÀN BỘ LOGIC (entry + 8 mission + helpers)
   lite/src/orchestrator.ts    gọi engine, merge persistHint + settings vào store
-  lite/src/config.ts          default settings hoang_co (config.ts:296-348)
+                              (+ scan tập trung → mapOverride + forceReplan)
+  lite/src/config.ts          default settings hoang_co (config.ts:310-381)
   lite/src/server.ts          GET /api/accounts/:id/hoang-co/clans (server.ts:377)
-   lite/src/engines.ts         re-export các hàm engine (engines.ts:32-45)
-   lite/src/hoangCoState.ts    ★ BỂ CHUNG scan (shared store, không gọi RPC)
-   lite/src/logGate.ts         module "HOANG_CO" routing log (logGate.ts:159)
-   lite/public/index.html      Modal Hoàng Cổ (UI: break_mode select, checkbox
-                               Scanner chính, central_radius, scan_stale_ms)
-   hoang_co_handoff.txt        ← FILE NÀY
+  lite/src/engines.ts         re-export các hàm engine (engines.ts:32-42)
+  lite/src/hoangCoState.ts    ★ BỂ CHUNG scan (shared store, không gọi RPC)
+  lite/src/logGate.ts         module "HOANG_CO" routing log (logGate.ts:159)
+  lite/public/index.html      Modal Hoàng Cổ (UI: break_mode select 6 option,
+                              checkbox Scanner chính, central_radius, scan_stale_ms)
+  hoang_co_handoff.txt        ← FILE NÀY
 
-   Exports (hoangCoEngine.ts):
-     runHoangCoAuto            ★ entry 1 timer (:3870)
-     runHoangCoBreakFlagAuto   ★ mission Phá cờ (state machine phức tạp nhất, :2747)
-     runHoangCoExpandAuto      cắm + xây cờ mở rộng (:1321)
-     runHoangCoDefendAuto      cứu cờ clan bị phá (:1790)
-     runHoangCoDefendMineAuto  ghim central (thủ, :2281)
-     runHoangCoAttackCentralAuto công central (:2048)
-     runHoangCoAttackAuto      công cờ địch đơn lẻ (:2507)
-     listHoangCoEnemyClans     lấy list bang địch cho UI
-     scanHoangCoState          ★ quét 1 lần: map_state + đếm cờ từng clan (:1077)
-     planCentralCapture        ★ lập kế hoạch chiếm central (box + bridge, :1026)
-     canPlaceAt                ★ quy tắc cắm (cấm occ, cấm tâm địch cheby≤1, :135)
-     pickSiegePlaceCell        ★ chọn ô cắm tiến gần mặt trận (:749)
-     sortBreakTargets          ★ chọn mục tiêu (ưu tiên gần mặt trận, :1151)
-     canReachEnemyFlag         ★ đủ điều kiện phá (built cheby≤3, :888)
-     planBridgeToEnemy         ★ neo + bước cắm tới địch (:961)
-   Exports (hoangCoState.ts):
-     getHoangCoSharedState / setHoangCoSharedState / isHoangCoScanFresh /
-     resetHoangCoSharedState / publishHoangCoScan
+  Exports (hoangCoEngine.ts):
+    runHoangCoAuto              ★ entry 1 timer (:5026)
+    runHoangCoBreakFlagAuto     ★ mission Phá cờ (state machine phức tạp nhất, :3517)
+    runHoangCoExpandAuto        cắm + xây cờ mở rộng (:2087)
+    runHoangCoDefendAuto        cứu cờ clan bị phá (:2556)
+    runHoangCoDefendMineAuto    ghim central (thủ, :3051)
+    runHoangCoAttackCentralAuto công central (:2814)
+    runHoangCoAttackAuto        công cờ địch đơn lẻ (:3277)
+    listHoangCoEnemyClans       lấy list bang địch cho UI (:3472)
+    scanHoangCoState            ★ quét 1 lần: map_state + đếm cờ từng clan (:1210)
+    planCentralCapture          ★ lập kế hoạch chiếm central (box + bridge, :1159)
+    canPlaceAt                  ★ quy tắc cắm (cấm occ, cấm tâm địch cheby≤1, :138)
+    pickSiegePlaceCell          ★ chọn ô cắm tiến gần mặt trận (:744)
+    sortBreakTargets            ★ chọn mục tiêu (ưu tiên gần mặt trận, :1284)
+    canReachEnemyFlag           ★ đủ điều kiện phá (built cheby≤3, :1021)
+    planBridgeToEnemy           ★ neo + bước cắm tới địch (:1094)
+  Hàm nội bộ QUAN TRỌNG (không export — dùng trong entry/break flag):
+    runHoangCoCaptureResource   chiếm 1 mỏ (cắm bridge ≤2 → attack_position, :1497)
+    runHoangCoResourceMode      mission resource/resource_all (gọi capture, :1702)
+    trySiegeEnemyFlagNear       phá cờ địch cheby≤3 quanh mỏ/vệ tinh (:1727)
+    runHoangCoCaptureSatellite  mission vệ tinh + central gate (:1801)
+    findSatelliteStandCell      ô đứng công vệ tinh trong proximity (:2058)
+    pickResourceToCapture       chọn mỏ (gần→xa, :1458)
+    tryChipNearResource         chip resource rảnh việc (:1383)
+    pickNearResourceToChip      (:1343)   resourceDefendedByOtherClan (:1328)
+    pickCentralPlaceCell        ô cắm bridge tiến central (:998)
+    pickPlaceCellTowardTargetList / pickPlaceCellTowardTarget (:896 / :983)
+    countReachableEnemies       (:1028)
+  Exports (hoangCoState.ts):
+    getHoangCoSharedState / setHoangCoSharedState / isHoangCoScanFresh /
+    resetHoangCoSharedState / publishHoangCoScan
 
 ================================================================================
-  2) API GAME (Supabase RPC) — chuẩn, dùng qua hàm rpc() (hoangCoEngine.ts:64)
+  2) API GAME (Supabase RPC) — chuẩn, dùng qua hàm rpc() (hoangCoEngine.ts:67)
 ================================================================================
   Base:   https://jeassefmlprfnlszgvbs.supabase.co/rest/v1/rpc/<name>
   Header: apikey + Authorization: Bearer <accessToken> + content-type json
@@ -93,21 +111,22 @@
                                   res: flag{flag_id,siege_points,siege_max}, used_flags,
                                        max_flags
     rpc_hoang_co_start_build     {p_character_id,p_flag_id}
-    rpc_hoang_co_leave_defense   {p_character_id}  (rời pin thủ/xây/siege, :99)
+    rpc_hoang_co_leave_defense   {p_character_id}  (rời pin thủ/xây/siege, :102)
     rpc_hoang_co_attack_position {p_character_id,p_target_kind,p_target_id}
-                                  target_kind="resource"|"central"
+                                  target_kind = "resource" | "central" | "satellite"
+                                  (p_target_id: node_id | "central" | city_key)
                                   res: captured, remaining_hp, struct_hp_max, chip
     rpc_hoang_co_defend_position {p_character_id,p_target_kind="central",p_target_id="central"}
                                   (ghim thủ central)
     rpc_hoang_co_heartbeat       {p_character_id,p_pos_x,p_pos_y}  (giữ session nhẹ)
 
   Lỗi server (P0001) quan trọng — engine có hàm detect tương ứng:
-    "not_near"      → isNotNearError (:2731). siege khi chưa chạm địch.
-    "not_adjacent"  → isNotAdjacentError (:1126). place không kề cờ built.
-    too_close/gần địch (đè tâm/trùng ô) → isPlaceTooCloseToEnemyError (:1139).
+    "not_near"      → isNotNearError (:3501). siege khi chưa chạm địch.
+    "not_adjacent"  → isNotAdjacentError (:1259). place không kề cờ built.
+    too_close/gần địch (đè tâm/trùng ô) → isPlaceTooCloseToEnemyError (:1272).
                       Hàm này GIỜ chỉ bắt on_flag/occupied/overlap/trùng —
                       KHÔNG bắt near_enemy (vành cheby≥2 được phép cắm).
-    max_flag/quota/full → isPlaceFullError (:1111).
+    max_flag/quota/full → isPlaceFullError (:1244).
 
 ================================================================================
   3) DATA map_state — FIELD DÙNG THẬT
@@ -118,41 +137,51 @@
     siege_points (0→siege_max=600), siege_max,
     build_progress, hp_current, hp_max, region_code, decay_active
 
-  my_position (myPos() :599):
+  my_position (myPos :601):
     pos_x, pos_y, dest_x, dest_y, in_transit, eta_seconds, is_dead, has_pos
 
-  defenders[] (flagDefenders :904):
+  defenders[] (flagDefenders :1037):
     target_kind ("flag"|"resource"|"central"), target_id, clan_id, clan_name,
     name, stack_order, character_id
     → skip_defended_flags bỏ cờ có defender clan khác
 
-  besiegers[] (flagBesiegers :930): flag_id, clan_id, name  → ai đang công cờ
+  besiegers[] (flagBesiegers :1063): flag_id, clan_id, name  → ai đang công cờ
 
-  resources[] (parseMines :2230): node_id, pos_x/y, struct_hp_current/max,
+  resources[] (parseMines :3000): node_id, pos_x/y, struct_hp_current/max,
     holder_clan_id, protection_until, label_vi/en, is_stronghold, tier
 
-  config (map): grid_w/h, siege_max, flag_building_max (thường 3 concurrent),
-    center_x/y, inner_radius, max_flags/used_flags
+  satellites[] (chiếm vệ tinh, :1801):
+    holder_clan_id, pos_x/y, city_key, display_order, protection_until?
+    → attack_position target_kind="satellite", p_target_id=city_key
+
+  config (map): grid_w/h, siege_max, flag_building_max / max_simultaneous_build
+    (thường 3 concurrent), center_x/y, inner_radius, max_flags/used_flags,
+    central_min_satellites (vệ tinh tối thiểu để công central), attack_proximity_radius
 
 ================================================================================
-  4) SETTINGS (config.ts:296 + UI) — BIẾN & TÁC DỤNG
+  4) SETTINGS (config.ts:310 + UI) — BIẾN & TÁC DỤNG
 ================================================================================
-  ── Mission Phá cờ (khi bật thì chặn hết mode khác) ──
+  ── Mission Phá cờ (auto_break_flag=true → chặn hết mode khác) ──
     auto_break_flag          bool   default false  → bật = CHỈ chạy Phá cờ
     target_clan_name         string ""             → filter bang ("": mọi địch)
     enemy_clan_list[]        cache                → GET /hoang-co/clans
     enemy_clan_list_at       string
     break_hop                bool   default true   → not_near thì cắm/xây bridge tiến lại
-    break_hop_max            number default 1      → CHỈ kề cờ built (server not_adjacent)
+    break_hop_max            number default 1      → hop cắm tối đa (1=chỉ kề built; 2–3 nếu
+                                    server cho phép — engine đọc THẬT :4531, mặc định 1)
     break_place_exclude[]    runtime              → ô place fail not_adjacent (bỏ qua)
     break_force_assault      runtime bool          → ép ưu tiên phá sau place-too-close
     break_pending_place      {x,y}|null runtime    → sticky ô đang đi cắm (tránh spam move)
-    break_flee_cooldown_until runtime ms            → cooldown ~12s sau né
+    break_flee_cooldown_until runtime ms           → cooldown ~12s sau né
     skip_defended_flags      bool   default true    → né cờ có thủ clan khác
-    flee_on_enemy_near       bool   default true    → địch gần → né giữ khoảng cách
+    flee_on_enemy_near       bool   default true    → né khi địch gần
+      ★ CHÚ Ý (2026-08): engine đọc CHẶT === true (:3530). Nếu key KHÔNG có trong
+        settings → coi là TẮT (không né dù địch sát). config default vẫn true.
     flee_radius              number default 2
     attack_near_resource     bool   default true    → chip resource an toàn khi rảnh
     resource_attack_radius   number default 3
+    auto_capture_resource    bool   default true    → hết cờ địch → chủ động chiếm mỏ
+        (ưu tiên mỏ gần trước → lan xa dần; không cần break_mode=resource)
     last_destroyed_flag_pos  {x,y}  runtime         → reclaim ô cờ địch vừa phá
     last_destroyed_flag_id   runtime
 
@@ -165,11 +194,20 @@
      scan_stale_ms           number 8000 → bể chung hết hạn sau N ms → acc thường tự quét.
      central_radius          number 12   → break_mode=central dùng box central_radius×central_radius
                                             (|dx|≤6,|dy|≤6 quanh central) để lọc cờ địch phá.
-     break_mode              string "any" → "any" = cũ (phá gần nhất / theo target_clan)
-                                            "central" = phá SẠCH cờ địch trong box central rồi
-                                                        chiếm central (attack_position).
-                                            "clan_wipe" = phá SẠCH mọi cờ của target_clan_name
-                                                          (dùng logic any + target_clan).
+     break_mode              string "any" → 5 option trong UI (index.html:916-921):
+       "any"          = cũ (phá gần nhất / theo target_clan)
+       "central"      = phá SẠCH cờ địch trong box central rồi CHIẾM central.
+                        BẮT BUỘC clan đủ central_min_satellites vệ tinh trước
+                        (thiếu → tự chạy chiếm vệ tinh, KHÔNG công central).
+                        ★ 2026-08-17: chiếm được central → tự chuyển THỦ (ghim,
+                        runHoangCoDefendMineAuto :3925) — hết lock_until → tự
+                        chiếm lại (chu kỳ thủ ↔ công). Không công lặp vô ích.
+       "clan_wipe"    = phá SẠCH mọi cờ của target_clan_name (dùng logic any + target_clan).
+       "resource"     = CHẠY ĐỘC LẬP (không cần bật Phá cờ): chiếm mỏ gần→xa.
+       "satellites"   = CHẠY ĐỘC LẬP: chiếm HẾT vệ tinh chưa thuộc clan.
+       Lưu ý: "resource_all" (cũ) → engine vẫn xử lý NHƯ "resource" (:5031) nhưng
+       UI đã GỘP bớt option (chỉ còn "resource"). "central" cũng có thể chạy cùng
+       auto_break_flag bật (mission phá cờ xử lý central).
 
    ── Mode không phá (khi auto_break_flag = false) ──
     auto_place   bool default true    → cắm cờ (runHoangCoExpandAuto)
@@ -177,29 +215,41 @@
     auto_defend  bool default true    → cứu cờ clan (runHoangCoDefendAuto)
     auto_central bool default true    → 1 chu kỳ Thủ(còn lock)↔Công(hết lock)
     auto_attack  bool default false   → chủ động công cờ địch (runHoangCoAttackAuto)
+                                       ★ 2026-08-17: đã có checkbox trong UI modal
+                                       (index.html:965) — không còn setting "chết".
+    auto_capture_resource bool default true → hết cờ địch → tự chiếm mỏ gần→xa.
+                                       ★ 2026-08-17: đã có checkbox UI (index.html:943).
     focus_flag_id          → khóa focus xây 1 cờ
     focus_attack_flag_id   → khóa focus phá 1 cờ
     self_placed_flag_ids[] → ID cờ do acc này cắm (persist, ưu tiên xây tiếp)
 
   ── Biến nội bộ LỚN (trong engine, không phải settings) ──
-    assaultLock (:2984)    = territoryNear || standByCenter → KHÓA chỉ MOVE+SIEGE,
+    assaultLock (:4140)    = territoryNear || standByCenter → KHÓA chỉ MOVE+SIEGE,
                              cấm cắm vành/chip/hop. Chống death circle.
-    territoryNear          = canReachEnemyFlag(ownBuilt, enemy) (built cheby≤3, :888)
+    territoryNear          = canReachEnemyFlag(ownBuilt, enemy) (built cheby≤3, :1021)
     nearPool               = enemyFlags lọc territoryNear (cheby≤3) → ưu tiên phá
     physNear               = ownBuilt có cờ cheby≤1 với địch (sát vật lý, xông ngay)
     phaseLabel             EXPAND_BRIDGE | BUILD_RING_ONLY | ASSAULT_MOVE_CENTER |
-                             ASSAULT_SIEGE  (state hiển thị)
-    bridgeCheby/hopsLeft   = khoảng cách + bước cắm tới địch (planBridgeToEnemy :961)
+                             ASSAULT_SIEGE | (central:  CHỜ_XÂY/XÂY/CẮM)  (:4141)
+    bridgeCheby/hopsLeft   = khoảng cách + bước cắm tới địch (planBridgeToEnemy :1094)
     safeR                  = max(flee_radius,2) vùng an toàn né địch
-    cfgMaxBuild            = flag_building_max (thường 3) slot xây concurrent
+    cfgMaxBuild            = flag_building_max / max_simultaneous_build (thường 3)
+                             slot xây concurrent
+    centralDowCap          = 3 — đủ 3 cờ dở quanh central → BẮT BUỘC xây xong 1
+                             cờ gần central nhất trước khi cắm tiếp (:3656)
     minBuiltToEnemy        = cheby cờ built gần địch nhất (mặt trận) — dùng trong
                              pickSiegePlaceCell để ép cắm chỉ TIẾN GẦN (không ngang/lùi)
 
 ================================================================================
-  5) LOGIC PHÂN NHÁNH CHÍNH (runHoangCoAuto :3870)
+  5) LOGIC PHÂN NHÁNH CHÍNH (runHoangCoAuto :5026)
 ================================================================================
-   if auto_break_flag || mission in ("pha_co","break_flag")
-         → return runHoangCoBreakFlagAuto        ★ (luồng riêng, đọc section 6) :2747
+  (0) Mission RIÊNG chạy trước (không cần auto_break_flag):
+      break_mode === "resource" | "resource_all"  → runHoangCoResourceMode (:1702)
+      break_mode === "satellites"                 → runHoangCoCaptureSatellite(_, true)
+                                                    (đã chiếm hết → WAITING 30s)
+
+  (1) auto_break_flag === true || mission ("pha_co"|"break_flag")
+         → return runHoangCoBreakFlagAuto        ★ (luồng riêng, xem section 6) :3517
 
   Ngược lại (mode thường):
     placeOn = auto_place!==false ;  buildOn = auto_build!==false
@@ -210,52 +260,60 @@
 
     if !expandOn && !defendOn && !centralOn && !attackOn → SKIPPED "chưa bật mục tiêu"
 
-    (1) expandOn  → runHoangCoExpandAuto
+    (2) expandOn  → runHoangCoExpandAuto
         nếu expandStillBusy / NO_EVENT / SKIPPED → return (chưa xong thì không qua sau)
-    (2) defendOn  → runHoangCoDefendAuto
+    (3) defendOn  → runHoangCoDefendAuto
         nếu có threatenedCount>0 hoặc defendStillBusy → return
-    (3) centralOn → runHoangCoDefendMineAuto (thủ central)
+    (4) centralOn → runHoangCoDefendMineAuto (thủ central)
         nếu còn lock / đang chờ an toàn → return
         nếu reason chứa "hết lock|không phải clan|nhường Công|chuyển Công"
             → runHoangCoAttackCentralAuto (công)
-    (4) attackOn  → runHoangCoAttackAuto
+    (5) attackOn  → runHoangCoAttackAuto
 
-  Các *StillBusy() (:1832+) = hàm quyết định "còn việc → đứng lại tick này".
+  Các *StillBusy() (:2753+: expandStillBusy :2753, defendStillBusy :2766,
+  defendMineStillBusy :2775, attackStillBusy :2789) = hàm quyết định "còn việc →
+  đứng lại tick này".
 
 ================================================================================
-   6) LOGIC PHÁ CỜ (runHoangCoBreakFlagAuto :2747) — STATE MACHINE
+   6) LOGIC PHÁ CỜ (runHoangCoBreakFlagAuto :3517) — STATE MACHINE
 ================================================================================
-   Mỗi tick: status + map_state → SCAN đầy đủ (logFlagScan :300).
+   Mỗi tick: status + map_state → SCAN đầy đủ (logFlagScan :303).
 
    ★ GATING THEO break_mode (settings.break_mode, mặc định "any"):
      - "any"      : enemyFlags = filterEnemyFlags(theo target_clan_name) (cũ).
      - "clan_wipe": giống "any" NHƯNG ép target_clan_name (phá sạch bang đó).
      - "central"  : enemyFlags = planCentralCapture().enemyAround (cờ địch trong
                     box central_radius quanh central). Khi enemyFlags rỗng →
-                    chiếm central NHƯNG BẮT BUỘC phải có cờ đồng minh ĐÃ XÂY chạm
-                    central (cheby≤1, vùng 3×3 phủ tâm central — ownReachCentral).
-                    Nếu chưa có → TỰ BRIDGE: pickCentralPlaceCell (:thêm mới) cắm
-                    chuỗi cờ tiến dần từ cờ mình tới sát central (mỗi cờ kề cờ trước
-                    ≤3, toC<minBuiltToCentral), xây xong rồi mới move lên central và
-                    attack_position central. Chỉ attack_position khi ownReachCentral.
-     (Xem runHoangCoBreakFlagAuto :2747 — khối if(!enemyFlags.length) :2832 phân nhánh central.)
+                    chiếm central NHƯNG BẮT BUỘC:
+                      a) clan ĐỦ central_min_satellites vệ tinh (thiếu → tự chạy
+                         runHoangCoCaptureSatellite :3626, KHÔNG công central)
+                      b) có cờ đồng minh CHẠM central (cheby≤1, reachCentralAny,
+                         tính CẢ cờ dở :3651). Chưa có → tự bridge
+                         pickCentralPlaceCell (:3712) cắm chuỗi cờ tiến dần tới
+                         central; đủ 3 cờ dở (centralDowCap) → xây xong 1 cờ gần
+                         central nhất trước. Cắm TỪ XA thử trước (place_flag không
+                         cần đứng tại ô) — fallback move tới ô nếu server bắt.
+                     Cờ chạm còn DỞ (touchDow cheby≤1) → start_build xong mới công.
+                     Công: đứng manhattan≤1 tâm → attack_position central (:3990).
 
-    A) Chọn target (sortBreakTargets :1151):
+    A) Chọn target (sortBreakTargets :1284):
        - filter enemy: isEnemyFlag (clan_id≠mình) + filterEnemyFlags(theo target_clan_name)
-       - skip_defended: bỏ cờ có defenders clan khác (isFlagDefendedByOtherClan :951)
+       - skip_defended: bỏ cờ có defenders clan khác (isFlagDefendedByOtherClan :1084)
+         → undefended (:4053). Mọi cờ đều có thủ → WAITING, clear focus_attack (:4075).
        - ƯU TIÊN nearPool = cờ địch ĐÃ NEAR (canReachEnemyFlag cheby≤3) → CHỈ PHÁ (cấm cắm)
-       - sort (sửa 2026-08): (1) cờ built mình cheby≤1 THỰC SỰ sát (physNear) → xông ngay;
-         (2) cờ GẦN MẶT TRẬN mình nhất (min cheby từ ownBuilt, KHÔNG theo khoảng cách me —
-         đảm bảo bridge đi đúng hướng, không bỏ cờ địch sát để đi cắm cờ xa);
-         (3) tie-break gần me → is_built → siege thấp → focus_attack.
+       - sort: (1) cờ built mình cheby≤1 THỰC SỰ sát (physNear) → xông ngay;
+         (2) cờ GẦN MẶT TRẬN mình nhất (min cheby từ ownBuilt — đảm bảo bridge
+         đi đúng hướng, không bỏ cờ địch sát để cắm xa); (3) tie-break gần me →
+         is_built → siege thấp → focus_attack.
 
-  B) Flee linh hoạt: block `if (fleeOn && fleeReady)` (:3043):
+  B) Flee linh hoạt: block `if (fleeOn && fleeReady)` (:4199):
+     - fleeOn = settings.flee_on_enemy_near === true (CHẶT — thiếu key = TẮT! :3530)
      - hostilesNear(player địch) trong fleeRadius
      - ASSAULT cờ trống: chỉ né nếu địch cheby≤1 (hostilesClose)
-     - pickSmartSafeDest (:435): ưu tiên cờ mình → cờ dở → cờ địch near khác → ô kite
+     - pickSmartSafeDest (:437): ưu tiên cờ mình → cờ dở → cờ địch near khác → ô kite
      - chỉ tới ô không địch trong safeR; cooldown 12s (persist break_flee_cooldown_until)
 
-  C) ASSAULT LOCK (:3098) khi territoryNear(cheby≤3) || standByCenter(chebyMe≤1):
+  C) ASSAULT LOCK (:4140) khi territoryNear(cheby≤3) || standByCenter(chebyMe≤1):
      - CHỈ: MOVE dest=flag.pos → siege_flag (side=attack)
      - CẤM cắm vành / chip resource / hop
      - Hủy transit nếu dest ≠ tâm cờ
@@ -265,22 +323,23 @@
          · territoryNear=true (built cheby≤3) → chờ 10s sync (không cắm vòng)
          · territoryNear=false + standByCenter → về neo cờ built cắm hop đúng kề
 
-    D) EXPAND khi chưa near (bridge/place, :3238+):
-       - Chờ in_transit (không spam leave+move) — death circle 2
-       - planBridgeToEnemy: neo=ownBuilt gần địch, hopsLeft
+    D) EXPAND khi chưa near (bridge/place, :4477+):
+       - Chờ in_transit (không spam leave+move) — death circle 2 (:4178)
+       - planBridgeToEnemy: neo=ownBuilt gần địch, hopsLeft (:1094)
        - CHỈ XÂY cờ dở HỮU ÍCH: cheby≤bridgeCheby (bỏ dở xa hơn neo)
        - Cờ dở sát (cheby≤1): chỉ xây, không cắm vòng
        - ★ LUẬT 3 CỜ DỞ (limit=flag_building_max, mặc định 3): server CẤM cắm thêm khi
          đã có 3 cờ đồng minh CHƯA xây xong. Khi buildSlotsFull → ƯU TIÊN XÂY XONG 1 cờ
-         dở GẦN ĐỊCH NHẤT (buildToFree) để có cờ built làm mỏ neo mở rộng, tiếp cận cờ
-         đối phương rồi mới phá tiếp (thay vì chỉ chờ). Xây xong 1 → slot trống → cắm tiếp.
-       - Cắm từ anchor cờ built (hopMax=3, KHÔNG neo từ me trên vành địch).
+         dở GẦN ĐỊCH NHẤT (buildToFree :4698) để có cờ built làm mỏ neo mở rộng, tiếp
+         cận cờ đối phương rồi mới phá tiếp (thay vì chỉ chờ). Xây xong 1 → slot trống
+         → cắm tiếp.
+       - Cắm từ anchor cờ built (hopMax=1, KHÔNG neo từ me trên vành địch).
          ★ LUẬT MỐC NEO (2026-08, user xác nhận): ô cắm BẮT BUỘC phải gần cờ đồng minh
          ĐÃ XÂY (is_built) trong khoảng cách cheby≤3 (BẰNG TẦM PHÁ cờ). Chỉ tính cờ built
          làm mốc (không tính cờ dở). Ưu tiên kề (cheby≤1) khi có ô kề tiến gần được; chỉ
          dùng đến cheby≤3 khi không còn ô kề nào tiến gần mặt trận. (Robust nếu server
          thực tế chỉ cho kề ≤1 — khi đó code tự chọn ô cheby≤1.)
-       - ★ CẮM TỐI ƯU (pickSiegePlaceCell :749): cấm toEnemy≤1 (vùng phủ tâm đích).
+       - ★ CẮM TỐI ƯU (pickSiegePlaceCell :744): cấm toEnemy≤1 (vùng phủ tâm đích).
          QUAN TRỌNG: CHỈ NHẬN ô TIẾN GẦN đích hơn MẶT TRẬN hiện tại
          (toEnemy < minBuiltToEnemy, minBuiltToEnemy = cheby cờ built gần đich nhất)
          VÀ cách cờ built gần nhất ≤3 (friendlyDist). CẤM đặt ngang hàng / lùi → không
@@ -288,28 +347,73 @@
          địch hơn 1 bước (cheby giảm) cho tới khi đạt cheby≤3 (đủ phá theo luật 3×3) thì
          chuyển ASSAULT. score ưu tiên toEnemy nhỏ + friendlyDist nhỏ (kề trước) + ô sát
          mặt trận (giữ chuỗi thẳng). Fallback vẫn phải toEnemy<minBuiltToEnemy + friendlyDist≤3.
-       - sticky break_pending_place đến khi place xong
+       - reclaimPos: ưu tiên ô cờ địch vừa phá (last_destroyed_flag_pos) nếu trống (:4733)
+       - sticky break_pending_place đến khi place xong (:4889)
        - place not_adjacent → exclude ô, thử ô khác (tối đa 4 ô)
        - place too_close enemy → DỪNG CẮM, force assault tick sau
        - flags full / build slots full → ưu tiên xây 1 cờ dở (xem LUẬT 3 CỜ DỞ)
-       - tryChipNearResource (:1250) nếu an toàn (không thủ clan khác), không chen khi dở sát
+       - không cắm được trong khi chebyMe≤2 || bridgeCheby≤2 → force PHÁ (:4970)
+       - tryChipNearResource (:1383) nếu an toàn (không thủ clan khác), không chen
+         khi dở sát
 
-  E) leave_defense (hàm :99): chỉ gọi khi rời pin / đổi việc / flee / move đi.
+    E) Hết cờ địch (mode any/clan_wipe): nếu auto_capture_resource!==false →
+       runHoangCoCaptureResource chiếm mỏ (:4033). Không có → DONE nghỉ 45s.
+
+    F) leave_defense (hàm :102): chỉ gọi khi rời pin / đổi việc / flee / move đi.
 
 ================================================================================
-   7) LOGIC EXPAND (runHoangCoExpandAuto :1321)
+    7) CHIẾM MỎ (resource) & VỆ TINH (satellite) — mission riêng (MỚI 2026-08)
+================================================================================
+  runHoangCoCaptureResource (:1497) — 1 mỏ / lần:
+    - status + eligible + clanId bắt buộc; chưa có vị trí → null (không chặn)
+    - pickResourceToCapture (:1458): loại mỏ đã của mình / protected / có thủ clan
+      khác / hết HP. Sort: (1) gần bot → (2) sát lãnh thổ (cờ built cheby≤3) →
+      (3) stronghold → (4) tier cao → (5) HP thấp. Gần → lan xa dần.
+    - BƯỚC 0: trySiegeEnemyFlagNear (:1727) — phá cờ địch cheby≤3 quanh mỏ trước
+      (game chặn cắm/chiếm khi còn cờ địch gần).
+    - FIX TREO: mọi cờ clan build_progress<=0 → đi tới + start_build (đã cắm nhưng
+      start_build fail → kẹt quota 3/3).
+    - Cờ chạm mỏ cheby≤2 CÒN DỞ → xây xong trước khi công.
+    - Chưa có cờ BUILT cheby≤2 → cắm bridge pickPlaceCellTowardTargetList
+      (allowOnTarget=false — KHÔNG cắm lên ô mỏ, :1621): maxHop 3, kề trước, exclude
+      ô fail; đủ cfgMaxBuild cờ dở → chờ xây xong; đủ maxFlags → chờ slot.
+      Cắm xong → start_build ngay (thử từ xa, fallback move tới ô).
+    - Đã có cờ built ≤2 → đứng trên ô mỏ + attack_position(resource, node_id)
+      qua tryChipNearResource({resource_attack_radius:999}) đến captured (:1679).
+
+  runHoangCoCaptureSatellite (:1801, captureAll=false) — 1 vệ tinh / lần:
+    - Điều kiện bỏ qua (return null): event chưa live / chưa eligible / không vị trí /
+      không satellites / đã chiếm HẾT. Nếu !captureAll && mySat>=minSat → null
+      (gate central: đủ điều kiện → nhường central chạy :1825).
+    - Chọn vệ tinh: ưu tiên có cờ clan GẦN NHẤT (tính cả cờ dở) → gần bot (:1840).
+    - proximity = attack_proximity_radius (min1 max2). Cần cờ clan cheby≤2 mới công.
+    - Tiến trình giống chiếm mỏ: phá cờ địch quanh (radius 3) → start_build cờ dở
+      chưa xây → xây cờ chạm → cắm bridge sát (không đè ô vệ tinh) →
+      đứng trong cheby≤proximity (findSatelliteStandCell :2058) →
+      attack_position(target_kind="satellite", p_target_id=city_key :2003)
+      đến captured / remaining_hp=0.
+    - Công fail vì thiếu cờ chạm → cắm 1 cờ chạm gần rồi công sau (:2015).
+
+  runHoangCoResourceMode (:1702): mission đứng riêng cho break_mode=resource/
+  resource_all — ép auto_capture_resource=true, gọi capture 1 mỏ; không có mỏ phù
+  hợp → WAITING 15s. (Chưa phân biệt resource vs resource_all tại :5031.)
+
+================================================================================
+    8) LOGIC EXPAND (runHoangCoExpandAuto :2087)
 ================================================================================
   - only_when_event_live (mặc định true): event chưa live → NO_EVENT chờ 5p
   - eligible + clanId bắt buộc (else SKIPPED)
   - myPos bắt buộc (else WAITING "vào map trước")
+  - heartbeat (rpc_hoang_co_heartbeat) để giữ session khi đứng bám xây (:2193)
   - focus: focus_flag_id hoặc cờ dở gần + an toàn (isFlagSiteDangerous)
   - Ưu: bám xây 1 cờ tới siege_points>=siege_max(600), xong mới cắm mới
   - place: pickPlaceCell ưu vùng myRegion, gần home/cụm cờ, không đè occ
+    (luôn lấy map LIVE khi đang cắm :2415)
   - place xong → start_build ngay, đứng bám tới is_built=true
   - maxPlacePerTick=1, maxGap=3, cfgMaxBuild concurrent
 
 ================================================================================
-   8) LOGIC THỦ CỜ (runHoangCoDefendAuto :1790) & CENTRAL (DefendMine :2281)
+    9) LOGIC THỦ CỜ (runHoangCoDefendAuto :2556) & CENTRAL (DefendMine :3051)
 ================================================================================
   Thủ cờ:
     - threatened = cờ is_built + siege<max (bị phá) HOẶC có besieger/địch gần
@@ -319,23 +423,24 @@
     - địch trong 3 ô quanh central → leave + flee về home, KHÔNG ở lại đánh
     - an toàn → rpc_hoang_co_defend_position central
     - hết lock → chuyển Công (attack_central)
-  Công central (runHoangCoAttackCentralAuto :2048):
+  Công central (runHoangCoAttackCentralAuto :2814):
     - mình giữ + còn lock → DONE "ưu tiên thủ"
     - else → move tâm → rpc_hoang_co_attack_position central
 
 ================================================================================
-   9) BUG ĐÃ GẶP & BÀI HỌC (ĐỪNG TÁI PHẠM)
+    10) BUG ĐÃ GẶP & BÀI HỌC (ĐỪNG TÁI PHẠM)
 ================================================================================
   [DEATH CIRCLE 1] me cheby=1 nhưng near=false → tool CẮM ô vành thay vì vào giữa
-      Fix: standByCenter (chebyMe≤1) → assault trước (không cắm vành)
+      Fix: standByCenter (chebyMe≤1) → assault trước (không cắm vành); force PHÁ khi
+           chebyMe≤2/bridgeCheby≤2 mà không cắm được (:4970)
   [DEATH CIRCLE 2] mỗi tick leave+move lại cùng ô place khi đang transit
-      Fix: chờ transit; sticky break_pending_place; place chỉ khi đứng đúng ô
+      Fix: chờ transit (:4178); sticky break_pending_place; place chỉ khi đứng đúng ô
   [SIEGE KHÔNG TRỪ] leave_defense trước mọi siege → gỡ pin → 600/600 mãi
       Fix: KHÔNG leave khi siege tiếp trên tâm (log "giữ pin")
   [XÂY DỞ XA NEO] xây #dở cheby=4 trong khi neo built cheby=3
       Fix: chỉ build incomplete cheby ≤ bridgeCheby
   [not_adjacent] hopMax 2–3 → place không kề built
-      Fix: hopMax=1 cứng; exclude ô fail
+      Fix: hopMax=1 mặc định (break_hop_max, engine đọc thật :4531); exclude ô fail
   [near vs server] local territoryNear vs server not_near
       Fix: standByCenter vẫn thử siege; not_near → về neo cắm hop, không cắm từ me
   [CHỒNG CHẤT CẮM] pickSiegePlaceCell chỉ cấm đặt lùi → cắm ngang hàng sát nhau vô nghĩa
@@ -344,24 +449,55 @@
       Fix (2026-08): ưu tiên gần MẶT TRẬN cờ mình (min cheby ownBuilt)
   [KẸT 3 CỜ DỞ] đủ 3 cờ chưa xây → server cấm cắm, code chỉ chờ → kẹt
       Fix (2026-08): buildSlotsFull → ưu tiên xây xong 1 cờ dở gần địch nhất (buildToFree)
+  [CỜ TREO build_progress=0] place ok nhưng start_build fail (player xa) → cờ kẹt
+      quota 3/3, không bao giờ xây → kẹt (gặp ở chiếm mỏ/vệ tinh)
+      Fix (2026-08): với mọi cờ building build_progress<=0 → move tới + start_build
+  [CẮM ĐÈ Ô MỎ/VỆ TINH] cắm bridge lên ô target → chặn bot đứng công
+      Fix (2026-08): allowOnTarget=false — giữ ô target trống cho bot đứng attack
+  [INSUFFICIENT SATELLITES] break_mode=central công central khi clan thiếu vệ tinh
+      Fix (2026-08): gate SỐ VỆ TINH ở :3613 — thiếu → tự chiếm vệ tinh, KHÔNG công
+  [CÔNG LẶP VÔ ÍCH] (2026-08-17) break_mode=central chiếm được central rồi vẫn
+      attack_position lại mỗi 45s (no check holder)
+      Fix: gate THỦ↔CÔNG :3925 — đã giữ central → ghim thủ (runHoangCoDefendMineAuto),
+           hết lock_until → tự chiếm lại
+  [FLEE MẶC ĐỊNH] trước đây flee_on_enemy_near!==false (thiếu key vẫn né) → bot cứ
+      lùi né thay vì cắm bridge central
+      Fix (2026-08): engine đọc CHẶT === true (:3530). Thiếu key = TẮT né.
+  [SETTING CHẾT] break_hop_max khai báo nhưng engine hardcode hopMax=1 / auto_attack
+      & auto_capture_resource không có UI toggle
+      Fix (2026-08-17): break_hop_max engine đọc thật (:4531); auto_attack (:965)
+      & auto_capture_resource (:943) có checkbox UI; gộp resource_all → resource UI.
   [ẨN CỜ] map_state FULL (không fog). "Không thấy" = filter target_clan/sai ưu tiên
 
 ================================================================================
-   10) ORCHESTRATOR PERSIST (lite/src/orchestrator.ts:976)
+    11) ORCHESTRATOR PERSIST & SCAN TRUNG TÂM (lite/src/orchestrator.ts:989)
 ================================================================================
-  Sau mỗi run hoang_co, store.setFeature merge:
+  Scan tập trung (:990-1037):
+    - scannerId = settings.hc_scanner_account_id; isScanner = trùng accountId
+    - acc phụ: đọc bể chung nếu còn tươi (scan_stale_ms) → mapOverride
+    - scanChanged = scanner vừa publish scanVersion MỚI → forceReplan=true
+    - acc phụ nhận scan mới → poll nhanh 3s (:1067)
+  Sau mỗi run hoang_co, store.setFeature merge (:1044):
     focus_flag_id, focus_attack_flag_id, self_placed_flag_ids,
     ...(result.persistHint)  ← reclaim, break_pending_place, break_place_exclude,
                                 break_flee_cooldown_until, break_force_assault,
                                 break_phase, last_destroyed_flag_pos/id
+  Delay: fastHc (siege/attack/move/place/build/flee) ≥2.5s; còn lại ≥5s; ngoài ra
+  theo result.nextDelayMs (:1058-1067).
   onLog gắn module "HOANG_CO" (logGate.ts:159) → UI đọc prefix này.
 
 ================================================================================
-   11) UI / API LITE
+    12) UI / API LITE
 ================================================================================
-  - Modal Hoàng Cổ: Phá cờ (auto_break_flag), bang target (Tải list), break_hop,
-    skip_defended, flee, attack resource; mode thường khi tắt Phá cờ.
-  - "break_mode" select: any / central / clan_wipe.
+  - Modal Hoàng Cổ (index.html:902): Phá cờ (auto_break_flag), bang target
+    (Tải list), break_mode select 5 option (index.html:916-921):
+    any / central / clan_wipe / resource / satellites.
+    Hint: Central/Clan wipe cần bật Phá cờ; Resource/Satellites chạy độc lập;
+    Central tự chiếm vệ tinh nếu thiếu (:925).
+  - break_hop, skip_defended, flee_on_enemy_near, attack_near_resource,
+    auto_capture_resource (hết cờ địch → tự chiếm mỏ, :943).
+  - "Chế độ khác" (khi tắt Phá cờ, :959-965): auto_place, auto_build, auto_defend,
+    auto_central, auto_attack (công cờ địch, :965).
   - Phần "Nâng cao": central_radius, scan_stale_ms.
   - Checkbox "Tài khoản này làm Scanner chính" → gán hc_scanner_account_id (= accId
     của modal đó). Chỉ hiện ở modal TỪNG acc (ẩn bulk). BULK_SKIP_KEYS có
@@ -372,10 +508,10 @@
   - Double-click title "AUTO LITE" → nhập pass backup (hiện nút ⚙ Nhanh).
 
 ================================================================================
-   12) CẤU TRÚC THƯ MỤC & DEPLOY
+    13) CẤU TRÚC THƯ MỤC & DEPLOY
 ================================================================================
    D:\game\Trùng sinh\Auto Game\Auto Best\
-     lib\hoangCoEngine.ts        ★ engine (~3961 dòng)
+     lib\hoangCoEngine.ts        ★ engine (5136 dòng)
      lite\src\orchestrator.ts
      lite\src\config.ts
      lite\src\server.ts
@@ -389,15 +525,20 @@
    Deploy: render.yaml → service auto-game-lite, root repo, start: cd lite && npm start
 
 ================================================================================
-   13) GỢI Ý PROMPT CHO CHAT MỚI
+    14) GỢI Ý PROMPT CHO CHAT MỚI
 ================================================================================
   "Tiếp tục feature Hoàng Cổ (Auto Best lite, repo auto-game-lite).
    Đọc lib/hoangCoEngine.ts và hoang_co_handoff.txt trước.
-    Entry: runHoangCoAuto (:3870). Mission Phá cờ: runHoangCoBreakFlagAuto (:2747).
+    Entry: runHoangCoAuto (:5026). Mission Phá cờ: runHoangCoBreakFlagAuto (:3517).
+    Mission riêng: resource/resource_all → runHoangCoResourceMode (:1702);
+    satellites → runHoangCoCaptureSatellite (:1801).
     Nguyên tắc vàng: (1) không leave_defense khi đang siege trên tâm;
    (2) standByCenter→assault trước, CẤM cắm ô vành; (3) chờ transit, không spam move.
    Quy tắc 3×3: cắm cấm tâm địch cheby≤1 (cho phép ≥2); phá cần built cheby≤3 (canReachEnemyFlag).
    Cắm chỉ TIẾN GẦN mặt trận (toEnemy<minBuiltToEnemy), đủ 3 cờ dở thì xây 1 cờ dở gần địch nhất.
+   Central: đủ central_min_satellites vệ tinh mới công; bridge cờ chạm cheby≤1;
+   chiếm mỏ cần cờ built cheby≤2 + đứng trên ô mỏ; place TỪ XA thử trước.
+   flee_on_enemy_near đọc CHẶT === true.
    Vấn đề hiện tại: [mô tả] + dán log 'HOANG_CO'."
 
 ================================================================================

@@ -917,12 +917,11 @@
             <option value="any" ${String(draft.break_mode||"any")==="any"?"selected":""}>Any — phá gần nhất / theo bang (mặc định)</option>
             <option value="central" ${String(draft.break_mode||"any")==="central"?"selected":""}>Central — phá sạch cờ địch quanh central rồi chiếm</option>
             <option value="clan_wipe" ${String(draft.break_mode||"any")==="clan_wipe"?"selected":""}>Clan wipe — phá sạch toàn bộ cờ của 1 bang</option>
-            <option value="resource" ${String(draft.break_mode||"any")==="resource"?"selected":""}>Resource — chiếm mỏ (ưu tiên gần→xa)</option>
-            <option value="resource_all" ${String(draft.break_mode||"any")==="resource_all"?"selected":""}>Resource all — chiếm hết mọi mỏ</option>
+            <option value="resource" ${String(draft.break_mode||"any")==="resource"?"selected":""}>Resource — chiếm mỏ (gần→xa)</option>
             <option value="satellites" ${String(draft.break_mode||"any")==="satellites"?"selected":""}>Satellites — chiếm hết vệ tinh</option>
           </select>
         </div>
-        <div class="mu" style="font-size:10px;margin:2px 0 6px;opacity:.8">Central / Clan wipe thì <b>phải bật ☑ Phá cờ</b>. Resource / Resource all / Satellites chạy độc lập, <b>không</b> cần bật Phá cờ. Central tự động đi chiếm vệ tinh trước nếu clan chưa có.</div>
+        <div class="mu" style="font-size:10px;margin:2px 0 6px;opacity:.8">Central / Clan wipe thì <b>phải bật ☑ Phá cờ</b>. Resource / Satellites chạy độc lập, <b>không</b> cần bật Phá cờ. Central tự động đi chiếm vệ tinh trước nếu clan chưa có. Central chiếm được → tự chuyển <b>Thủ (ghim)</b>, hết lock tự chiếm lại.</div>
         <div class="f">
           <label>Bang hội cần phá (chọn từ map)</label>
           <div style="display:flex;gap:6px;align-items:center">
@@ -935,12 +934,13 @@
         </div>
         <div class="mu" style="font-size:10px;margin:4px 0 8px;opacity:.85">
           Scan near → <b>vào giữa phá</b>. Chưa near → cắm/xây bridge (cờ sát chỉ xây, không cắm vòng).
-          <b>Bị dí</b> (player địch gần) → tạm né cờ mình (mặc định bật).
+          <b>Bị dí</b> (player địch gần) → tạm né cờ mình (tắt ☑ flee_on_enemy_near nếu muốn đứng cắm bridge).
         </div>
         <div class="f chk"><input type="checkbox" data-k="break_hop" ${bool("break_hop", true)?"checked":""}/><label>Chưa near → cắm/xây bridge</label></div>
         <div class="f chk"><input type="checkbox" data-k="skip_defended_flags" ${bool("skip_defended_flags", true)?"checked":""}/><label>Né cờ có người thủ clan khác</label></div>
         <div class="f chk"><input type="checkbox" data-k="flee_on_enemy_near" ${bool("flee_on_enemy_near", true)?"checked":""}/><label>Bị dí → né linh hoạt (giữ khoảng cách, đích an toàn, có thể xây/phá chỗ khác)</label></div>
         <div class="f chk"><input type="checkbox" data-k="attack_near_resource" ${bool("attack_near_resource", true)?"checked":""}/><label>Lúc bridge: chip resource (không thủ clan khác)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_capture_resource" ${bool("auto_capture_resource", true)?"checked":""}/><label>Hết cờ địch → tự đi <b>chiếm mỏ</b> (gần→xa)</label></div>
         <hr style="border:none;border-top:1px solid #333;margin:10px 0"/>
         <div class="mu" style="font-size:11px;margin-bottom:6px"><b>Nâng cao</b> — quét tập trung &amp; central:</div>
         ${showScanner ? `
@@ -962,6 +962,7 @@
         <div class="f chk"><input type="checkbox" data-k="auto_build" ${bool("auto_build", true)?"checked":""}/><label>Xây cờ (mở rộng)</label></div>
         <div class="f chk"><input type="checkbox" data-k="auto_defend" ${bool("auto_defend", true)?"checked":""}/><label>Thủ cờ</label></div>
         <div class="f chk"><input type="checkbox" data-k="auto_central" ${bool("auto_central", true)?"checked":""}/><label>Central (thủ ↔ công)</label></div>
+        <div class="f chk"><input type="checkbox" data-k="auto_attack" ${bool("auto_attack", false)?"checked":""}/><label>Công cờ địch (sau khi xong việc khác)</label></div>
       `;
     }
 

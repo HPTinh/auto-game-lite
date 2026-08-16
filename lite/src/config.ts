@@ -337,8 +337,8 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      */
     skip_defended_flags: true,
     /**
-     * Phá cờ: địch player gần → tạm né về cờ mình (mặc định BẬT, không cần tick).
-     * Tắt: flee_on_enemy_near = false.
+     * Phá cờ: địch player gần → tạm né về cờ mình.
+     * Engine đọc CHẶT === true (thiếu key = TẮT né) — config default true nên bật.
      */
     flee_on_enemy_near: true,
     flee_radius: 2,
@@ -365,8 +365,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
      * Mode phá cờ:
      *  "any"       — phá bất kỳ cờ địch gần nhất (hành vi cũ, mặc định)
      *  "central"   — tập trung chiếm central: phá sạch cờ địch trong box central_radius,
-     *                xây bridge 3×3 chạm central, rồi chiếm central
+     *                xây bridge 3×3 chạm central, rồi chiếm central.
+     *                Chiếm được → tự chuyển Thủ (ghim), hết lock_until tự chiếm lại.
      *  "clan_wipe" — phá sạch toàn bộ cờ của target_clan_name
+     *  "resource"  — mission riêng: chiếm mỏ gần→xa (không cần bật Phá cờ)
+     *  "satellites"— mission riêng: chiếm hết vệ tinh (không cần bật Phá cờ)
+     *  ("resource_all" tương thích settings cũ — engine xử lý như "resource")
      */
     break_mode: "any",
     /** Acc được chỉ định làm scanner quét bể chung (chuỗi id). Rỗng = không scan tập trung */
