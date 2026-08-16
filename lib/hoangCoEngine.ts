@@ -1801,6 +1801,18 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
     const ef = near.f;
     const flagId = Math.floor(n(ef.flag_id));
     const dist = manhattan(ef.pos_x, ef.pos_y, opts.me.x, opts.me.y);
+    // ── LUẬT 3×3 (bắt buộc): chỉ phá được nếu có cờ đồng minh ĐÃ XÂY cheby≤3
+    // gần cờ địch. Thiếu cờ gần → siege chắc chắn not_near vô hạn.
+    // Bỏ qua để flow chuyển sang cắm bridge tiến lại (không lãng phí lần not_near).
+    const ownBuiltNear = parseFlags(opts.map).some(
+      (f: any) =>
+        f.clan_id === opts.clanId &&
+        f.is_built === true &&
+        chebyshev(f.pos_x, f.pos_y, ef.pos_x, ef.pos_y) <= 3
+    );
+    if (!ownBuiltNear) {
+      return null;
+    }
     // Đang transit tới đúng cờ này → CHỜ tới nơi, không siege sớm
     // (map_state có thể báo pos=dest + in_transit=true → dist=0 nhưng chưa đứng trên cờ).
     if (
