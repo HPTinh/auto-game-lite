@@ -1724,9 +1724,10 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
    * Trả summary nếu đang phá (caller return luôn), hoặc null nếu không có cờ địch gần.
    * Cơ chế: đứng trên ô cờ địch → rpc_hoang_co_siege_flag (giống phá cờ mode).
    */
+  const notNearFailCount = new Map<number, number>();
   async function trySiegeEnemyFlagNear(opts: {
     map: any;
-    me: Pos;
+    me: NonNullable<ReturnType<typeof myPos>>;
     clanId: string;
     characterId: string;
     accessToken: string;
@@ -1740,6 +1741,9 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
   }): Promise<HoangCoRunSummary | null> {
     const radius = opts.radius ?? 3;
     const enemies = parseFlags(opts.map).filter((f: any) => isEnemyFlag(f, opts.clanId));
+    // dọn counter: cờ không còn trên map (đã bị phá/biến mất) → bỏ theo dõi
+    const aliveIds = new Set<number>(enemies.map((f: any) => Math.floor(n(f.flag_id))));
+    for (const id of [...notNearFailCount.keys()]) if (!aliveIds.has(id)) notNearFailCount.delete(id);
     const near = enemies
       .map((f: any) => ({ f, d: chebyshev(f.pos_x, f.pos_y, opts.tx, opts.ty) }))
       .filter((x: any) => x.d <= radius)
@@ -1750,7 +1754,24 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       )[0];
     if (!near) return null;
     const ef = near.f;
+    const flagId = Math.floor(n(ef.flag_id));
     const dist = manhattan(ef.pos_x, ef.pos_y, opts.me.x, opts.me.y);
+    // Đang transit tới đúng cờ này → CHỜ tới nơi, không siege sớm
+    // (map_state có thể báo pos=dest + in_transit=true → dist=0 nhưng chưa đứng trên cờ).
+    if (
+      dist === 0 &&
+      opts.me.inTransit &&
+      opts.me.eta > 0 &&
+      opts.me.destX === ef.pos_x &&
+      opts.me.destY === ef.pos_y
+    ) {
+      return opts.baseSummary({
+        action: "wait_transit_siege_enemy_flag",
+        etaSeconds: opts.me.eta,
+        nextDelayMs: Math.max(3000, opts.me.eta * 1000 + 2000),
+        reason: `${opts.label}: đang tới phá cờ địch #${flagId} (transit ${opts.me.eta}s, chờ tới nơi)`,
+      });
+    }
     if (dist > 0) {
       await leaveDefense(opts.characterId, opts.accessToken, opts.onLog);
       const mv = await rpc(
@@ -1765,27 +1786,99 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
         action: "move_to_siege_enemy_flag",
         etaSeconds: eta,
         nextDelayMs: Math.max(3000, eta * 1000 + 2000),
-        reason: `${opts.label}: đi phá cờ địch #${ef.flag_id} @(${ef.pos_x},${ef.pos_y}) (cách mục tiêu ${near.d})`,
+        reason: `${opts.label}: đi phá cờ địch #${flagId} @(${ef.pos_x},${ef.pos_y}) (cách mục tiêu ${near.d})`,
       });
     }
     try {
       const res = await rpc(
         "rpc_hoang_co_siege_flag",
-        { p_character_id: opts.characterId, p_flag_id: ef.flag_id },
+        { p_character_id: opts.characterId, p_flag_id: flagId },
         opts.accessToken
       );
+      notNearFailCount.delete(flagId);
       return opts.baseSummary({
         action: "siege_enemy_flag",
         siegePoints: n(res?.siege_points, 0),
         siegeMax: n(res?.siege_max, 0),
         nextDelayMs: opts.pollMs,
-        reason: `${opts.label}: phá cờ địch #${ef.flag_id} · siege ${n(res?.siege_points)}/${n(res?.siege_max)}`,
+        reason: `${opts.label}: phá cờ địch #${flagId} · siege ${n(res?.siege_points)}/${n(res?.siege_max)}`,
       });
     } catch (e: any) {
+      const msg = (e?.message || e).toString();
+      if (/not_near/i.test(msg)) {
+        const fail = notNearFailCount.get(flagId) || 0;
+        // quá số lần → bỏ cờ kẹt, để flow tiếp tục (bridge/chiếm) — tránh vòng lặp not_near vô hạn
+        if (fail >= 4) {
+          notNearFailCount.delete(flagId);
+          return null;
+        }
+        notNearFailCount.set(flagId, fail + 1);
+        // 1) Xác minh vị trí THẬT bằng map_state tươi của chính acc (không tin mapOverride bể chung)
+        let meFresh = opts.me;
+        try {
+          const fresh = await rpc("rpc_hoang_co_map_state", { p_character_id: opts.characterId }, opts.accessToken);
+          const fp = myPos(fresh);
+          if (fp) meFresh = fp;
+        } catch {
+          /* giữ vị trí cũ */
+        }
+        if (meFresh.x !== opts.me.x || meFresh.y !== opts.me.y) {
+          const df = manhattan(ef.pos_x, ef.pos_y, meFresh.x, meFresh.y);
+          if (df > 0) {
+            await leaveDefense(opts.characterId, opts.accessToken, opts.onLog);
+            const mv = await rpc(
+              "rpc_hoang_co_move",
+              { p_character_id: opts.characterId, p_dest_x: ef.pos_x, p_dest_y: ef.pos_y },
+              opts.accessToken
+            );
+            const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+            return opts.baseSummary({
+              moved: true,
+              dest: { x: ef.pos_x, y: ef.pos_y },
+              action: "move_to_siege_enemy_flag_resync",
+              etaSeconds: eta,
+              nextDelayMs: Math.max(3000, eta * 1000 + 2000),
+              reason: `${opts.label}: vị trí lệch (me @(${meFresh.x},${meFresh.y})) → đi phá cờ địch #${flagId}`,
+            });
+          }
+        }
+        // 2) Map tươi vẫn nói đang trên cờ mà siege not_near → đích bị chặn/ghost →
+        //    né ra 1 ô kề trống, tick sau sẽ move vào lại và siege (tự xác minh lại)
+        const occupied = occupiedCells(opts.map);
+        const cands = [
+          { x: ef.pos_x + 1, y: ef.pos_y },
+          { x: ef.pos_x - 1, y: ef.pos_y },
+          { x: ef.pos_x, y: ef.pos_y + 1 },
+          { x: ef.pos_x, y: ef.pos_y - 1 },
+        ];
+        const free = cands.find((c) => !occupied.has(cellKey(c.x, c.y)));
+        if (free) {
+          await leaveDefense(opts.characterId, opts.accessToken, opts.onLog);
+          const mv = await rpc(
+            "rpc_hoang_co_move",
+            { p_character_id: opts.characterId, p_dest_x: free.x, p_dest_y: free.y },
+            opts.accessToken
+          );
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, 0)));
+          return opts.baseSummary({
+            moved: true,
+            dest: free,
+            action: "nudge_siege_enemy_flag",
+            etaSeconds: eta,
+            nextDelayMs: Math.max(3000, eta * 1000 + 2000),
+            reason: `${opts.label}: cờ #${flagId} not_near ×${fail + 1} → né ra ô kề @(${free.x},${free.y}) thử lại`,
+          });
+        }
+        return opts.baseSummary({
+          action: "siege_enemy_flag",
+          nextDelayMs: 15_000,
+          reason: `${opts.label}: phá cờ địch #${flagId} lỗi not_near ×${fail + 1} (me @(${opts.me.x},${opts.me.y}) transit=${opts.me.inTransit} dest=@(${opts.me.destX ?? "-"},${opts.me.destY ?? "-"}))`,
+        });
+      }
       return opts.baseSummary({
         action: "siege_enemy_flag",
         nextDelayMs: 15_000,
-        reason: `${opts.label}: phá cờ địch #${ef.flag_id} lỗi: ${(e?.message || e).toString().slice(0, 100)}`,
+        reason: `${opts.label}: phá cờ địch #${flagId} lỗi: ${msg.slice(0, 100)}`,
       });
     }
   }
