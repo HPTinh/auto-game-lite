@@ -1536,6 +1536,37 @@ async function runHoangCoCaptureResource(options: HoangCoAutoOptions): Promise<H
       ...over,
     });
 
+    // ── ƯU TIÊN XÂY DỞ TRƯỚC: quota cờ dở ĐẦY (vd 3/3) → phải xây xong ≥1 mới được
+    // làm việc khác (siege cờ địch / cắm bridge / chiếm mỏ). Tránh bot kẹt: không cắm
+    // mới được, không chiếm được, cứ đi vòng vòng.
+    if (building.length >= cfgMaxBuild) {
+      const stuck = [...building]
+        .filter((f) => n(f.build_progress, 0) <= 0)
+        .sort(
+          (a, b) =>
+            chebyshev(a.pos_x, a.pos_y, resTile.x, resTile.y) -
+            chebyshev(b.pos_x, b.pos_y, resTile.x, resTile.y)
+        );
+      if (stuck.length > 0) {
+        const f = stuck[0];
+        const dist = manhattan(f.pos_x, f.pos_y, me.x, me.y);
+        if (dist > 0) {
+          await leaveDefense(characterId, accessToken, onLog);
+          const mv = await rpc("rpc_hoang_co_move", { p_character_id: characterId, p_dest_x: f.pos_x, p_dest_y: f.pos_y }, accessToken);
+          const eta = Math.max(0, Math.floor(n(mv?.eta_seconds, dist * 3)));
+          return baseSummary({ moved: true, dest: { x: f.pos_x, y: f.pos_y }, action: "move_quota_build_resource", etaSeconds: eta, nextDelayMs: Math.max(3000, eta * 1000 + 2000), reason: `Resource ${target.label}: cờ dở ${building.length}/${cfgMaxBuild} → đi start_build #${f.flag_id} @(${f.pos_x},${f.pos_y}) trước` });
+        }
+        await leaveDefense(characterId, accessToken, onLog);
+        try {
+          await rpc("rpc_hoang_co_start_build", { p_character_id: characterId, p_flag_id: f.flag_id }, accessToken);
+        } catch (be: any) {
+          onLog?.("WARN", `Resource ${target.label} · start_build #${f.flag_id}: ${String(be?.message || "").slice(0, 100)}`);
+        }
+        return baseSummary({ built: 1, action: "start_build_quota_resource", reason: `Resource ${target.label} · start_build #${f.flag_id} (quota ${building.length}/${cfgMaxBuild} đầy)` });
+      }
+      return baseSummary({ reason: `Resource ${target.label}: ${building.length}/${cfgMaxBuild} cờ dở đang xây → chờ xong ≥1 mới chiếm/mở rộng`, nextDelayMs: pollMs });
+    }
+
     // ── BƯỚC 0: phá cờ đối phương quanh mỏ (bắt buộc trước khi cắm cờ đồng minh).
     const sieged = await trySiegeEnemyFlagNear({
       map,
@@ -1725,6 +1756,8 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
    * Cơ chế: đứng trên ô cờ địch → rpc_hoang_co_siege_flag (giống phá cờ mode).
    */
   const notNearFailCount = new Map<number, number>();
+  /** Cờ địch không phá được (not_near liên tục) → tạm bỏ qua trong 150s để flow xây/chiếm tiếp tục */
+  const skipSiegeUntil = new Map<number, number>();
   async function trySiegeEnemyFlagNear(opts: {
     map: any;
     me: NonNullable<ReturnType<typeof myPos>>;
@@ -1740,10 +1773,11 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
     pollMs: number;
   }): Promise<HoangCoRunSummary | null> {
     const radius = opts.radius ?? 3;
-    const enemies = parseFlags(opts.map).filter((f: any) => isEnemyFlag(f, opts.clanId));
-    // dọn counter: cờ không còn trên map (đã bị phá/biến mất) → bỏ theo dõi
-    const aliveIds = new Set<number>(enemies.map((f: any) => Math.floor(n(f.flag_id))));
-    for (const id of [...notNearFailCount.keys()]) if (!aliveIds.has(id)) notNearFailCount.delete(id);
+    const enemies = parseFlags(opts.map).filter((f: any) => {
+      if (!isEnemyFlag(f, opts.clanId)) return false;
+      const skipUntil = skipSiegeUntil.get(Math.floor(n(f.flag_id)));
+      return !(skipUntil && skipUntil > Date.now());
+    });
     const near = enemies
       .map((f: any) => ({ f, d: chebyshev(f.pos_x, f.pos_y, opts.tx, opts.ty) }))
       .filter((x: any) => x.d <= radius)
@@ -1836,9 +1870,10 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       const msg = (e?.message || e).toString();
       if (/not_near/i.test(msg)) {
         const fail = notNearFailCount.get(flagId) || 0;
-        // quá số lần → bỏ cờ kẹt, để flow tiếp tục (bridge/chiếm) — tránh vòng lặp not_near vô hạn
-        if (fail >= 4) {
+        // quá số lần → BỎ hẳn cờ kẹt 150s (để flow xây/chiếm tiếp tục), tránh quay lại mãi
+        if (fail >= 3) {
           notNearFailCount.delete(flagId);
+          skipSiegeUntil.set(flagId, Date.now() + 150_000);
           return null;
         }
         notNearFailCount.set(flagId, fail + 1);
