@@ -714,6 +714,33 @@ function isLimitError(error: any) {
   return raw.includes("daily_limit") || raw.includes("online_limit") || raw.includes("time_limit") || raw.includes("limit_reached") || raw.includes("out_of_time") || raw.includes("expired");
 }
 
+/** Lỗi cứng (auth/account) — phải dừng hẳn, không tự phục hồi. */
+function isFatalError(error: any): boolean {
+  const s = Number(error?.status);
+  if (s === 401 || s === 403) return true;
+  const raw = errorText(error).toLowerCase();
+  return (
+    raw.includes("unauthorized") ||
+    raw.includes("forbidden") ||
+    raw.includes("invalid_token") ||
+    raw.includes("token_expired") ||
+    raw.includes("not_authenticated") ||
+    raw.includes("login_required") ||
+    raw.includes("session") ||
+    raw.includes("banned") ||
+    raw.includes("blocked") ||
+    raw.includes("character_not_found")
+  );
+}
+
+/** Lỗi chưa phân loại nhưng KHÔNG cứng → bọc lại để top-level trả WAITING + softRescan (tự phục hồi). */
+class FarmRecoverableError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = "FarmRecoverableError";
+  }
+}
+
 function isNotEnoughMpError(error: any): boolean {
   const raw = errorText(error);
   if (!raw) return false;
@@ -2222,6 +2249,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     };
   }
 
+  let recoverable = false;
   try {
     const tierRegionsForLearning = regionsForTier(realmTier);
     const maxLearnedRegions = Math.max(1, Math.min(tierRegionsForLearning.length, Number(settings.max_available_base_codes || 2)));
@@ -2813,7 +2841,16 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
           } else {
             runtime.currentMob = null;
             runtime.currentMobHits = 0;
-            throw error;
+            // Lỗi chưa phân loại: nếu là lỗi cứng (auth/account) thì ném để dừng;
+            // ngược lại bọc thành FarmRecoverableError để top-level trả WAITING + softRescan
+            // (tự phục hồi/rescan thay vì spin PARTIAL_ERROR mỗi tick — chống "FARM HĂNG").
+            if (isFatalError(error)) throw error;
+            onLog?.(
+              "WARN",
+              `Farm lỗi chưa phân loại (${(error?.message || "").toString().slice(0, 140)}) · tự phục hồi/rescan`,
+              error?.data || { message: error?.message }
+            );
+            throw new FarmRecoverableError(error?.message || "unknown farm error");
           }
         }
 
@@ -2988,8 +3025,13 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
       }
     }
   } catch (error: any) {
-    errors.push(error?.message || "Farm quái lỗi không xác định");
-    onLog?.("ERROR", error?.message || "Farm quái lỗi không xác định.", error?.data || { message: error?.message });
+    if (error instanceof FarmRecoverableError) {
+      recoverable = true;
+      onLog?.("WARN", `Farm tự phục hồi sau lỗi chưa phân loại: ${error.message}`);
+    } else {
+      errors.push(error?.message || "Farm quái lỗi không xác định");
+      onLog?.("ERROR", error?.message || "Farm quái lỗi không xác định.", error?.data || { message: error?.message });
+    }
   }
 
   // smart_rebirth: đã attack nhưng không kill / quest không tăng → đảo counter
@@ -3017,11 +3059,14 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     }
   }
 
+  // Lỗi chưa phân loại (không cứng) → tự phục hồi: WAITING + softRescan, retry nhanh thay vì spin PARTIAL_ERROR.
   const status: FarmRunSummary["status"] = shouldStop?.()
     ? "WAITING"
-    : attackCount > 0
-      ? (errors.length ? "PARTIAL_ERROR" : "RUNNING")
-      : (errors.length ? "PARTIAL_ERROR" : "WAITING");
+    : recoverable
+      ? "WAITING"
+      : attackCount > 0
+        ? (errors.length ? "PARTIAL_ERROR" : "RUNNING")
+        : (errors.length ? "PARTIAL_ERROR" : "WAITING");
 
   return {
     startedAt,
@@ -3055,7 +3100,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     skippedLockedCount,
     scannedRealmCount,
     lastTarget,
-    nextDelayMs: attackCount > 0 ? nextAttackDelayMs : emptyScanDelayMs,
+    nextDelayMs: recoverable ? 1500 : attackCount > 0 ? nextAttackDelayMs : emptyScanDelayMs,
+    softRescan: recoverable,
     persist: persistFarm,
     errors,
     questProgress: undefined,
