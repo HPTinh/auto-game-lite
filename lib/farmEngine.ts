@@ -523,6 +523,13 @@ function realmCodeFor(baseCode: string, channelNo: number) {
   return `${baseCode}_c${channel}`;
 }
 
+// Kênh đơn: chỉ có 1 kênh / 1 khu vực duy nhất -> join thẳng realm_code, không quét vùng/kênh.
+function getSingleChannelRealmCode(settings: Record<string, any>): string | null {
+  if (settings.farm_single_channel !== true && settings.farm_single_channel !== "true") return null;
+  const code = String(settings.farm_single_realm_code || settings.single_realm_code || "").trim();
+  return code || null;
+}
+
 function getRuntime(characterId: string, settings: Record<string, any>): FarmRuntimeState {
   const tier = getFarmRealmTier(settings);
   const tierRegions = regionsForTier(tier);
@@ -1884,6 +1891,10 @@ async function buildRealmCandidates(args: {
   shouldStop?: () => boolean;
 }) {
   const { characterId, accessToken, runtime, channels, settings, onRegionAvailability, shouldStop } = args;
+  const singleRealm = getSingleChannelRealmCode(settings);
+  if (singleRealm) {
+    return [{ baseCode: "(single)", label: "Kênh duy nhất", realmCode: singleRealm, channelNo: 1, realmId: undefined }];
+  }
   const regions = regionPlan(runtime, settings);
   const tierRegions = regionsForTier(getFarmRealmTier(settings));
   const maxAvailable = Math.max(1, Math.min(tierRegions.length, Number(settings.max_available_base_codes || 2)));
@@ -2018,6 +2029,11 @@ async function findBossAcrossRealms(args: {
   shouldStop?: () => boolean;
 }) {
   const { characterId, accessToken, runtime, channels, settings, claimMobLock, onRegionAvailability, onLog, shouldStop } = args;
+  const singleRealm = getSingleChannelRealmCode(settings);
+  if (singleRealm) {
+    // Kênh đơn: không quét/xoay kênh tìm boss -> giữ nguyên realm hiện tại.
+    return { found: false, scanned: 0, skippedLocked: 0 };
+  }
   const candidates = await buildRealmCandidates({ characterId, accessToken, runtime, channels, settings, onRegionAvailability, shouldStop });
   if (!candidates.length) return { found: false, scanned: 0, skippedLocked: 0 };
 
@@ -2511,13 +2527,20 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         }
         runtime.noMobCount += 1;
         if (runtime.noMobCount >= noMobBeforeRotate) {
-          const oldRealm = runtime.currentRealm ? { ...runtime.currentRealm } : null;
-          if (runtime.currentRealm?.realmId) await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
-          runtime.currentRealm = null;
-          clearTargetQueue(runtime);
-          runtime.noMobCount = 0;
-          runtime.mobDeadStreak = 0;
-          onLog?.("DEBUG", "Farm không còn mob phù hợp, leave + xoay realm/kênh.", oldRealm || undefined);
+          const singleRealm = getSingleChannelRealmCode(settings);
+          if (singleRealm) {
+            // Kênh đơn: không rời/xoay, giữ nguyên realm và quét lại.
+            runtime.noMobCount = 0;
+            onLog?.("DEBUG", "Farm kênh đơn: không còn mob phù hợp, giữ nguyên kênh và quét lại.", { realmCode: singleRealm });
+          } else {
+            const oldRealm = runtime.currentRealm ? { ...runtime.currentRealm } : null;
+            if (runtime.currentRealm?.realmId) await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
+            runtime.currentRealm = null;
+            clearTargetQueue(runtime);
+            runtime.noMobCount = 0;
+            runtime.mobDeadStreak = 0;
+            onLog?.("DEBUG", "Farm không còn mob phù hợp, leave + xoay realm/kênh.", oldRealm || undefined);
+          }
         }
       } else {
         if (strictBossMode && next.target.kind !== "boss") {
