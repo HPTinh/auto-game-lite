@@ -5136,13 +5136,15 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
   const settings = options.settings || {};
   const onLog = options.onLog;
 
-  // Mission riêng: Chiếm resource (break_mode === "resource" / "resource_all") — cắm→xây→chiếm mỏ, ưu tiên gần trước
-  if (settings.break_mode === "resource" || settings.break_mode === "resource_all") {
+  // Mission riêng: Chiếm resource (break_mode === "resource") — cắm→xây→chiếm mỏ, ưu tiên gần trước.
+  // Chỉ chạy khi CÓ tích Phá cờ; nếu không tích → break_mode chỉ là option tham chiếu, rơi xuống expand/build thường.
+  const breakModeOn = settings.auto_break_flag === true || settings.mission === "pha_co" || settings.mission === "break_flag";
+  if (breakModeOn && (settings.break_mode === "resource" || settings.break_mode === "resource_all")) {
     return runHoangCoResourceMode(options);
   }
 
   // Mission riêng: Chiếm vệ tinh (break_mode === "satellites") — chiếm HẾT vệ tinh chưa thuộc clan
-  if (settings.break_mode === "satellites") {
+  if (breakModeOn && settings.break_mode === "satellites") {
     const sat = await runHoangCoCaptureSatellite(options, true);
     if (sat) return sat;
     return {
@@ -5156,7 +5158,7 @@ export async function runHoangCoAuto(options: HoangCoAutoOptions): Promise<Hoang
   }
 
   // Mission riêng: Phá cờ (cắm → xây → phá cờ địch gần nhất)
-  if (settings.auto_break_flag === true || settings.mission === "pha_co" || settings.mission === "break_flag") {
+  if (breakModeOn) {
     onLog?.("INFO", "Hoàng Cổ · mission: Phá cờ (scan near→phá · chưa near→cắm/xây · resource an toàn chip)");
     return runHoangCoBreakFlagAuto(options);
   }
