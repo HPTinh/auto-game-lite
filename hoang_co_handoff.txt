@@ -1,7 +1,7 @@
 ================================================================================
   HOÀNG CỔ (Hoang Co) — HANDOFF / TÀI LIỆU CHO CHAT MỚI
   Project: Auto Best lite (HPTinh/auto-game-lite)
-  Cập nhật: 2026-08-17  (đã đồng bộ code thực tế — engine giờ 5136 dòng)
+   Cập nhật: 2026-08-17  (đã đồng bộ code thực tế — engine giờ 5327 dòng)
   Repo: https://github.com/HPTinh/auto-game-lite.git
   Branch: main (deploy Render free — auto redeploy on push)
 ================================================================================
@@ -20,10 +20,11 @@
       CHỈ bật khi đứng ĐÚNG tâm (cheby 0).
     * "hop place" = cắm cờ mới phải gần cờ built của mình (cheby≤3, BẰNG TẦM PHÁ).
       Ưu tiên kề (cheby≤1); server báo not_adjacent nếu ô cắm quá xa mọi cờ built.
-    * QUY TẮC 3×3 (2026-08, user xác nhận):
+    * QUY TẮC 3×3 (2026-08, user xác nhận + cập nhật 2026-08-17):
         - Mỗi cờ = tâm 3×3 (vùng toả ±1 mỗi chiều).
-        - CẮM: cấm đặt tâm cờ mình cách tâm địch ≤1 (vùng 3×3 phủ lên tâm địch).
-          Được phép cách ≥2 (vùng chỉ chạm vành, không phủ tâm). Đè tâm (cheby=0) cấm.
+        - CẮM: CHỈ CẤM đè TÂM cờ địch (cheby 0 — trùng ô). VÀNH cheby≥1 sát cờ
+          địch ĐƯỢC PHÉP (canPlaceAt :138 đã nới lỏng; pickSiegePlaceCell :830
+          cũng cho phép andnh). Đặt đè tâm vẫn bị occ/canPlaceAt chặn.
         - PHÁ: chỉ cần cờ đồng minh ĐÃ XÂY (is_built) cách tâm địch ≤3 (vùng 3×3
           hai bên kề/chồng lấp, không cần đè tâm) → đủ điều kiện phá (canReachEnemyFlag).
           Để thực sự xông, nhân vật vẫn phải MOVE vào tâm cờ địch (cheby 0) rồi siege.
@@ -67,7 +68,8 @@
     listHoangCoEnemyClans       lấy list bang địch cho UI (:3472)
     scanHoangCoState            ★ quét 1 lần: map_state + đếm cờ từng clan (:1210)
     planCentralCapture          ★ lập kế hoạch chiếm central (box + bridge, :1159)
-    canPlaceAt                  ★ quy tắc cắm (cấm occ, cấm tâm địch cheby≤1, :138)
+    canPlaceAt                  ★ quy tắc cắm (cấm occ, cấm đè tâm địch cheby=0,
+                                    cho phép andnh cheby≥1, :138)
     pickSiegePlaceCell          ★ chọn ô cắm tiến gần mặt trận (:744)
     sortBreakTargets            ★ chọn mục tiêu (ưu tiên gần mặt trận, :1284)
     canReachEnemyFlag           ★ đủ điều kiện phá (built cheby≤3, :1021)
@@ -203,11 +205,15 @@
                         runHoangCoDefendMineAuto :3925) — hết lock_until → tự
                         chiếm lại (chu kỳ thủ ↔ công). Không công lặp vô ích.
        "clan_wipe"    = phá SẠCH mọi cờ của target_clan_name (dùng logic any + target_clan).
-       "resource"     = CHẠY ĐỘC LẬP (không cần bật Phá cờ): chiếm mỏ gần→xa.
-       "satellites"   = CHẠY ĐỘC LẬP: chiếm HẾT vệ tinh chưa thuộc clan.
-       Lưu ý: "resource_all" (cũ) → engine vẫn xử lý NHƯ "resource" (:5031) nhưng
-       UI đã GỘP bớt option (chỉ còn "resource"). "central" cũng có thể chạy cùng
-       auto_break_flag bật (mission phá cờ xử lý central).
+        "resource"     = CHẠY ĐỘC LẬP (không cần bật Phá cờ): chiếm mỏ gần→xa.
+                         Bị gate bởi auto_break_flag (entry :5026) — không tích
+                         Phá cờ thì rơi xuống mode thường (expand/build/...).
+        "satellites"   = CHẠY ĐỘC LẬP: chiếm HẾT vệ tinh chưa thuộc clan.
+        Lưu ý: "resource_all" (cũ) → engine vẫn xử lý NHƯ "resource" (:5031) nhưng
+        UI đã GỘP bớt option (chỉ còn "resource"). "central" cũng có thể chạy cùng
+        auto_break_flag bật (mission phá cờ xử lý central).
+        zoneMode trong runHoangCoBreakFlagAuto GIỜ CHỈ = "central" (resource/
+        resource_all/satellites đã được entry route sang capture riêng).
 
    ── Mode không phá (khi auto_break_flag = false) ──
     auto_place   bool default true    → cắm cờ (runHoangCoExpandAuto)
@@ -233,8 +239,9 @@
                              ASSAULT_SIEGE | (central:  CHỜ_XÂY/XÂY/CẮM)  (:4141)
     bridgeCheby/hopsLeft   = khoảng cách + bước cắm tới địch (planBridgeToEnemy :1094)
     safeR                  = max(flee_radius,2) vùng an toàn né địch
-    cfgMaxBuild            = flag_building_max / max_simultaneous_build (thường 3)
-                             slot xây concurrent
+    cfgMaxBuild            = getCfgMaxBuild() : thống nhất đọc
+                              max_simultaneous_build (ưu tiên) → flag_building_max
+                              → mặc định 3. Dùng chung ở capture/expand/break/satellite.
     centralDowCap          = 3 — đủ 3 cờ dở quanh central → BẮT BUỘC xây xong 1
                              cờ gần central nhất trước khi cắm tiếp (:3656)
     minBuiltToEnemy        = cheby cờ built gần địch nhất (mặt trận) — dùng trong

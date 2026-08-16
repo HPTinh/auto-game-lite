@@ -161,6 +161,15 @@ function cellKey(x: number, y: number) {
   return `${x},${y}`;
 }
 
+/** Số cờ dở được phép cắm/xây đồng thời (quota). Thống nhất đọc 2 key config
+ *  (max_simultaneous_build ưu tiên, fallback flag_building_max), mặc định 3. */
+function getCfgMaxBuild(map: any): number {
+  return Math.max(
+    1,
+    Math.floor(n(map?.config?.max_simultaneous_build, n(map?.config?.flag_building_max, 3))) || 3
+  );
+}
+
 type Flag = {
   flag_id: number;
   pos_x: number;
@@ -826,8 +835,9 @@ function pickSiegePlaceCell(opts: {
         seen.add(k);
 
         const toEnemy = chebyshev(x, y, enemy.pos_x, enemy.pos_y);
-        // Quy tắc 3×3: cấm đặt tâm cờ mình cách tâm địch ≤1 (vùng toả sẽ phủ tâm địch)
-        if (toEnemy <= 1) continue;
+        // Quy tắc mới: chỉ CẤM đè tâm cờ địch (cheby 0). VÀNH cheby=1 được phép
+        // (đồng bộ canPlaceAt). Lọc ô đè tâm đã do canPlaceAt xử lý bên dưới.
+        if (toEnemy < 1) continue;
         // canPlaceAt: cấm occupied / đè tâm địch (cheby≤1) / ngoài grid
         if (!canPlaceAt({ x, y, flags, myClanId: clanId, gridW, gridH, occ }).ok) continue;
         // CHỈ nhận ô TIẾN GẦN địch hơn mặt trận hiện tại (toEnemy < minBuiltToEnemy).
@@ -1837,6 +1847,15 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
           // not_near từ ô kề → vẫn phải vào tâm cờ (rơi xuống move bên dưới)
         }
       }
+      // Đang transit tới đúng cờ này (dest == cờ) → CHỜ tới nơi, không re-issue move
+      if (opts.me.inTransit && opts.me.eta > 0 && opts.me.destX === ef.pos_x && opts.me.destY === ef.pos_y) {
+        return opts.baseSummary({
+          action: "wait_transit_siege_enemy_flag",
+          etaSeconds: opts.me.eta,
+          nextDelayMs: Math.max(3000, opts.me.eta * 1000 + 2000),
+          reason: `${opts.label}: đang tới phá cờ địch #${flagId} (transit ${opts.me.eta}s, chờ tới nơi)`,
+        });
+      }
       await leaveDefense(opts.characterId, opts.accessToken, opts.onLog);
       const mv = await rpc(
         "rpc_hoang_co_move",
@@ -2009,7 +2028,7 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       const satTile = { x: cand.sx, y: cand.sy };
       const cityKey = String(sat.city_key || sat.display_order || "");
       const proximity = Math.min(2, Math.max(1, Math.floor(n(map?.config?.attack_proximity_radius, 3)) || 3));
-      const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.max_simultaneous_build, 3)) || 3);
+    const cfgMaxBuild = getCfgMaxBuild(map);
 
       // Công vệ tinh BẮT BUỘC cần có cờ đồng minh trong phạm vi cheby <= 2 (vệ tinh không cho công nếu
       // không có cờ clan kề). Người chơi chỉ cần đứng trong phạm vi công (cheby <= proximity) để gọi công.
@@ -2366,10 +2385,7 @@ export async function runHoangCoExpandAuto(options: HoangCoAutoOptions): Promise
     summary.clanFlags = clanFlags.length;
     summary.buildingFlags = building.length;
 
-    const cfgMaxBuild = Math.max(
-      1,
-      Math.floor(n(map?.config?.flag_building_max, maxConcurrentBuild)) || maxConcurrentBuild
-    );
+    const cfgMaxBuild = getCfgMaxBuild(map);
 
     // Dọn self_placed đã xong / không còn
     selfPlaced = selfPlaced.filter((id) => {
@@ -3755,8 +3771,9 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     // Mode KHU VỰC (resource/central/satellites): phá SẠCH cờ của MỌI bang trong khu vực mục tiêu —
     // không giới hạn theo targetClan (v.d. mỏ bang A mà chỉ set target bang B → kẹt không phá được).
     // Chỉ mode "any" (phá cờ tự do) mới tôn trọng targetClan.
-    const zoneMode =
-      breakMode === "central" || breakMode === "resource" || breakMode === "resource_all" || breakMode === "satellites";
+    // (resource/resource_all/satellites đã được entry route sang capture riêng →
+    //  ở đây break_flag auto chỉ nhận any/central/clan_wipe, nên zoneMode = central)
+    const zoneMode = breakMode === "central";
     let enemyFlags: any[] = zoneMode
       ? flags.filter((f) => isEnemyFlag(f, clanId))
       : filterEnemyFlags(flags, clanId, targetClan);
@@ -4698,7 +4715,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     // (break_hop_max) nếu server cho phép — cảnh báo rủi ro not_adjacent.
     const hopMax = Math.max(1, Math.min(3, Math.floor(n(settings.break_hop_max, 1)) || 1));
     const plan = planBridgeToEnemy(ownBuilt, building, enemy, hopMax);
-    const cfgMaxBuild = Math.max(1, Math.floor(n(map?.config?.flag_building_max, 3)) || 3);
+    const cfgMaxBuild = getCfgMaxBuild(map);
     const usedFlags = Math.floor(n(map?.config?.used_flags ?? map?.used_flags, ownBuilt.length + building.length));
     const maxFlags = Math.floor(n(map?.config?.max_flags ?? map?.max_flags, 0));
     const flagsFull = maxFlags > 0 && usedFlags >= maxFlags;
