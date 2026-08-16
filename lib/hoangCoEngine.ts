@@ -1773,6 +1773,35 @@ async function runHoangCoResourceMode(options: HoangCoAutoOptions): Promise<Hoan
       });
     }
     if (dist > 0) {
+      // dist === 1: THỬ siege từ ô KỀ trước — server có thể yêu cầu đứng CẠNH cờ
+      // (không phải đè tâm) — tránh vòng move vào tâm → not_near → né ra → move vào (thần chết).
+      if (dist === 1) {
+        try {
+          const resK = await rpc(
+            "rpc_hoang_co_siege_flag",
+            { p_character_id: opts.characterId, p_flag_id: flagId },
+            opts.accessToken
+          );
+          notNearFailCount.delete(flagId);
+          return opts.baseSummary({
+            action: "siege_enemy_flag",
+            siegePoints: n(resK?.siege_points, 0),
+            siegeMax: n(resK?.siege_max, 0),
+            nextDelayMs: opts.pollMs,
+            reason: `${opts.label}: phá cờ địch #${flagId} (từ ô kề) · siege ${n(resK?.siege_points)}/${n(resK?.siege_max)}`,
+          });
+        } catch (eK: any) {
+          const msgK = (eK?.message || eK).toString();
+          if (!/not_near/i.test(msgK)) {
+            return opts.baseSummary({
+              action: "siege_enemy_flag",
+              nextDelayMs: 15_000,
+              reason: `${opts.label}: phá cờ địch #${flagId} lỗi: ${msgK.slice(0, 100)}`,
+            });
+          }
+          // not_near từ ô kề → vẫn phải vào tâm cờ (rơi xuống move bên dưới)
+        }
+      }
       await leaveDefense(opts.characterId, opts.accessToken, opts.onLog);
       const mv = await rpc(
         "rpc_hoang_co_move",
