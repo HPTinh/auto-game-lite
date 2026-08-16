@@ -3687,7 +3687,14 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     // ── LUẬT chung: số cờ dở tối đa được phép cắm trước khi BẮT BUỘC xây xong ít nhất 1.
     const centralDowCap = 3;
     const allEnemy = flags.filter((f) => isEnemyFlag(f, clanId));
-    let enemyFlags: any[] = filterEnemyFlags(flags, clanId, targetClan);
+    // Mode KHU VỰC (resource/central/satellites): phá SẠCH cờ của MỌI bang trong khu vực mục tiêu —
+    // không giới hạn theo targetClan (v.d. mỏ bang A mà chỉ set target bang B → kẹt không phá được).
+    // Chỉ mode "any" (phá cờ tự do) mới tôn trọng targetClan.
+    const zoneMode =
+      breakMode === "central" || breakMode === "resource" || breakMode === "resource_all" || breakMode === "satellites";
+    let enemyFlags: any[] = zoneMode
+      ? flags.filter((f) => isEnemyFlag(f, clanId))
+      : filterEnemyFlags(flags, clanId, targetClan);
     // Mode central: phá SẠCH cờ địch trong box central trước, rồi chiếm central
     centralPlan = planCentralCapture({ map, clanId, centralRadius: settings.central_radius });
     if (breakMode === "central") {
@@ -3697,7 +3704,7 @@ export async function runHoangCoBreakFlagAuto(options: HoangCoAutoOptions): Prom
     // Fix: tránh bot cắm loang ra (expand) mãi mà không bao giờ đóng cầu vào tâm.
     const wantCentral = breakMode === "central" || (!enemyFlags.length && !centralPlan.ownReachCentral);
 
-    logFlagScan(onLog, flags, clanId, enemyFlags, targetClan);
+    logFlagScan(onLog, flags, clanId, enemyFlags, zoneMode ? "(khu vực)" : targetClan);
 
     // Transit: chỉ chờ nếu đang đi ĐÚNG chỗ; nếu near mà dest ≠ tâm cờ → hủy đường cũ (xử lý sau khi chọn enemy)
 
