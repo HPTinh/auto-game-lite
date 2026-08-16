@@ -138,6 +138,11 @@ interface FarmRuntimeState {
   lastSelfHp?: number;
   lastSelfHpMax?: number;
   lastSelfHpAt?: number;
+  /** K15 (single channel): "event" = kênh sự kiện, "heal" = farm kênh thường hồi máu */
+  singleChannelPhase?: "event" | "heal";
+  /** Lần cuối check vị trí (đá kênh → rejoin) */
+  lastPositionCheckAt?: number;
+  lastPositionRealmCode?: string;
 }
 
 interface RealmChannelInfo {
@@ -1718,15 +1723,32 @@ function getSelfHp(obj: any): { hp?: number; max?: number } {
   return { hp, max };
 }
 
-/** Lấy máu hiện tại + tối đa từ rpc_get_character_resources (nguồn xác thực nhất). */
-async function fetchCharacterResources(characterId: string, accessToken: string): Promise<{ hp?: number; hpMax?: number }> {
+/**
+ * Lấy máu hiện tại + tối đa từ rpc_get_character_resources (nguồn xác thực nhất),
+ * kèm vị trí hiện tại (realm_code/realm_id/channel) nếu server trả — để check nhân vật
+ * có còn ở kênh farm hay đã bị đá/chết out kênh (PK K15...).
+ */
+async function fetchCharacterResources(
+  characterId: string,
+  accessToken: string
+): Promise<{ hp?: number; hpMax?: number; realmCode?: string; realmId?: string; channelNo?: number }> {
   try {
     const data = await rpc("rpc_get_character_resources", { p_character_id: characterId }, accessToken);
     const hp = toNumber(data?.hp);
     const hpMax = toNumber(data?.hp_max);
+    const realmCodeRaw = firstDefined(
+      data?.realm_code, data?.realmCode, data?.current_realm_code, data?.realm_code_current,
+      data?.world_code, data?.map_code, data?.zone_code
+    );
+    const realmIdRaw = firstDefined(data?.realm_id, data?.realmId, data?.current_realm_id);
+    const channelRaw = firstDefined(data?.channel_no, data?.channel, data?.channelNo, data?.current_channel);
+    const channelNo = toNumber(channelRaw);
     return {
       hp: hp != null && Number.isFinite(hp) ? hp : undefined,
       hpMax: hpMax != null && Number.isFinite(hpMax) && hpMax > 0 ? hpMax : undefined,
+      realmCode: realmCodeRaw == null || realmCodeRaw === "" ? undefined : String(realmCodeRaw),
+      realmId: realmIdRaw == null || realmIdRaw === "" ? undefined : String(realmIdRaw),
+      channelNo: channelNo != null && Number.isFinite(channelNo) ? channelNo : undefined,
     };
   } catch {
     return {};
@@ -2170,9 +2192,20 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
   // Chọn skill mỗi lượt: mặc định đánh thường (slot 0); nếu máu tự thân < threshold → skill hồi máu (mặc định slot 3).
   // HP lấy từ rpc_get_character_resources (hp/hp_max) + kết quả attack (hp_after), lưu runtime.lastSelfHp.
   await refreshSelfHp(runtime, characterId, accessToken, onLog);
-  const skillPick = pickFarmSkillSlot(runtime, settings);
-  const skillSlot = skillPick.skillSlot;
-  if (skillSlot !== 0) onLog?.("INFO", `Farm chọn skill hồi máu: ${skillPick.reason}`);
+  // Chọn skill hồi máu MỖI LƯỢT đánh theo HP hiện tại (máu < threshold → slot hồi máu, đủ → slot 0).
+  // Không chọn 1 lần cố định vì HP thay đổi liên tục: chọn sớm 1 lần dễ chết không heal / tốn MP heal thừa.
+  let skillSlot = 0;
+  let lastSkillLogReason = "";
+  const refreshSkillPick = (): number => {
+    const picked = pickFarmSkillSlot(runtime, settings);
+    skillSlot = picked.skillSlot;
+    if (picked.skillSlot !== 0 && picked.reason !== lastSkillLogReason) {
+      lastSkillLogReason = picked.reason;
+      onLog?.("INFO", `Farm chọn skill hồi máu: ${picked.reason}`);
+    }
+    return skillSlot;
+  };
+  refreshSkillPick();
   const autoUseMpPotion = settings.auto_use_mp_potion !== false;
   // Uống MP: cascade lk→lh; mua shop chỉ pill_lk_mp
   const autoBuyMpPotion = settings.auto_buy_mp_potion !== false;
@@ -2371,6 +2404,72 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     const maxLearnedRegions = Math.max(1, Math.min(tierRegionsForLearning.length, Number(settings.max_available_base_codes || 2)));
     const hasCustomRegionSource = regionSource.some(region => region.customPrefix);
 
+    // === Check vị trí: nhân vật còn ở kênh farm không? (PK K15 / chết → out kênh) ===
+    // Lưu cache realm đang farm (runtime.currentRealm.realmCode); lệch → join lại ngay.
+    const singleRealm = getSingleChannelRealmCode(settings);
+    const singleChannelMode = singleRealm !== null;
+    const singleMinHpPct = Math.max(1, Math.min(99, Number(settings.farm_single_channel_min_hp ?? 50)));
+    const positionCheckSec = Math.max(5, Number(settings.farm_position_check_sec ?? 30) || 30);
+    const rejoinOnMissing = settings.farm_rejoin_on_missing !== false;
+    if (rejoinOnMissing && Date.now() - (runtime.lastPositionCheckAt || 0) > positionCheckSec * 1000) {
+      runtime.lastPositionCheckAt = Date.now();
+      // Gọi thẳng (không qua cache 4s của refreshSelfHp) để biết tọa độ/channel hiện tại.
+      const pos = await fetchCharacterResources(characterId, accessToken);
+      if (pos.hp != null) runtime.lastSelfHp = pos.hp;
+      if (pos.hpMax != null) runtime.lastSelfHpMax = pos.hpMax;
+      const posRealm = pos.realmCode || pos.realmId;
+      if (posRealm && runtime.currentRealm?.realmId && posRealm !== runtime.currentRealm.realmCode && posRealm !== runtime.currentRealm.realmId) {
+        onLog?.(
+          "WARN",
+          `Farm: nhân vật KHÔNG còn ở kênh farm (đang ${posRealm}, cần ${runtime.currentRealm.realmCode}) — bị đá/chết, join lại ngay.`,
+          { needed: runtime.currentRealm.realmCode, found: posRealm }
+        );
+        const rejoined = await hardRejoinRealm({ characterId, accessToken, runtime, onLog });
+        if (rejoined) {
+          runtime.currentMob = null;
+          runtime.currentMobHits = 0;
+          runtime.mobQueue = [];
+          runtime.mobQueueAt = 0;
+        }
+      } else if (posRealm) {
+        onLog?.("DEBUG", `Farm xác nhận vị trí: ${posRealm}${pos.channelNo != null ? ` (kênh ${pos.channelNo})` : ""}`);
+        runtime.lastPositionRealmCode = posRealm;
+      }
+    }
+
+    // === K15 phase: máu < ngưỡng → farm kênh thường hồi máu (skill hồi máu dùng linh động);
+    // đủ máu (>= min_hp) mới vào kênh sự kiện. K15 chết là out kênh nên không dùng skill hồi máu trong đó. ===
+    if (singleChannelMode) {
+      const hp = runtime.lastSelfHp;
+      const max = runtime.lastSelfHpMax;
+      const hpKnown = hp != null && max != null && max > 0;
+      const hpPct = hpKnown ? Math.round((hp / max) * 100) : 100;
+      const wantHeal = hpKnown && hpPct < singleMinHpPct;
+      const desiredPhase: "event" | "heal" = wantHeal ? "heal" : "event";
+      if (runtime.singleChannelPhase !== desiredPhase) {
+        runtime.singleChannelPhase = desiredPhase;
+        if (runtime.currentRealm?.realmId) await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
+        runtime.currentRealm = null;
+        runtime.mobQueue = [];
+        runtime.currentMob = null;
+        runtime.currentMobHits = 0;
+        runtime.noMobCount = 0;
+        onLog?.(
+          "INFO",
+          hpKnown
+            ? wantHeal
+              ? `Farm K15: máu ${hpPct}% < ${singleMinHpPct}% → farm kênh thường hồi máu (skill slot ${Number(settings.farm_heal_skill_slot ?? 3)}), đủ mới vào sự kiện`
+              : `Farm K15: máu ${hpPct}% ≥ ${singleMinHpPct}% → vào kênh sự kiện`
+            : "Farm K15: chưa đọc được HP → mặc định vào kênh sự kiện"
+        );
+      }
+    } else {
+      runtime.singleChannelPhase = undefined;
+    }
+    // Kênh thường khi đang hồi máu (heal phase): tạm tắt short-circuit single channel để quét vùng/kênh như farm thường.
+    // Ở phase event: giữ nguyên realm sự kiện (farm_single_channel=true).
+    const effectiveSettings = singleChannelMode && runtime.singleChannelPhase === "heal" ? { ...settings, farm_single_channel: false } : settings;
+
     // Nếu mới học được 1/2 vùng, không giữ mãi vùng đã học.
     // Reset realm để vòng kế tiếp ưu tiên scan vùng chưa học, sau khi đủ 2 vùng mới farm ổn định đa kênh.
     if (!hasCustomRegionSource
@@ -2413,7 +2512,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         accessToken,
         runtime,
         channels,
-        settings,
+        settings: effectiveSettings,
         claimMobLock,
         onRegionAvailability,
         onLog,
@@ -2476,7 +2575,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
     }
 
     if (!runtime.currentRealm?.realmId) {
-      await findAndJoinRealm({ characterId, accessToken, runtime, channels, settings, onRegionAvailability, onLog, shouldStop });
+      await findAndJoinRealm({ characterId, accessToken, runtime, channels, settings: effectiveSettings, onRegionAvailability, onLog, shouldStop });
     }
 
     if (!runtime.currentRealm?.realmId) {
@@ -2486,7 +2585,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
       const regionSummary = regions.find(region => region.baseCode === runtime.currentRealm?.baseCode);
       if (regionSummary && !regionSummary.scannedChannels.includes(runtime.currentRealm.channelNo)) regionSummary.scannedChannels.push(runtime.currentRealm.channelNo);
 
-      const next = await getNextMobTarget({ characterId, accessToken, runtime, wantedTypes: wantedTypesForThisRun, settings, claimMobLock, onRegionAvailability });
+      const next = await getNextMobTarget({ characterId, accessToken, runtime, wantedTypes: wantedTypesForThisRun, settings: effectiveSettings, claimMobLock, onRegionAvailability });
       skippedLockedCount += next.skippedLocked;
       scannedRealmCount += next.scanned;
 
@@ -2527,11 +2626,11 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
         }
         runtime.noMobCount += 1;
         if (runtime.noMobCount >= noMobBeforeRotate) {
-          const singleRealm = getSingleChannelRealmCode(settings);
-          if (singleRealm) {
+          const effSingleRealm = getSingleChannelRealmCode(effectiveSettings);
+          if (effSingleRealm) {
             // Kênh đơn: không rời/xoay, giữ nguyên realm và quét lại.
             runtime.noMobCount = 0;
-            onLog?.("DEBUG", "Farm kênh đơn: không còn mob phù hợp, giữ nguyên kênh và quét lại.", { realmCode: singleRealm });
+            onLog?.("DEBUG", "Farm kênh đơn: không còn mob phù hợp, giữ nguyên kênh và quét lại.", { realmCode: effSingleRealm });
           } else {
             const oldRealm = runtime.currentRealm ? { ...runtime.currentRealm } : null;
             if (runtime.currentRealm?.realmId) await leaveRealm(characterId, accessToken, runtime.currentRealm.realmId);
@@ -2614,6 +2713,8 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
             questProgress: undefined,
           };
         }
+        // Chọn skill theo máu HIỆN TẠI trước mỗi lượt đánh (máu cập nhật sau mỗi hit trước đó).
+        refreshSkillPick();
         const beforeAttackSnapshot = runtime.lastSnapshot;
         const beforeAttackSummary = runtime.lastSnapshotSummary;
         let attackResult: any;
@@ -2682,6 +2783,7 @@ export async function runFarmAuto(options: FarmAutoOptions): Promise<FarmRunSumm
                 );
                 applyCounter = r2.apply;
                 applyCounterKey = r2.key;
+                refreshSkillPick();
                 const attack = await attackWithMpRecovery({
                   characterId,
                   accessToken,

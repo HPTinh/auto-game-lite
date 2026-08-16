@@ -50,7 +50,8 @@ export type FeatureId =
   | "craft"
   | "body_cult"
   | "hoang_co"
-  | "ngu_hanh_thap";
+  | "ngu_hanh_thap"
+  | "climb";
 
 export const FEATURE_LABELS: Record<FeatureId, string> = {
   farm: "Farm quái",
@@ -72,6 +73,7 @@ export const FEATURE_LABELS: Record<FeatureId, string> = {
   body_cult: "Luyện thể",
   hoang_co: "Hoàng Cổ",
   ngu_hanh_thap: "Ngũ Hành Tháp",
+  climb: "Vân Thê Lộ",
 };
 
 /** Setting mặc định tối ưu treo Render free */
@@ -120,6 +122,12 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     farm_heal_skill_slot: 3,
     /** Ngưỡng máu (%) để chuyển sang skill hồi máu (mặc định 50) */
     farm_heal_hp_threshold: 50,
+    /** Máu tối thiểu (%) mới được vào kênh sự kiện K15 (dưới → farm kênh thường hồi máu) */
+    farm_single_channel_min_hp: 50,
+    /** Tự check vị trí nhân vật; không còn ở kênh farm → join lại kênh đã cache */
+    farm_rejoin_on_missing: true,
+    /** Chu kỳ check vị trí (giây) */
+    farm_position_check_sec: 30,
   },
   pvp: {
     /** Số trận tối đa / ngày (user nhập) — free và PK đều nằm trong trần này */
@@ -387,6 +395,23 @@ export const defaultFeatureSettings = (): Record<FeatureId, Record<string, any>>
     display_sweep_charges: 0,
     lost_today: false,
     swept_today: false,
+    daily_date: "",
+  },
+  /**
+   * Vân Thê Lộ (climb) — zero-config (chỉ bật)
+   * maps → run_start → re-check maps (cleared_today) → chờ 00:00 VN
+   */
+  climb: {
+    delay_ms: 2000,
+    max_maps_per_run: 6,
+    climb_prefer_highest_tier: true,
+    climb_prefer_tier: "",
+    climb_settle_sec: 20,
+    climb_progress_delay_ms: 350,
+    climb_maps_cleared_today: 0,
+    climb_maps_tried_today: 0,
+    climb_last_status: "",
+    climb_last_run_at: "",
     daily_date: "",
   },
 });

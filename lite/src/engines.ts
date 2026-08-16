@@ -42,3 +42,4 @@ export {
 } from "../../lib/hoangCoEngine";
 export * from "./hoangCoState";
 export { runNguHanhThapAuto } from "../../lib/nguHanhThapEngine";
+export { runClimbAuto } from "../../lib/climbEngine";

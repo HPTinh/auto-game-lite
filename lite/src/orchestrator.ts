@@ -26,6 +26,7 @@ import {
   runRankChallengeAuto,
   runHoangCoAuto,
   runNguHanhThapAuto,
+  runClimbAuto,
   scanHoangCoState,
   getHoangCoSharedState,
   isHoangCoScanFresh,
@@ -1169,6 +1170,35 @@ async function runFeatureOnce(accountId: string, featureId: FeatureId, token: nu
           "TOWER",
           result.wins > 0 ? "SUCCESS" : "INFO",
           `Tháp ${result.status} · highest ${hi} · next T${nextF} · +${result.wins}W · sweep ${result.sweepCharges} · next ${Math.round(nextDelayMs / 1000)}s`
+        );
+      }
+    } else if (featureId === "climb") {
+      // Zero-config: maps → run_start → re-check maps (cleared_today) → 00:00 VN
+      const result = await runClimbAuto({
+        characterId: runtime.characterId,
+        accessToken: runtime.accessToken,
+        settings,
+        msUntilNextMidnight: msUntilNextVnMidnight(),
+        shouldStop: () => !isAllowed(accountId, featureId, token),
+        onLog: onLog(accountId, "CLIMB"),
+      });
+
+      store.setFeature(accountId, "climb", {
+        settings: { ...settings, ...result.persist },
+      });
+
+      nextDelayMs = Math.max(5_000, Number(result.nextDelayMs || msUntilNextVnMidnight()));
+
+      if (result.status === "ERROR") {
+        status = "error";
+        errMsg = result.reason || "Vân Thê Lộ error";
+        sysLog(accountId, "CLIMB", "ERROR", errMsg);
+      } else {
+        sysLog(
+          accountId,
+          "CLIMB",
+          result.status === "DONE" ? "SUCCESS" : "INFO",
+          `Vân Thê Lộ · ${result.status} · +${result.mapsCleared}/${result.mapsTried} map · ${result.reason || ""} · next ~${Math.round(nextDelayMs / 1000)}s`
         );
       }
     } else if (featureId === "craft") {

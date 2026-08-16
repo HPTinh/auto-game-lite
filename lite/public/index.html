@@ -123,7 +123,7 @@
   <script>
     const FEATURES = [
       "farm","buff","claim_exp","world_boss","breakthrough","achievement","mail","maze","pvp","rank_challenge","nhap_mong","khoi_loi","ki_ngo","vip_daily",
-      "auto_equip","craft","body_cult","hoang_co","ngu_hanh_thap"
+      "auto_equip","craft","body_cult","hoang_co","ngu_hanh_thap","climb"
     ];
     const LABELS = {
       farm:"Farm", buff:"Buff", claim_exp:"EXP", world_boss:"W.Boss", breakthrough:"Đột phá",
@@ -132,7 +132,8 @@
       ki_ngo:"Kì ngộ", vip_daily:"VIP daily",
       auto_equip:"Equip", craft:"Craft", body_cult:"Luyện thể",
       hoang_co:"Hoàng Cổ",
-      ngu_hanh_thap:"Ngũ Hành Tháp"
+      ngu_hanh_thap:"Ngũ Hành Tháp",
+      climb:"Vân Thê Lộ"
     };
     const DEFAULT_ON = new Set(["farm","buff","claim_exp","breakthrough","world_boss","achievement","mail"]);
 
@@ -153,6 +154,12 @@
         {k:"mp_potion_buy_qty",l:"Mua mỗi lần (shop)",t:"select",o:["10","1"], hint:"Chỉ mua pill_lk_mp; mặc định 10"},
         {k:"farm_single_channel",l:"Sự Kiện (K15)",t:"bool", d:true, hint:"Kênh đơn duy nhất — join thẳng realm_code, không quét vùng/kênh"},
         {k:"farm_single_realm_code",l:"Realm code Sự Kiện (K15)",t:"text", d:"event_train_lk_15", hint:"Mặc định event_train_lk_15 — chỉ join kênh này, bỏ quét vùng/kênh"},
+        {k:"farm_single_channel_min_hp",l:"Máu tối thiểu (%) mới vào K15",t:"number", d:50, min:1, max:99, hint:"Dưới ngưỡng → farm kênh thường + skill hồi máu cho tới đủ mới vào sự kiện"},
+        {k:"auto_heal_on_low_hp",l:"Hồi máu khi máu thấp (kênh thường)",t:"bool", d:true, hint:"Skill hồi máu dùng linh động ở kênh thường; K15 chết là out kênh nên phải đủ máu mới vào"},
+        {k:"farm_heal_skill_slot",l:"Skill slot hồi máu",t:"number", d:3, min:0, max:9, hint:"Mặc định 3"},
+        {k:"farm_heal_hp_threshold",l:"Ngưỡng máu (%) bật skill hồi máu",t:"number", d:50, min:1, max:99},
+        {k:"farm_rejoin_on_missing",l:"Check vị trí & join lại kênh khi bị đá/chết",t:"bool", d:true, hint:"Kiểm tra nhân vật còn ở kênh farm không; không còn → join lại kênh đã cache"},
+        {k:"farm_position_check_sec",l:"Chu kỳ check vị trí (giây)",t:"number", d:30, min:5, max:600},
       ],
       pvp: [
         {k:"free_per_day",l:"Số trận tối đa / ngày",t:"number",min:1,max:200},
@@ -272,6 +279,16 @@
         {k:"display_sweep_charges",l:"Càn quét free còn (tự)",t:"number",min:0},
         {k:"lost_today",l:"Đã thua hôm nay — chờ 00h (tự)",t:"bool"},
         {k:"swept_today",l:"Đã càn quét hôm nay (tự)",t:"bool"},
+      ],
+      /** Zero-config: chỉ bật feature. Chạy map unlocked + chưa clear hôm nay, server-sim */
+      climb: [
+        {k:"max_maps_per_run",l:"Số map chạy / lượt",t:"number",min:1,max:12, d:6},
+        {k:"climb_prefer_highest_tier",l:"Ưu tiên map tier cao nhất (reward cao)",t:"bool", d:true},
+        {k:"climb_prefer_tier",l:"Chỉ chạy tier (lk/tc/kd/na/ht/lh, để trống = tất cả)",t:"text"},
+        {k:"climb_progress_delay_ms",l:"Delay giữa mỗi lần báo tiến độ quái (ms)",t:"num", d:350},
+        {k:"delay_ms",l:"Delay giữa các map (ms)",t:"number",min:500, d:2000},
+        {k:"climb_maps_cleared_today",l:"Map đã clear hôm nay (tự)",t:"number",min:0},
+        {k:"climb_last_status",l:"Trạng thái lần cuối (tự)",t:"text"},
       ],
     };
 
