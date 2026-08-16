@@ -147,11 +147,12 @@ function canPlaceAt(opts: {
   const { x, y, flags, occ, gridW, gridH, myClanId } = opts;
   if (x < 0 || y < 0 || x >= gridW || y >= gridH) return { ok: false, reason: "out_of_grid" };
   if (occ.has(cellKey(x, y))) return { ok: false, reason: "occupied" };
-  // Cấm đè tâm cờ địch (cheby 0 với center). Vành cheby≥1 được phép.
+  // Quy tắc mới: chỉ CẤM đặt ĐÈ TÂM cờ địch (cheby 0 — trùng ô). VÀNH cheby ≥1 sát cờ địch
+  // ĐƯỢC PHÉP (game chỉ trả lỗi on_flag/occupied/flag_center khi đè tâm) — bỏ việc chặn 3×3
+  // để bridge/xây mở rộng xuyên được vùng địch quanh mục tiêu.
   for (const f of flags) {
     if (!isEnemyFlag(f, myClanId)) continue;
-    // Cấm đặt tâm cờ mình trong vùng 3×3 của địch (cách tâm địch ≤1 → vùng toả mình phủ tâm địch)
-    if (chebyshev(f.pos_x, f.pos_y, x, y) <= 1) return { ok: false, reason: "too_close_enemy_center" };
+    if (chebyshev(f.pos_x, f.pos_y, x, y) <= 0) return { ok: false, reason: "too_close_enemy_center" };
   }
   return { ok: true };
 }
