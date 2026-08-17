@@ -3526,8 +3526,12 @@ export async function runHoangCoAttackAuto(options: HoangCoAutoOptions): Promise
     }
 
     const flags = parseFlags(map);
-    // Cờ địch: clan_id khác (clan_name khác mình)
-    const enemyFlags = flags.filter((f) => f.clan_id && f.clan_id !== clanId);
+    const ownBuilt = flags.filter((f) => f.clan_id === clanId && f.is_built === true);
+    // Cờ địch: clan_id khác (clan_name khác mình). CHỈ phá cờ có cờ đồng minh ĐÃ XÂY
+    // cheby≤3 gần (luật 3×3) — thiếu cờ gần → siege chắc chắn not_near vô hạn.
+    const enemyFlags = flags.filter(
+      (f) => f.clan_id && f.clan_id !== clanId && canReachEnemyFlag(ownBuilt, f)
+    );
 
     if (!enemyFlags.length) {
       summary.status = "DONE";
